@@ -1,0 +1,50 @@
+{
+ "aslr_offsets": false,
+ "dlls": {
+  "32_6.1.7601.17514_KernelBase.dll": {
+   "aslr_offset": 0,
+   "base_address": 2105868288, 
+   "bitness": 32, 
+   "exports": [
+    {
+     "address": 27216, 
+     "name": "InterlockedIncrement", 
+     "ordinal": 383
+    }
+   ], 
+   "filepath": "/test/KernelBase32.dll", 
+   "version": "6.1.7601.17514"
+  }, 
+  "64_6.1.7601.17514_KernelBase.dll": {
+   "aslr_offset": 0,
+   "base_address": 8792746491904, 
+   "bitness": 64, 
+   "exports": [
+    {
+     "address": 4112, 
+     "name": "WaitForSingleObjectEx", 
+     "ordinal": 598
+    }
+
+   ], 
+   "filepath": "/test/KernelBase.dll", 
+   "version": "6.1.7601.17514"
+  },
+  "32_0.0.0.0_noversion.dll": {
+   "aslr_offset": 0,
+   "base_address": 4096, 
+   "bitness": 32, 
+   "exports": [
+    {
+     "address": 23, 
+     "name": "SomeAPI", 
+     "ordinal": 598
+    }
+   ], 
+   "filepath": "/test/noversion.dll", 
+   "version": "6.1.7601.17514"
+  }
+ }, 
+ "os_name": "Windows 7", 
+ "os_version": "6.1.7601.17514"
+}
