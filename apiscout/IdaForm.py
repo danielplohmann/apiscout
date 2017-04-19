@@ -97,7 +97,7 @@ class ApiChooser(Choose2):
         Choose2.__init__(self,
                          title,
                          [["#", 6], ["Offset", 14], ["API Address", 14], ["DLL", 20], ["API", 35]],
-                         embedded=True, width=140, height=30, flags=flags)
+                         embedded=True, width=140, height=20, flags=flags)
         self.row_count = 0
         self.base_address = [ea for ea in idautils.Segments()][0]
         self.scout = ApiScout()
