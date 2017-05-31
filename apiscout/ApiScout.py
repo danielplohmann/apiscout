@@ -60,6 +60,8 @@ class ApiScout(object):
             for export in api_db["dlls"][dll_entry]["exports"]:
                 num_apis_loaded += 1
                 api_name = "%s" % (export["name"])
+                if api_name == "None":
+                    api_name = "None<{}>".format(export["ordinal"])
                 dll_name = "_".join(dll_entry.split("_")[2:])
                 bitness = api_db["dlls"][dll_entry]["bitness"]
                 self.has_64bit |= bitness == 64
