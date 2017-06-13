@@ -68,6 +68,7 @@ class ApiScout(object):
                 base_address = api_db["dlls"][dll_entry]["base_address"]
                 api_map[base_address + export["address"] - aslr_offset] = (dll_name, api_name, bitness)
             LOG.debug("loaded %d exports", num_apis_loaded)
+        LOG.info("loaded %d exports from %d DLLs (%s).", num_apis_loaded, len(api_db["dlls"]), api_db["os_name"])
         self.api_maps[api_db["os_name"]] = api_map
 
     def _resolveApiByAddress(self, api_map_name, absolute_addr):

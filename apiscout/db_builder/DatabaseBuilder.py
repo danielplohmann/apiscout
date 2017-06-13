@@ -125,7 +125,7 @@ class DatabaseBuilder(object):
 
     def _buildDllKey(self, dll_info):
         filename = os.path.basename(dll_info["filepath"])
-        return "{}_{}_{}".format(dll_info["bitness"], dll_info["version"], filename)
+        return "{}_{}_{}_0x{:x}".format(dll_info["bitness"], dll_info["version"], filename, dll_info["base_address"])
 
     def _isInFilter(self, target_dll, filter_dlls):
         # since we want to maintain compatibility with Python 2.7, we can't casefold - upper+lower should suffice though.
