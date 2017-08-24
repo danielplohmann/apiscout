@@ -69,7 +69,7 @@ class IdaTools(object):
     def getAllMemoryFromIda(self):
         result = ""
         start = self.getBaseAddress()
-        end = idc.SegEnd(start)
+        end = self.getLastAddress()
         for ea in lrange(start, end):
             result += chr(idc.Byte(ea))
         return result
