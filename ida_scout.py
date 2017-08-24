@@ -27,20 +27,33 @@ from apiscout.IdaTools import IdaTools
 from apiscout.ApiScout import ApiScout
 
 
+def updateResults(results, new_results):
+    for key in new_results:
+        if not key in results:
+            results[key] = new_results[key]
+        else:
+            merged_results = results[key]
+            merged_results.extend(new_results[key])
+            results[key] = merged_results
+
+
 def main():
     tools = IdaTools()
     parameters = tools.formGetParameters()
     if parameters:
         scout = ApiScout()
         scout.ignoreAslrOffsets(parameters["ignore_aslr_offset"])
-        scout.setBaseAddress(tools.getBaseAddress())
-        binary = tools.getAllMemoryFromIda()
         for path in parameters["api_dbs"]:
             scout.loadDbFile(path)
         bitness_string = "32bit and 64bit" if scout.has_64bit else "32bit"
-        print("Scanning %d bytes in %s mode." % (len(binary), bitness_string))
-        results = scout.crawl(binary)
-        selected_apis = tools.formSelectResults(results)
+        segments = tools.getAllMemoryFromIda()
+        base_address = tools.getBaseAddress()
+        all_results = {}
+        for segment_address, binary in sorted(segments.items()):
+            scout.setLoadOffset(segment_address - base_address)
+            print("Scanning %d bytes @0x%x in %s mode." % (len(binary), segment_address, bitness_string))
+            updateResults(all_results, scout.crawl(binary))
+        selected_apis = tools.formSelectResults(all_results)
         if selected_apis:
             num_renamed, num_skipped = tools.applyApiNames(selected_apis)
             print("Annotated %d APIs (%d skipped)." % (num_renamed, num_skipped))
