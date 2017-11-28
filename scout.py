@@ -60,7 +60,7 @@ def main():
         # load DB file
         for db_path in args.db_path:
             scout.loadDbFile(db_path)
-        print("Using '{}' to analyze '{}.".format(args.db_path, args.binary_path))
+        print("Using \n  {}\nto analyze\n  {}.".format("\n  ".join(args.db_path), args.binary_path))
         num_apis_loaded = scout.getNumApisLoaded()
         filter_info = " - neighbour filter: 0x%x" % args.filter if args.filter else ""
         print("Buffer size is {} bytes, {} APIs loaded{}.\n".format(len(binary), num_apis_loaded, filter_info))
