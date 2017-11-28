@@ -40,6 +40,8 @@ class ApiScout(object):
         self.api_maps = {}
         self.has_64bit = False
         self.base_address = 0
+        # Used to achieve coherent offset view in IdaScout
+        self.load_offset = 0
         self.ignore_aslr_offsets = False
         self._import_table = None
         if db_filepath:
@@ -90,6 +92,9 @@ class ApiScout(object):
 
     def setBaseAddress(self, address):
         self.base_address = address
+        
+    def setLoadOffset(self, offset):
+        self.load_offset = offset
 
     def iterateAllDwords(self, binary):
         for offset, _ in enumerate(binary):
@@ -128,12 +133,12 @@ class ApiScout(object):
             for offset, api_address in self.iterateAllDwords(binary):
                 dll, api, bitness = self._resolveApiByAddress(api_map_name, api_address)
                 if dll and api and bitness == 32:
-                    recovered_apis.append((offset, api_address, dll, api, bitness, self._isImportTableEntry(offset)))
+                    recovered_apis.append((offset + self.load_offset, api_address, dll, api, bitness, self._isImportTableEntry(offset)))
             if self.has_64bit:
                 for offset, api_address in self.iterateAllQwords(binary):
                     dll, api, bitness = self._resolveApiByAddress(api_map_name, api_address)
                     if dll and api and bitness == 64:
-                        recovered_apis.append((offset, api_address, dll, api, bitness, self._isImportTableEntry(offset)))
+                        recovered_apis.append((offset + self.load_offset, api_address, dll, api, bitness, self._isImportTableEntry(offset)))
             results[api_map_name] = recovered_apis
         return results
 

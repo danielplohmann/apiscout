@@ -67,11 +67,27 @@ def lrange(num1, num2=None, step=1):
 class IdaTools(object):
 
     def getAllMemoryFromIda(self):
-        result = ""
-        start = self.getBaseAddress()
-        end = idc.SegEnd(start)
-        for ea in lrange(start, end):
-            result += chr(idc.Byte(ea))
+        result = {}
+        seg_start = [ea for ea in idautils.Segments()][0]
+        current_start = seg_start
+        seg_end = idc.SegEnd(current_start)
+        current_buffer = ""
+        for index, current_start in enumerate(idautils.Segments()):
+            # get current buffer content
+            current_buffer = ""
+            for ea in lrange(current_start, idc.SegEnd(current_start)):
+                current_buffer += chr(idc.Byte(ea))
+            # first buffer is only saved
+            if index == 0:
+                result[seg_start] = current_buffer
+                continue
+            # otherwise decide if the buffers are consecutive and either save or update contents
+            if current_start != seg_end:
+                seg_start = current_start
+                result[seg_start] = current_buffer
+            else:
+                result[seg_start] += current_buffer
+            seg_end = idc.SegEnd(current_start)
         return result
 
     def getBaseAddress(self):
@@ -151,3 +167,4 @@ class IdaTools(object):
             selected_apis = form.chosenApis
         form.Free()
         return selected_apis
+
