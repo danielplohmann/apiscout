@@ -28,6 +28,8 @@ import json
 import operator
 import logging
 
+from .ImportTableLoader import ImportTableLoader
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)-15s %(message)s")
 LOG = logging.getLogger(__name__)
 
@@ -38,7 +40,10 @@ class ApiScout(object):
         self.api_maps = {}
         self.has_64bit = False
         self.base_address = 0
+        # Used to achieve coherent offset view in IdaScout
+        self.load_offset = 0
         self.ignore_aslr_offsets = False
+        self._import_table = None
         if db_filepath:
             self.loadDbFile(db_filepath)
 
@@ -87,6 +92,9 @@ class ApiScout(object):
 
     def setBaseAddress(self, address):
         self.base_address = address
+        
+    def setLoadOffset(self, offset):
+        self.load_offset = offset
 
     def iterateAllDwords(self, binary):
         for offset, _ in enumerate(binary):
@@ -103,20 +111,34 @@ class ApiScout(object):
                 yield offset, dword
             except struct.error:
                 break
+                
+    def _parseImportTable(self, binary):
+        if self._import_table is None:
+            it_loader = ImportTableLoader(binary)
+            self._import_table = it_loader.get_import_table()
+
+    def _isImportTableEntry(self, offset):
+        if not self._import_table:
+            return None
+        else:
+            return offset in self._import_table
 
     def crawl(self, binary):
         results = {}
+        self._import_table = None
+        self._parseImportTable(binary)
+        self._isImportTableEntry(0)
         for api_map_name in self.api_maps:
             recovered_apis = []
             for offset, api_address in self.iterateAllDwords(binary):
                 dll, api, bitness = self._resolveApiByAddress(api_map_name, api_address)
                 if dll and api and bitness == 32:
-                    recovered_apis.append((offset, api_address, dll, api, bitness))
+                    recovered_apis.append((offset + self.load_offset, api_address, dll, api, bitness, self._isImportTableEntry(offset)))
             if self.has_64bit:
                 for offset, api_address in self.iterateAllQwords(binary):
                     dll, api, bitness = self._resolveApiByAddress(api_map_name, api_address)
                     if dll and api and bitness == 64:
-                        recovered_apis.append((offset, api_address, dll, api, bitness))
+                        recovered_apis.append((offset + self.load_offset, api_address, dll, api, bitness, self._isImportTableEntry(offset)))
             results[api_map_name] = recovered_apis
         return results
 
@@ -152,7 +174,7 @@ class ApiScout(object):
             if len(results[api_map_name]):
                 result = results[api_map_name]
                 output += "Results for API DB: {}\n".format(api_map_name)
-                output += "{:3}: {:10}; {:18}; {:30}; {:60}\n".format("idx", "offset", "VA", "DLL", "API")
+                output += "{:3}: {:10}; {:18}; {:3}; {:40}; {:60}\n".format("idx", "offset", "VA", "IT?", "DLL", "API")
                 prev_offset = 0
                 dlls = set()
                 apis = set()
@@ -160,10 +182,14 @@ class ApiScout(object):
                     if prev_offset and entry[0] > prev_offset + 16:
                         output += "-" * 129 + "\n"
                     dll_name = "{} ({}bit)".format(entry[2], entry[4])
-                    if entry[4] == 32:
-                        output += "{:3}: 0x{:08x};         0x{:08x}; {:30}; {:60}\n".format(index + 1, self.base_address + entry[0], entry[1], dll_name, entry[3])
+                    if entry[5] is None:
+                        is_in_import_table = "err"
                     else:
-                        output += "{:3}: 0x{:08x}; 0x{:016x}; {:30}; {:60}\n".format(index + 1, self.base_address + entry[0], entry[1], dll_name, entry[3])
+                        is_in_import_table = "yes" if entry[5] else "no"
+                    if entry[4] == 32:
+                        output += "{:3}: 0x{:08x};         0x{:08x}; {:3}; {:40}; {:60}\n".format(index + 1, self.base_address + entry[0], entry[1], is_in_import_table, dll_name, entry[3])
+                    else:
+                        output += "{:3}: 0x{:08x}; 0x{:016x}; {:3}; {:40}; {:60}\n".format(index + 1, self.base_address + entry[0], entry[1], is_in_import_table, dll_name, entry[3])
                     prev_offset = entry[0]
                     dlls.add(entry[2])
                     apis.add(entry[3])
@@ -171,3 +197,4 @@ class ApiScout(object):
             else:
                 output += "No results for API map: {}\n".format(api_map_name)
         return output
+
