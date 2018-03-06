@@ -51,6 +51,7 @@ def main():
     parser = argparse.ArgumentParser(description='Demo: Use apiscout with a prepared api database (created using DatabaseBuilder.py) to crawl a dump for imports and render the results.')
     parser.add_argument('-f', '--filter', type=int, default=0, help='Filter out APIs that do not have a neighbour within N bytes.')
     parser.add_argument('-i', '--ignore_aslr', action='store_true', help='Do not apply the per-module ASLR offset potentially contained in a API DB file.')
+    parser.add_argument('-c', '--collection_file', type=str, default='', help='Optionally match the output against a WinApi1024 vector collection file.')
     parser.add_argument('binary_path', type=str, default='', help='Path to the memory dump to crawl.')
     parser.add_argument('db_path', type=str, nargs='*', help='Path to the DB(s). If no argument is given, use all files found in "./dbs"')
 
@@ -79,6 +80,8 @@ def main():
         filtered_results = scout.filter(results, 0, 0, args.filter)
         print(scout.render(filtered_results))
         print(scout.renderVectorResults(filtered_results))
+        if args.collection_file:
+            print(scout.renderResultsVsCollection(filtered_results, args.collection_file))
     else:
         parser.print_help()
 
