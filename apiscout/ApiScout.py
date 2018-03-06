@@ -29,6 +29,7 @@ import operator
 import logging
 
 from .ImportTableLoader import ImportTableLoader
+from .ApiVector import ApiVector
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)-15s %(message)s")
 LOG = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ class ApiScout(object):
         self._import_table = None
         if db_filepath:
             self.loadDbFile(db_filepath)
+        self._apivector = ApiVector()
 
     def loadDbFile(self, db_filepath):
         api_db = {}
@@ -75,6 +77,9 @@ class ApiScout(object):
             LOG.debug("loaded %d exports", num_apis_loaded)
         LOG.info("loaded %d exports from %d DLLs (%s).", num_apis_loaded, len(api_db["dlls"]), api_db["os_name"])
         self.api_maps[api_db["os_name"]] = api_map
+        
+    def loadWinApi1024(self, winapi1024_filepath):
+        self._apivector = ApiVector(winapi1024_filepath)
 
     def _resolveApiByAddress(self, api_map_name, absolute_addr):
         api_entry = ("", "", "")
@@ -168,6 +173,9 @@ class ApiScout(object):
             filtered_result[key] = filtered_list
         return filtered_result
 
+    def getWinApi1024Vectors(self, results):
+        return self._apivector.getApiVectors(results)
+
     def render(self, results):
         output = ""
         for api_map_name in results:
@@ -197,4 +205,11 @@ class ApiScout(object):
             else:
                 output += "No results for API map: {}\n".format(api_map_name)
         return output
+        
+    def renderVectorResults(self, results):
+        api_vectors = self.getWinApi1024Vectors(results)
+        print("WinApi1024 Vector Results:")
+        for api_map_name, result in sorted(api_vectors.items()):
+            print("{}: {} / {} ({:5.2f}%) APIs covered in WinApi1024 vector.".format(api_map_name, result["in_api_vector"], result["num_unique_apis"], result["percentage"]))
+            print("    Vector: {}".format(result["vector"]))
 

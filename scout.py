@@ -34,10 +34,18 @@ LOG = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)-15s %(message)s")
 
 
+def get_this_dir():
+    return os.path.abspath(os.path.join(os.path.dirname(__file__)))
+
+
 def get_all_db_files():
-    this_dir = os.path.abspath(os.path.join(os.path.dirname(__file__)))
-    db_dir = this_dir + os.sep + "dbs" + os.sep
+    db_dir = get_this_dir() + os.sep + "dbs" + os.sep
     return [db_dir + fn for fn in os.listdir(db_dir)]
+
+
+def get_winapi1024_path():
+    return get_this_dir() + os.sep + "data" + os.sep + "winapi1024v1.txt"
+
 
 def main():
     parser = argparse.ArgumentParser(description='Demo: Use apiscout with a prepared api database (created using DatabaseBuilder.py) to crawl a dump for imports and render the results.')
@@ -52,14 +60,17 @@ def main():
         if os.path.isfile(args.binary_path):
             with open(args.binary_path, "rb") as f_binary:
                 binary = f_binary.read()
-        if not args.db_path:
-            args.db_path = get_all_db_files()
         scout = ApiScout()
         # override potential ASLR offsets that are stored in the API DB files.
         scout.ignoreAslrOffsets(args.ignore_aslr)
         # load DB file
+        if not args.db_path:
+            args.db_path = get_all_db_files()
         for db_path in args.db_path:
             scout.loadDbFile(db_path)
+        # load WinApi1024 vector
+        scout.loadWinApi1024(get_winapi1024_path())
+        # scout the binary
         print("Using \n  {}\nto analyze\n  {}.".format("\n  ".join(args.db_path), args.binary_path))
         num_apis_loaded = scout.getNumApisLoaded()
         filter_info = " - neighbour filter: 0x%x" % args.filter if args.filter else ""
@@ -67,6 +78,7 @@ def main():
         results = scout.crawl(binary)
         filtered_results = scout.filter(results, 0, 0, args.filter)
         print(scout.render(filtered_results))
+        print(scout.renderVectorResults(filtered_results))
     else:
         parser.print_help()
 
