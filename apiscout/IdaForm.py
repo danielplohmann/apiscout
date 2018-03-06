@@ -30,6 +30,8 @@ class ApiDbChooser(Choose2):
     def populate(self, api_db_folder):
         api_dbs = []
         for filename in os.listdir(api_db_folder):
+            if not filename.endswith(".json"):
+                continue
             db_data = {}
             with open(api_db_folder + os.sep + filename, "r") as f_api_file:
                 db_data = json.loads(f_api_file.read())

@@ -35,12 +35,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)-15s %(message)s")
 LOG = logging.getLogger(__name__)
 
 
-
 class ApiVector(object):
 
     def __init__(self, winapi1024_filepath=None):
         self._winapi1024 = self._loadWinApi1024(winapi1024_filepath)
         self._dllapi_only = list(zip(map(itemgetter(0), self._winapi1024), map(itemgetter(1), self._winapi1024)))
+        self._vector_ranks_only = [entry[3] for entry in self._winapi1024]
         self._base64chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz@}]^+-*/?,._"
         self._bin2base64 = {"{:06b}".format(i): base64char for i, base64char in enumerate(self._base64chars)}
         self._base642bin = {v: k for k, v in self._bin2base64.items()}
@@ -53,7 +53,7 @@ class ApiVector(object):
                     for line in infile.readlines():
                         functionality = line.split(";")[0]
                         dll, function = line.split(";")[2].strip().split("!")
-                        rank = line.split(";")[3]
+                        rank = int(line.split(";")[3].strip())
                         winapi1024.append((dll, function, functionality, rank))
                 if len(winapi1024) != 1024:
                     raise ValueError("WinApi1024 file contained {} instead of 1024 api definitions.".format(len(self._winapi1024)))
@@ -62,6 +62,23 @@ class ApiVector(object):
                 raise ValueError
         return winapi1024
         
+    def _loadCollectionData(self, collection_filepath):
+        vectors_by_family = {}
+        if collection_filepath:
+            if os.path.isfile(collection_filepath):
+                with open(collection_filepath, "r") as infile:
+                    for line in infile.readlines():
+                        family = line.split(";")[0]
+                        sample_path = line.split(";")[1].strip()
+                        compressed_api_vector = line.split(";")[2].strip()
+                        if not family in vectors_by_family:
+                            vectors_by_family[family] = {}
+                        vectors_by_family[family][sample_path] = compressed_api_vector
+            else:
+                LOG.error("Not a file: %s!", collection_filepath)
+                raise ValueError
+        return vectors_by_family
+   
     def getApiVectors(self, results):
         unique_results = self._get_uniquified_results(results)
         api_vectors = self._vectorize(results)
@@ -83,8 +100,44 @@ class ApiVector(object):
 
     def decompress(self, compressed_vector):
         decompressed_b64 = "".join(self._decompress_get(compressed_vector))
-        vectorized = "".join(self._base642bin[c] for c in base64)[:-2]
-        return vectorized
+        vectorized = "".join(self._base642bin[c] for c in decompressed_b64)[:-2]
+        as_binary = [int(i) for i in vectorized]
+        return as_binary
+        
+    def matchVectors(self, vector_a, vector_b):
+        # ensure binary representation and apply weights
+        if len(vector_a) != 1024:
+            vector_a = self.decompress(vector_a)
+        vector_a = self._apply_weights(vector_a)
+        if len(vector_b) != 1024:
+            vector_b = self.decompress(vector_b)
+        vector_b = self._apply_weights(vector_b)
+        # calculate Jaccard index
+        intersection_score = 0
+        union_score = 0
+        jaccard_score = 0
+        for offset in range(len(vector_a)):
+            intersection_score += vector_a[offset] & vector_b[offset]
+            union_score += vector_a[offset] | vector_b[offset]
+        if union_score > 0:
+            jaccard_index = 1.0 * intersection_score / union_score
+        return jaccard_index
+        
+    def matchVectorCollection(self, vector, collection_filepath):
+        collection_data = self._loadCollectionData(collection_filepath)
+        results = {
+            "vector": vector,
+            "collection_filepath": collection_filepath,
+            "families_in_collection": len(collection_data),
+            "vectors_in_collection": sum([len(samples) for family, samples in collection_data.items()])
+        }
+        vector_collection_results = []
+        decompressed_vector = self.decompress(vector)
+        for family, samples in collection_data.items():
+            for sample, sample_vector in samples.items():
+                vector_collection_results.append((family, sample, self.matchVectors(decompressed_vector, sample_vector)))
+        results["match_results"] = sorted(vector_collection_results, key=lambda tup: tup[2], reverse=True)
+        return results
 
     def _chunks(self, l, n):
         for i in range(0, len(l), n):
@@ -120,4 +173,7 @@ class ApiVector(object):
         if api_name.endswith("A") or api_name.endswith("W"):
             api_name = api_name[:-1]
         return dll_name, api_name
+
+    def _apply_weights(self, vector):
+        return [f1 * f2 for f1, f2 in zip(vector, self._vector_ranks_only)]
 
