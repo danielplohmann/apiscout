@@ -1,6 +1,7 @@
 ########################################################################
 # Copyright (c) 2018
 # Daniel Plohmann <daniel.plohmann<at>mailbox<dot>org>
+# Steffen Enders <steffen<at>enders<dot>nrw>
 # All rights reserved.
 ########################################################################
 #
@@ -26,10 +27,13 @@ import struct
 import os
 import json
 import logging
+import re
 from operator import itemgetter
+from itertools import groupby
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)-15s %(message)s")
 LOG = logging.getLogger(__name__)
+
 
 
 class ApiVector(object):
@@ -37,6 +41,9 @@ class ApiVector(object):
     def __init__(self, winapi1024_filepath=None):
         self._winapi1024 = self._loadWinApi1024(winapi1024_filepath)
         self._dllapi_only = list(zip(map(itemgetter(0), self._winapi1024), map(itemgetter(1), self._winapi1024)))
+        self._base64chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz@}]^+-*/?,._"
+        self._bin2base64 = {"{:06b}".format(i): base64char for i, base64char in enumerate(self._base64chars)}
+        self._base642bin = {v: k for k, v in self._bin2base64.items()}
 
     def _loadWinApi1024(self, winapi1024_filepath):
         winapi1024 = []
@@ -62,20 +69,44 @@ class ApiVector(object):
         for api_map_name in unique_results:
             percentage = 100.0 * sum(api_vectors[api_map_name]) / len(unique_results[api_map_name]) if len(unique_results[api_map_name]) else 0
             coverage[api_map_name] = {
-                "vector": api_vectors[api_map_name],
+                "vector": self.compress(api_vectors[api_map_name]),
                 "num_unique_apis": len(unique_results[api_map_name]), 
                 "in_api_vector": sum(api_vectors[api_map_name]), 
                 "percentage": percentage
             }
         return coverage
+
+    def compress(self, api_vector):
+        uncompressed_b64 = "".join(self._bin2base64[chunk] for chunk in self._chunks("".join(["%d" % bit for bit in api_vector]) + "00", 6))
+        compressed_b64 = "".join(self._compress_rep(c, r) for c, r in groupby(uncompressed_b64))
+        return compressed_b64
+
+    def decompress(self, compressed_vector):
+        decompressed_b64 = "".join(self._decompress_get(compressed_vector))
+        vectorized = "".join(self._base642bin[c] for c in base64)[:-2]
+        return vectorized
+
+    def _chunks(self, l, n):
+        for i in range(0, len(l), n):
+            yield l[i:i + n]
+
+    def _compress_rep(self, char, reps):
+        size = len(list(reps))
+        if size <= 2: return char * size
+        return "{}{:d}".format(char, size)
         
+    def _decompress_get(self, data):
+        for match in re.finditer(r"(?P<char>.)((?P<count>\d+))?", data):
+            if not match.group("count"): yield match.group("char")
+            else: yield match.group("char") * int(match.group("count"))
+
     def _vectorize(self, results):
         unique_results = self._get_uniquified_results(results)
         vectors = {}
         for api_map_name, unique_results in unique_results.items():
             vectors[api_map_name] = [1 if entry in unique_results else 0 for entry in self._dllapi_only]
         return vectors
-        
+
     def _get_uniquified_results(self, results):
         uniquified = {}
         for api_map_name, map_results in results.items():
