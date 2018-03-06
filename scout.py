@@ -40,7 +40,7 @@ def get_this_dir():
 
 def get_all_db_files():
     db_dir = get_this_dir() + os.sep + "dbs" + os.sep
-    return [db_dir + fn for fn in os.listdir(db_dir)]
+    return [db_dir + fn for fn in os.listdir(db_dir) if fn.endswith(".json")]
 
 
 def get_winapi1024_path():

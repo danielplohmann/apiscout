@@ -1,6 +1,7 @@
 ########################################################################
-# Copyright (c) 2017
+# Copyright (c) 2018
 # Daniel Plohmann <daniel.plohmann<at>mailbox<dot>org>
+# Steffen Enders <steffen<at>enders<dot>nrw>
 # All rights reserved.
 ########################################################################
 #
@@ -175,6 +176,12 @@ class ApiScout(object):
 
     def getWinApi1024Vectors(self, results):
         return self._apivector.getApiVectors(results)
+        
+    def matchVectors(self, vector_a, vector_b):
+        return self._apivector.matchVectors(vector_a, vector_b)
+        
+    def matchVectorCollection(self, vector, collection_path):
+        return self._apivector.matchVectorCollection(vector, collection_path)
 
     def render(self, results):
         output = ""
@@ -212,4 +219,30 @@ class ApiScout(object):
         for api_map_name, result in sorted(api_vectors.items()):
             print("{}: {} / {} ({:5.2f}%) APIs covered in WinApi1024 vector.".format(api_map_name, result["in_api_vector"], result["num_unique_apis"], result["percentage"]))
             print("    Vector: {}".format(result["vector"]))
+
+    def renderVectorCollectionResults(self, results, max_results=5):
+        print("WinApi1024 Vector vs Collection Results:")
+        print("    Vector: {}".format(results["vector"]))
+        print("    Collection: {} ({} families, {} vectors)".format(results["collection_filepath"], results["families_in_collection"], results["vectors_in_collection"]))
+        family_width = max([len(entry[0]) for entry in results["match_results"]])
+        sample_width = max([len(entry[1]) for entry in results["match_results"]])
+        print("-" * (family_width + sample_width + 5 + 6))
+        print("Top {} family matches".format(max_results))
+        num_results = 0
+        last_family = ""
+        for result in results["match_results"]:
+            if num_results > max_results:
+                break
+            if result[0] != last_family:
+                print("{:{fw}} - {:{sw}} - {:.3}".format(result[0], result[1], result[2], fw=family_width, sw=sample_width))
+                last_family = result[0]
+                num_results += 1
+        print("-" * (family_width + sample_width + 5 + 6))
+        print("Top {} individual matches".format(max_results))
+        num_results = 0
+        for result in results["match_results"]:
+            if num_results > max_results:
+                break
+            print("{:{fw}} - {:{sw}} - {:.3}".format(result[0], result[1], result[2], fw=family_width, sw=sample_width))
+            num_results += 1
 
