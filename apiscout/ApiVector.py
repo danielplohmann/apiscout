@@ -78,6 +78,9 @@ class ApiVector(object):
                 LOG.error("Not a file: %s!", collection_filepath)
                 raise ValueError
         return vectors_by_family
+        
+    def getWinApi1024(self):
+        return self._winapi1024
    
     def getApiVectors(self, results):
         unique_results = self._get_uniquified_results(results)

@@ -1,0 +1,15 @@
+td.api-cell {
+    position: relative;
+}
+td.api-cell:after {
+    content: '';
+    display: block;
+    margin-top: 100%;
+}
+td.api-cell .content {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    right: 0;
+}
