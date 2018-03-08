@@ -118,7 +118,7 @@ class ApiVector(object):
         # calculate Jaccard index
         intersection_score = 0
         union_score = 0
-        jaccard_score = 0
+        jaccard_index = 0
         for offset in range(len(vector_a)):
             intersection_score += vector_a[offset] & vector_b[offset]
             union_score += vector_a[offset] | vector_b[offset]
@@ -166,7 +166,7 @@ class ApiVector(object):
     def _get_uniquified_results(self, results):
         uniquified = {}
         for api_map_name, map_results in results.items():
-            uniquified[api_map_name] = set(self._uniquify_api_name(t[2].split("_")[0], t[3]) for t in map_results)
+            uniquified[api_map_name] = set(self._uniquify_api_name("_".join(t[2].split("_")[:-1]), t[3]) for t in map_results)
         return uniquified
 
     def _uniquify_api_name(self, dll_name, api_name):
