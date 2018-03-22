@@ -70,7 +70,7 @@ class ApiVector(object):
                     for line in infile.readlines():
                         family = line.split(";")[0]
                         sample_path = line.split(";")[1].strip()
-                        compressed_api_vector = line.split(";")[2].strip()
+                        compressed_api_vector = line.split(";")[4].strip()
                         if not family in vectors_by_family:
                             vectors_by_family[family] = {}
                         vectors_by_family[family][sample_path] = compressed_api_vector

@@ -182,6 +182,9 @@ class ApiScout(object):
         
     def matchVectorCollection(self, vector, collection_path):
         return self._apivector.matchVectorCollection(vector, collection_path)
+        
+    def getPrimaryVector(self, api_vectors):
+        return sorted(api_vectors.items(), key=lambda x: x[1]["percentage"])[-1]
 
     def render(self, results):
         output = ""
@@ -224,7 +227,7 @@ class ApiScout(object):
     def renderResultsVsCollection(self, results, collection_file):
         # find primary vector
         api_vectors = self.getWinApi1024Vectors(results)
-        primary_vector = sorted(api_vectors.items(), key=lambda x: x[1]["percentage"])[-1]
+        primary_vector = self.getPrimaryVector(api_vectors)
         output = "Using resulting Vector from DB \"{}\" for matching...\n".format(primary_vector[0])
         collection_result = self.matchVectorCollection(primary_vector[1]["vector"], collection_file)
         output += self.renderVectorCollectionResults(collection_result)
