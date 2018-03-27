@@ -26,6 +26,7 @@
 import argparse
 import os
 import sys
+import re
 import logging
 
 from apiscout.ApiScout import ApiScout
@@ -47,11 +48,22 @@ def get_winapi1024_path():
     return get_this_dir() + os.sep + "data" + os.sep + "winapi1024v1.txt"
 
 
+def get_base_addr(args):
+    if args.base_addr:
+        return int(args.base_addr, 16) if args.base_addr.startswith("0x") else int(args.base_addr)
+    # try to infer from filename:
+    baddr_match = re.search(re.compile("0x(?P<base_addr>[0-9a-fA-F]{8,16})$"), args.binary_path)
+    if baddr_match:
+        return int(baddr_match.group("base_addr"), 16)
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description='Demo: Use apiscout with a prepared api database (created using DatabaseBuilder.py) to crawl a dump for imports and render the results.')
     parser.add_argument('-f', '--filter', type=int, default=0, help='Filter out APIs that do not have a neighbour within N bytes.')
     parser.add_argument('-i', '--ignore_aslr', action='store_true', help='Do not apply the per-module ASLR offset potentially contained in a API DB file.')
     parser.add_argument('-c', '--collection_file', type=str, default='', help='Optionally match the output against a WinApi1024 vector collection file.')
+    parser.add_argument('-b', '--base_addr', type=str, default='', help='Set base address to given value (int or 0x-hex format).')
     parser.add_argument('binary_path', type=str, default='', help='Path to the memory dump to crawl.')
     parser.add_argument('db_path', type=str, nargs='*', help='Path to the DB(s). If no argument is given, use all files found in "./dbs"')
 
@@ -62,6 +74,9 @@ def main():
             with open(args.binary_path, "rb") as f_binary:
                 binary = f_binary.read()
         scout = ApiScout()
+        base_addr = get_base_addr(args)
+        print("Using base adress 0x{:x} to infer reference counts.".format(base_addr))
+        scout.setBaseAddress(base_addr)
         # override potential ASLR offsets that are stored in the API DB files.
         scout.ignoreAslrOffsets(args.ignore_aslr)
         # load DB file
