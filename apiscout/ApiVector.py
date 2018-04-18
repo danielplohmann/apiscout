@@ -28,6 +28,7 @@ import os
 import json
 import logging
 import re
+import math
 from operator import itemgetter
 from itertools import groupby
 
@@ -40,7 +41,12 @@ class ApiVector(object):
     def __init__(self, winapi1024_filepath=None):
         self._winapi1024 = self._loadWinApi1024(winapi1024_filepath)
         self._dllapi_only = list(zip(map(itemgetter(0), self._winapi1024), map(itemgetter(1), self._winapi1024)))
+        # linear
         self._vector_ranks_only = [entry[3] for entry in self._winapi1024]
+        # equal
+        self._vector_ranks_only = [1 for entry in self._winapi1024]
+        # sigmoid
+        # self._vector_ranks_only = [int(100 * round((1 + math.tanh(3.0 * (rank - 512) / 1024)) / 2, 2)) for rank in self._vector_ranks_only]
         self._base64chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz@}]^+-*/?,._"
         self._bin2base64 = {"{:06b}".format(i): base64char for i, base64char in enumerate(self._base64chars)}
         self._base642bin = {v: k for k, v in self._bin2base64.items()}
@@ -95,6 +101,42 @@ class ApiVector(object):
                 "percentage": percentage
             }
         return coverage
+
+    def getApiVectorFromApiList(self, api_list):
+        scout_format = {
+            "input_list": []
+        }
+        for index, list_entry in enumerate(api_list):
+            scout_list_entry = [
+                0,  # unknown offset
+                0,  # unknown api_address
+                list_entry.split("!")[0], 
+                list_entry.split("!")[1], 
+                index + 1,  # IAT offset
+                1  # ref count
+            ]
+            scout_format["input_list"].append(scout_list_entry)
+        return self.getApiVectors(scout_format)
+        
+    def getApiVectorFromApiDictionary(self, api_dict):
+        scout_format = {
+            "input_list": []
+        }
+        index = 0
+        for dll_entry in api_dict:
+            for api_entry in api_dict[dll_entry]:
+                scout_list_entry = [
+                    0,  # unknown offset
+                    0,  # unknown api_address
+                    dll_entry, 
+                    api_entry, 
+                    index + 1,  # IAT offset
+                    1  # ref count
+                ]
+                scout_format["input_list"].append(scout_list_entry)
+                index += 1
+        return self.getApiVectors(scout_format)
+        
 
     def compress(self, api_vector):
         uncompressed_b64 = "".join(self._bin2base64[chunk] for chunk in self._chunks("".join(["%d" % bit for bit in api_vector]) + "00", 6))
