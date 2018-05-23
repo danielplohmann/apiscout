@@ -842,6 +842,7 @@ execution,thread,kernel32.dll!GetThreadSelectorEntry
 execution,thread,kernel32.dll!GetThreadTimes
 execution,thread,kernel32.dll!GetThreadUILanguage
 execution,thread,kernel32.dll!OpenThread
+execution,thread,kernel32.dll!QueueUserAPC
 execution,thread,kernel32.dll!ResumeThread
 execution,thread,kernel32.dll!SetThreadAffinityMask
 execution,thread,kernel32.dll!SetThreadContext
@@ -4400,7 +4401,6 @@ system,user,kernel32.dll!GetUserDefaultLCID
 system,user,kernel32.dll!GetUserDefaultUILanguage
 system,user,kernel32.dll!GetUserGeoID
 system,user,kernel32.dll!OpenProfileUserMapping
-system,user,kernel32.dll!QueueUserAPC
 system,user,kernel32.dll!QueueUserWorkItem
 system,user,kernel32.dll!WritePrivateProfileSection
 system,user,kernel32.dll!WriteProfileString
