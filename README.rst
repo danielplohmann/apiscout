@@ -1,16 +1,19 @@
 ApiScout
 ========
 
-This project aims at simplifying Windows API import recovery on arbitrary memory dumps.
+This project aims at simplifying Windows API import recovery.
+As input, arbitrary memory dumps for a known environment can be processed (a reference DB has to be built first, using apiscout/db_builder).
+The output is an ordered list of identified Windows API references with some meta information, and a ApiVector fingerprint.
 
-* scout.py should give a good outline on how to work with the library.
-* ida_scout.py is a convenience GUI wrapper for use in IDA Pro.
-* match.py demonstrates how WinApi1024 vectors can be matched against each other.
-* export.py can be used to generate ApiQR diagrams that visualize WinApi1024 vectors.
+* scout.py -- should give a good outline on how to work with the library.
+* ida_scout.py -- is a convenience GUI wrapper for use in IDA Pro.
+* match.py -- demonstrates how ApiVectors can be matched against each other and collections of fingerprints.
+* collect.py -- builds a database of WinAPI fingerprints (ApiVectors) that can be used for matching.
+* export.py -- generates ApiQR diagrams that visualize ApiVectors.
 
-Code should be fully compatible with Python 2 and 3.
+The code should be fully compatible with Python 2 and 3.
 There is a blog post describing ApiScout in more detail: http://byte-atlas.blogspot.com/2017/04/apiscout.html.
-Another blog post explaining how ApiVectors are stored: https://byte-atlas.blogspot.com/2018/04/apivectors.html.
+Also, another blog post explaining how ApiVectors are constructed and stored: https://byte-atlas.blogspot.com/2018/04/apivectors.html.
 
 Version History
 ---------------
