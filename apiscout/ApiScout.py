@@ -60,6 +60,7 @@ class ApiScout(object):
             LOG.error("Not a file: %s!", db_filepath)
             raise ValueError
         num_apis_loaded = 0
+        num_collisions = 0
         api_map = {}
         for dll_entry in api_db["dlls"]:
             LOG.debug("  building address map for: %s", dll_entry)
@@ -75,9 +76,12 @@ class ApiScout(object):
                 bitness = api_db["dlls"][dll_entry]["bitness"]
                 self.has_64bit |= bitness == 64
                 base_address = api_db["dlls"][dll_entry]["base_address"]
-                api_map[base_address + export["address"] - aslr_offset] = (dll_name, api_name, bitness)
+                virtual_address = base_address + export["address"] - aslr_offset
+                if virtual_address in api_map and (api_map[virtual_address][0].lower() != dll_name.lower()):
+                    num_collisions += 1
+                api_map[virtual_address] = (dll_name, api_name, bitness)
             LOG.debug("loaded %d exports", num_apis_loaded)
-        LOG.info("loaded %d exports from %d DLLs (%s).", num_apis_loaded, len(api_db["dlls"]), api_db["os_name"])
+        LOG.info("loaded %d exports from %d DLLs (%s) with %d potential collisions.", num_apis_loaded, len(api_db["dlls"]), api_db["os_name"], num_collisions)
         self.api_maps[api_db["os_name"]] = api_map
 
     def loadWinApi1024(self, winapi1024_filepath):
@@ -250,6 +254,7 @@ class ApiScout(object):
                 prev_offset = 0
                 dlls = set()
                 apis = set()
+                num_references = 0
                 for index, entry in enumerate(result):
                     if prev_offset and entry[0] > prev_offset + 16:
                         output += "-" * 129 + "\n"
@@ -262,10 +267,11 @@ class ApiScout(object):
                         output += "{:3}: 0x{:08x};         0x{:08x}; {:3}; {:4}; {:40}; {:60}\n".format(index + 1, self.base_address + entry[0], entry[1], is_in_import_table, entry[6], dll_name, entry[3])
                     else:
                         output += "{:3}: 0x{:08x}; 0x{:016x}; {:3}; {:4}; {:40}; {:60}\n".format(index + 1, self.base_address + entry[0], entry[1], is_in_import_table, entry[6], dll_name, entry[3])
+                    num_references += entry[6] - 1
                     prev_offset = entry[0]
                     dlls.add(entry[2])
                     apis.add(entry[3])
-                output += "DLLs: {}, APIs: {}\n".format(len(dlls), len(apis))
+                output += "DLLs: {}, APIs: {}, references: {}\n".format(len(dlls), len(apis), num_references)
             else:
                 output += "No results for API map: {}\n".format(api_map_name)
         return output
