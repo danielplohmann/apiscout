@@ -1,4 +1,4 @@
-apiscout
+ApiScout
 ========
 
 This project aims at simplifying Windows API import recovery on arbitrary memory dumps.
@@ -10,7 +10,18 @@ This project aims at simplifying Windows API import recovery on arbitrary memory
 
 Code should be fully compatible with Python 2 and 3.
 There is a blog post describing ApiScout in more detail: http://byte-atlas.blogspot.com/2017/04/apiscout.html.
+Another blog post explaining how ApiVectors are stored: https://byte-atlas.blogspot.com/2018/04/apivectors.html.
 
+Version History
+---------------
+
+2018-06-25: Fixed incompatibility with IDA Pro 7.0+ (THX to @nazywam!)
+2018-05-23: Added further semantic context groups (THX to Quoscient.io)
+2018-03-27: Heuristic estimation of Windows API reference counts added
+2018-03-06: ApiQR visualization of vector results (C-1024)
+2017-11-28: Added own import table parser to enrich result information
+2017-08-24: Multi-Segment support in IDA Pro (THX to @nazywam!)
+2017-05-31: Win7 SP1 64bit example import DB (malpedia-compatible)
 
 Credits
 =======
