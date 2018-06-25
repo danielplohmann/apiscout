@@ -60,3 +60,5 @@ ENV/
 .idea
 .vscode
 
+# other
+dbs/*.csv

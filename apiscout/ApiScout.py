@@ -1,6 +1,7 @@
 ########################################################################
-# Copyright (c) 2017
+# Copyright (c) 2018
 # Daniel Plohmann <daniel.plohmann<at>mailbox<dot>org>
+# Steffen Enders <steffen<at>enders<dot>nrw>
 # All rights reserved.
 ########################################################################
 #
@@ -22,11 +23,15 @@
 #
 ########################################################################
 
+import re
 import struct
 import os
 import json
 import operator
 import logging
+
+from .ImportTableLoader import ImportTableLoader
+from .ApiVector import ApiVector
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)-15s %(message)s")
 LOG = logging.getLogger(__name__)
@@ -41,8 +46,10 @@ class ApiScout(object):
         # Used to achieve coherent offset view in IdaScout
         self.load_offset = 0
         self.ignore_aslr_offsets = False
+        self._import_table = None
         if db_filepath:
             self.loadDbFile(db_filepath)
+        self._apivector = ApiVector()
 
     def loadDbFile(self, db_filepath):
         api_db = {}
@@ -73,6 +80,9 @@ class ApiScout(object):
         LOG.info("loaded %d exports from %d DLLs (%s).", num_apis_loaded, len(api_db["dlls"]), api_db["os_name"])
         self.api_maps[api_db["os_name"]] = api_map
 
+    def loadWinApi1024(self, winapi1024_filepath):
+        self._apivector = ApiVector(winapi1024_filepath)
+
     def _resolveApiByAddress(self, api_map_name, absolute_addr):
         api_entry = ("", "", "")
         api_map = self.api_maps[api_map_name]
@@ -89,7 +99,7 @@ class ApiScout(object):
 
     def setBaseAddress(self, address):
         self.base_address = address
-        
+
     def setLoadOffset(self, offset):
         self.load_offset = offset
 
@@ -109,21 +119,98 @@ class ApiScout(object):
             except struct.error:
                 break
 
+    def _parseImportTable(self, binary):
+        if self._import_table is None:
+            it_loader = ImportTableLoader(binary)
+            self._import_table = it_loader.get_import_table()
+
+    def _isImportTableEntry(self, offset):
+        if not self._import_table:
+            return None
+        else:
+            return offset in self._import_table
+
+    def _getBaseAddressFromPeHeader(self, binary):
+        if len(binary) >= 0x40:
+            pe_offset = struct.unpack("I", binary[0x3c:0x40])[0]
+            if pe_offset and len(binary) >= pe_offset + 0x38:
+                base_addr = struct.unpack("I", binary[pe_offset + 0x34:pe_offset + 0x38])[0]
+                LOG.debug("Changing base address from 0 to: 0x%x for inference of reference counts (based on PE header)", base_addr)
+                return base_addr
+        return 0
+
+    def _findBaseAddress(self, binary):
+        if self.base_address:
+            return self.base_address
+        # try to extract from PE header
+        return self._getBaseAddressFromPeHeader(binary)
+
+    def _updateCodeReferences(self, references, binary, base_address, offset):
+        # treat as 32bit code (absolute offsets)
+        addr_block = binary[offset + 2:offset + 2 + 4]
+        function_addr = struct.unpack("I", addr_block)[0] - base_address
+        if 0 < function_addr < len(binary):
+            if function_addr not in references[32]:
+                references[32][function_addr] = 0
+            references[32][function_addr] += 1
+        # treat as 64bit code (this means relative offsets for jmps/calls)
+        addr_block = binary[offset + 2:offset + 2 + 4]
+        function_addr = struct.unpack("i", addr_block)[0]
+        # we need to calculate RIP + offset + 7 (48 ff 25 ** ** ** **)
+        if binary[offset:offset + 2] == "\xFF\x25":
+            function_addr += offset + 7
+        elif binary[offset:offset + 2] == "\xFF\x15":
+            function_addr += offset + 6
+        if 0 < function_addr < len(binary):
+            if function_addr not in references[64]:
+                references[64][function_addr] = 0
+            references[64][function_addr] += 1
+
+    def _getCodeReferences(self, binary):
+        references = {32: {}, 64: {}}
+        base_address = self._findBaseAddress(binary)
+        # also check for "jmp dword ptr <offset>", as they sometimes point to local functions (i.e. non-API)
+        for match in re.finditer(b"\xFF\x25", binary):
+            self._updateCodeReferences(references, binary, base_address, match.start())
+        # also check for "call dword ptr <offset>", as they sometimes point to local functions (i.e. non-API)
+        for match in re.finditer(b"\xFF\x15", binary):
+            self._updateCodeReferences(references, binary, base_address, match.start())
+        return references
+
     def crawl(self, binary):
         results = {}
+        self._import_table = None
+        self._parseImportTable(binary)
+        self._isImportTableEntry(0)
+        references = self._getCodeReferences(binary)
         for api_map_name in self.api_maps:
             recovered_apis = []
             for offset, api_address in self.iterateAllDwords(binary):
                 dll, api, bitness = self._resolveApiByAddress(api_map_name, api_address)
                 if dll and api and bitness == 32:
-                    recovered_apis.append((offset + self.load_offset, api_address, dll, api, bitness))
+                    ref_count = 1 + references[32][offset] if offset in references[32] else 1
+                    recovered_apis.append((offset + self.load_offset, api_address, dll, api, bitness, self._isImportTableEntry(offset), ref_count))
             if self.has_64bit:
                 for offset, api_address in self.iterateAllQwords(binary):
                     dll, api, bitness = self._resolveApiByAddress(api_map_name, api_address)
                     if dll and api and bitness == 64:
-                        recovered_apis.append((offset + self.load_offset, api_address, dll, api, bitness))
+                        ref_count = 1 + references[64][offset] if offset in references[64] else 1
+                        recovered_apis.append((offset + self.load_offset, api_address, dll, api, bitness, self._isImportTableEntry(offset), ref_count))
             results[api_map_name] = recovered_apis
         return results
+
+    def _getFilteredList(self, distance, list_to_filter):
+        offsets_a = [item[0] for item in list_to_filter]
+        offsets_b = offsets_a[1:] + [0]
+        api_distances = list(map(operator.sub, offsets_b, offsets_a))
+        distance_filtered = []
+        for index, api_distance in enumerate(api_distances[:-1]):
+            if api_distance <= distance:
+                if list_to_filter[index] not in distance_filtered:
+                    distance_filtered.append(list_to_filter[index])
+                if list_to_filter[index + 1] not in distance_filtered:
+                    distance_filtered.append(list_to_filter[index + 1])
+        return distance_filtered
 
     def filter(self, result, from_addr, to_addr, distance):
         filtered_result = {}
@@ -137,19 +224,21 @@ class ApiScout(object):
                 if len(filtered_list) < 2:
                     filtered_list = []
                 else:
-                    offsets_a = [item[0] for item in filtered_list]
-                    offsets_b = offsets_a[1:] + [0]
-                    api_distances = list(map(operator.sub, offsets_b, offsets_a))
-                    distance_filtered = []
-                    for index, api_distance in enumerate(api_distances[:-1]):
-                        if api_distance <= distance:
-                            if filtered_list[index] not in distance_filtered:
-                                distance_filtered.append(filtered_list[index])
-                            if filtered_list[index + 1] not in distance_filtered:
-                                distance_filtered.append(filtered_list[index + 1])
-                    filtered_list = distance_filtered
+                    filtered_list = self._getFilteredList(distance, filtered_list)
             filtered_result[key] = filtered_list
         return filtered_result
+
+    def getWinApi1024Vectors(self, results):
+        return self._apivector.getApiVectors(results)
+
+    def matchVectors(self, vector_a, vector_b):
+        return self._apivector.matchVectors(vector_a, vector_b)
+
+    def matchVectorCollection(self, vector, collection_path):
+        return self._apivector.matchVectorCollection(vector, collection_path)
+
+    def getPrimaryVector(self, api_vectors):
+        return sorted(api_vectors.items(), key=lambda x: x[1]["percentage"])[-1]
 
     def render(self, results):
         output = ""
@@ -157,7 +246,7 @@ class ApiScout(object):
             if len(results[api_map_name]):
                 result = results[api_map_name]
                 output += "Results for API DB: {}\n".format(api_map_name)
-                output += "{:3}: {:10}; {:18}; {:30}; {:60}\n".format("idx", "offset", "VA", "DLL", "API")
+                output += "{:3}: {:10}; {:18}; {:3}; {:4};{:40}; {:60}\n".format("idx", "offset", "VA", "IT?", "#ref", "DLL", "API")
                 prev_offset = 0
                 dlls = set()
                 apis = set()
@@ -165,14 +254,62 @@ class ApiScout(object):
                     if prev_offset and entry[0] > prev_offset + 16:
                         output += "-" * 129 + "\n"
                     dll_name = "{} ({}bit)".format(entry[2], entry[4])
-                    if entry[4] == 32:
-                        output += "{:3}: 0x{:08x};         0x{:08x}; {:30}; {:60}\n".format(index + 1, self.base_address + entry[0], entry[1], dll_name, entry[3])
+                    if entry[5] is None:
+                        is_in_import_table = "err"
                     else:
-                        output += "{:3}: 0x{:08x}; 0x{:016x}; {:30}; {:60}\n".format(index + 1, self.base_address + entry[0], entry[1], dll_name, entry[3])
+                        is_in_import_table = "yes" if entry[5] else "no"
+                    if entry[4] == 32:
+                        output += "{:3}: 0x{:08x};         0x{:08x}; {:3}; {:4}; {:40}; {:60}\n".format(index + 1, self.base_address + entry[0], entry[1], is_in_import_table, entry[6], dll_name, entry[3])
+                    else:
+                        output += "{:3}: 0x{:08x}; 0x{:016x}; {:3}; {:4}; {:40}; {:60}\n".format(index + 1, self.base_address + entry[0], entry[1], is_in_import_table, entry[6], dll_name, entry[3])
                     prev_offset = entry[0]
                     dlls.add(entry[2])
                     apis.add(entry[3])
                 output += "DLLs: {}, APIs: {}\n".format(len(dlls), len(apis))
             else:
                 output += "No results for API map: {}\n".format(api_map_name)
+        return output
+
+    def renderVectorResults(self, results):
+        api_vectors = self.getWinApi1024Vectors(results)
+        output = "WinApi1024 Vector Results:\n"
+        for api_map_name, result in sorted(api_vectors.items()):
+            output += "{}: {} / {} ({:5.2f}%) APIs covered in WinApi1024 vector.\n".format(api_map_name, result["in_api_vector"], result["num_unique_apis"], result["percentage"])
+            output += "    Vector: {}\n".format(result["vector"])
+        return output
+
+    def renderResultsVsCollection(self, results, collection_file):
+        # find primary vector
+        api_vectors = self.getWinApi1024Vectors(results)
+        primary_vector = self.getPrimaryVector(api_vectors)
+        output = "Using resulting Vector from DB \"{}\" for matching...\n".format(primary_vector[0])
+        collection_result = self.matchVectorCollection(primary_vector[1]["vector"], collection_file)
+        output += self.renderVectorCollectionResults(collection_result)
+        return output
+
+    def renderVectorCollectionResults(self, results, max_results=5):
+        output = "WinApi1024 Vector vs Collection Results:\n"
+        output += "    Vector: {}\n".format(results["vector"])
+        output += "    Collection: {} ({} families, {} vectors)\n".format(results["collection_filepath"], results["families_in_collection"], results["vectors_in_collection"])
+        family_width = max([len(entry[0]) for entry in results["match_results"]])
+        sample_width = max([len(entry[1]) for entry in results["match_results"]])
+        output += "-" * (family_width + sample_width + 5 + 6) + "\n"
+        output += "Top {} family matches\n".format(max_results)
+        num_results = 0
+        seen_families = []
+        for result in results["match_results"]:
+            if num_results > max_results:
+                break
+            if result[0] not in seen_families:
+                output += "{:{fw}} - {:{sw}} - {:.3}\n".format(result[0], result[1], result[2], fw=family_width, sw=sample_width)
+                seen_families.append(result[0])
+                num_results += 1
+        output += "-" * (family_width + sample_width + 5 + 6) + "\n"
+        output += "Top {} individual matches\n".format(max_results)
+        num_results = 0
+        for result in results["match_results"]:
+            if num_results > max_results:
+                break
+            output += "{:{fw}} - {:{sw}} - {:.3}\n".format(result[0], result[1], result[2], fw=family_width, sw=sample_width)
+            num_results += 1
         return output
