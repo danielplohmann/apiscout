@@ -7,17 +7,22 @@ import json
 import os
 
 import idautils
-from idaapi import Form, Choose2
+import idaapi
+if idaapi.IDA_SDK_VERSION < 700:
+    from idaapi import Form
+    from idaapi import Choose2 as Choose
+else:
+    from idaapi import Form, Choose
 
 from ApiScout import ApiScout
 
 
-class ApiDbChooser(Choose2):
+class ApiDbChooser(Choose):
     """
     A simple chooser to be used as an embedded chooser
     """
     def __init__(self, title, api_db_folder, flags=0):
-        Choose2.__init__(self,
+        Choose.__init__(self,
                          title,
                          [["Filename", 25], ["OS Version", 20], ["ASLR Offset?", 8], ["DLLs", 6], ["APIs", 6]],
                          embedded=True, width=120, height=10, flags=flags)
@@ -58,7 +63,7 @@ class IdaApiScoutOptionsForm(Form):
     def __init__(self, api_db_folder):
         self.invert = False
         self.chosenValues = []
-        self.apiDbChooser = ApiDbChooser("ApiDBs", api_db_folder, flags=Choose2.CH_MULTI)
+        self.apiDbChooser = ApiDbChooser("ApiDBs", api_db_folder, flags=Choose.CH_MULTI)
         Form.__init__(self, r"""STARTITEM {id:rNormal}
 BUTTON YES* Run
 BUTTON CANCEL Cancel
@@ -89,12 +94,12 @@ or load a database from another location:
         return 1
 
 
-class ApiChooser(Choose2):
+class ApiChooser(Choose):
     """
     A simple chooser to be used as an embedded chooser
     """
     def __init__(self, title, api_results, flags=0):
-        Choose2.__init__(self,
+        Choose.__init__(self,
                          title,
                          [["#", 6], ["Offset", 14], ["API Address", 14], ["DLL", 20], ["API", 35]],
                          embedded=True, width=140, height=20, flags=flags)
@@ -145,7 +150,7 @@ class IdaApiScoutResultsForm(Form):
     def __init__(self, crawled_apis, from_addr=0, to_addr=0):
         self.invert = False
         self.chosenApis = []
-        self.apiChooser = ApiChooser("Apis", crawled_apis, flags=Choose2.CH_MULTI)
+        self.apiChooser = ApiChooser("Apis", crawled_apis, flags=Choose.CH_MULTI)
         Form.__init__(self, r"""STARTITEM {id:rNormal}
 BUTTON YES* Annotate
 BUTTON CANCEL Cancel
