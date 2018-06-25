@@ -2,8 +2,8 @@ ApiScout
 ========
 
 This project aims at simplifying Windows API import recovery.
-As input, arbitrary memory dumps for a known environment can be processed (a reference DB has to be built first, using apiscout/db_builder).
-The output is an ordered list of identified Windows API references with some meta information, and a ApiVector fingerprint.
+As input, arbitrary memory dumps for a known environment can be processed (please note: a reference DB has to be built first, using apiscout/db_builder).
+The output is an ordered list of identified Windows API references with some meta information, and an ApiVector fingerprint.
 
 * scout.py -- should give a good outline on how to work with the library.
 * ida_scout.py -- is a convenience GUI wrapper for use in IDA Pro.
@@ -24,7 +24,7 @@ Version History
 * 2018-03-06: ApiQR visualization of vector results (C-1024)
 * 2017-11-28: Added own import table parser to enrich result information
 * 2017-08-24: Multi-Segment support in IDA Pro (THX to @nazywam!)
-* 2017-05-31: Win7 SP1 64bit example import DB (malpedia-compatible)
+* 2017-05-31: Added Windows 7 SP1 64bit import DB (compatible to Malpedia)
 
 Credits
 =======
