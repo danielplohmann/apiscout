@@ -32,6 +32,7 @@ import math
 from operator import itemgetter
 from itertools import groupby
 
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)-15s %(message)s")
 LOG = logging.getLogger(__name__)
 
@@ -44,7 +45,7 @@ class ApiVector(object):
         # linear
         self._vector_ranks_only = [entry[3] for entry in self._winapi1024]
         # equal
-        self._vector_ranks_only = [1 for entry in self._winapi1024]
+        # self._vector_ranks_only = [1 for entry in self._winapi1024]
         # sigmoid
         # self._vector_ranks_only = [int(100 * round((1 + math.tanh(3.0 * (rank - 512) / 1024)) / 2, 2)) for rank in self._vector_ranks_only]
         self._base64chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz@}]^+-*/?,._"
@@ -137,6 +138,29 @@ class ApiVector(object):
                 index += 1
         return self.getApiVectors(scout_format)
         
+    def getDictionaryFromApiVector(self, vector):
+        if not isinstance(vector, list):
+            vector = self.decompress(vector)
+        api_dict = {}
+        for index, entry in enumerate(self._winapi1024):
+            if vector[index]:
+                if not entry[0] in api_dict:
+                    api_dict[entry[0]] = []
+                api_dict[entry[0]].append(entry[1])
+        return api_dict
+        
+    def getVectorConfidence(self, vector):
+        if not isinstance(vector, list):
+            vector = self.decompress(vector)
+        scores = []
+        for index, entry in enumerate(self._winapi1024):
+            if vector[index]:
+                scores.append(entry[3])
+        score = 0.0
+        if sum(vector):
+            # confidence is calculated based on APIs less common than top75 and total number of APIs in the vector
+            score = 100.0 * math.sqrt(1.0 * sum([1 for value in scores if value > 64]) / sum(vector)) * (min(sum(vector), 20) / 20)
+        return score
 
     def compress(self, api_vector):
         uncompressed_b64 = "".join(self._bin2base64[chunk] for chunk in self._chunks("".join(["%d" % bit for bit in api_vector]) + "00", 6))
@@ -172,6 +196,7 @@ class ApiVector(object):
         collection_data = self._loadCollectionData(collection_filepath)
         results = {
             "vector": vector,
+            "confidence": self.getVectorConfidence(vector),
             "collection_filepath": collection_filepath,
             "families_in_collection": len(collection_data),
             "vectors_in_collection": sum([len(samples) for family, samples in collection_data.items()])

@@ -281,7 +281,8 @@ class ApiScout(object):
         output = "WinApi1024 Vector Results:\n"
         for api_map_name, result in sorted(api_vectors.items()):
             output += "{}: {} / {} ({:5.2f}%) APIs covered in WinApi1024 vector.\n".format(api_map_name, result["in_api_vector"], result["num_unique_apis"], result["percentage"])
-            output += "    Vector: {}\n".format(result["vector"])
+            output += "    Vector:     {}\n".format(result["vector"])
+            output += "    Confidence: {}\n".format(self._apivector.getVectorConfidence(result["vector"]))
         return output
 
     def renderResultsVsCollection(self, results, collection_file):

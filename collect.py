@@ -78,8 +78,13 @@ def main():
             crawler.loadIgnoreList(args.update_path)
         file_list = get_file_list(args.root_path, args.path_require)
         logging.info("Located {} crawlable files for ApiScout, {}/{} can be ignored.".format(crawler.getNumberOfCrawlableFiles(file_list), crawler.getNumberOfIgnorableFiles(file_list), len(file_list)))
-        with Pool(cpu_count()) as pool:
-            fingerprints.extend(pool.map(crawler.getFingerprint, file_list))
+        if sys.version_info >= (3,):
+            with Pool(cpu_count()) as pool:
+                fingerprints.extend(pool.map(crawler.getFingerprint, file_list))
+        else:
+            logging.warn("Using Python2 disables support for parallel processing")
+            for filepath in file_list:
+                fingerprints.append(crawler.getFingerprint(filepath))
         if args.ignore_empty:
             empty_fingerprint = crawler.getEmptyFingerprint()
             fingerprints = [fp for fp in fingerprints if fp[-1] != empty_fingerprint]
