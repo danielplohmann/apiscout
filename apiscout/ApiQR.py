@@ -43,7 +43,8 @@ class ApiQR:
     context = None
 
     def __init__(self, winapi1024_filepath, vector=None):
-        self._apivector = ApiVector(winapi1024_filepath)
+        self._apivector = ApiVector(winapi1024_filepath, sort_vector=False)
+        self._apivector_path = winapi1024_filepath
         self.context = ApiQRContext(self._apivector.getWinApi1024())
         if vector is None:
             self.vector = self.context.empty_vector
@@ -52,16 +53,29 @@ class ApiQR:
         
     def setVector(self, vector):
         self.vector = self._apivector.decompress(vector)
-    
+
+    @property
+    def vector_unsorted(self):
+        result = [None] * len(self.vector)
+        with open(self._apivector_path, "r") as infile:
+            translation = {
+                new_index: entry[0]
+                for new_index, entry in enumerate(sorted(enumerate(infile.readlines()), key=lambda entry: int(entry[1].split(";")[3].strip()), reverse=True))
+            }
+        for index, entry in enumerate(self.vector):
+            result[translation[index]] = entry
+        return result
+
     def exportPng(self, destination_path, scale_factor=5):
-        colored_vector = list(map(self.__mapColor, self.vector, self.context.colors))
+        colored_vector = list(map(self.__mapColor, self.vector_unsorted, self.context.colors))
         scaled_vector = sum(([e] * 4 ** scale_factor for e in colored_vector), [])
         transformed_vector = np.int8(self.__vectorToHilbert(scaled_vector))
         image = Image.fromarray(transformed_vector, mode=self.context.colors_format)
         image.save(destination_path, format="PNG", compress_level=0)    
 
     def exportHtml(self, output_path, full=False):
-        hilbert_size = int(len(self.vector) ** 0.5)
+        vector = self.vector_unsorted
+        hilbert_size = int(len(vector) ** 0.5)
         result = "<table>"
         result += """\
         <style>
@@ -75,7 +89,7 @@ class ApiQR:
         for hilbert_row in self.__hilbertCurve(hilbert_size):
             result += "<tr>"
             for index in hilbert_row:
-                value, raw_color = self.vector[index], self.context.colors[index]
+                value, raw_color = vector[index], self.context.colors[index]
                 color = self.__mapColor(value, raw_color)
                 if color == self.context.colors_white: 
                     # result += '<td class="api-cell api-cell-white"></td>'
@@ -94,7 +108,7 @@ class ApiQR:
         this_path = os.path.abspath(os.path.join(os.path.dirname(__file__)))
         with open(os.sep.join([this_path, "..", "data", "html_frame.html"]), "r") as f_html:
             with open(os.sep.join([this_path, "..", "data", "html_style.css"]), "r") as f_css:
-                compressed_vector = self._apivector.compress(self.vector)
+                compressed_vector = self._apivector.compress(vector)
                 result = f_html.read().format(vector=compressed_vector, body=result, head="<style>\n{}\n</style>".format(f_css.read()))
         with open(output_path, "w") as f_out:
             f_out.write(result)
@@ -111,7 +125,7 @@ class ApiQR:
 
     @property
     def vector_hilbert(self):
-        return self.__vectorToHilbert(self.vector)
+        return self.__vectorToHilbert(self.vector_unsorted)
 
     def __vectorToHilbert(self, vector):
         element_size = 1
