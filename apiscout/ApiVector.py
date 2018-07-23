@@ -39,7 +39,8 @@ LOG = logging.getLogger(__name__)
 
 class ApiVector(object):
 
-    def __init__(self, winapi1024_filepath=None):
+    def __init__(self, winapi1024_filepath=None, sort_vector=True):
+        self._sort_vector = sort_vector
         self._winapi1024 = self._loadWinApi1024(winapi1024_filepath)
         self._dllapi_only = list(zip(map(itemgetter(0), self._winapi1024), map(itemgetter(1), self._winapi1024)))
         # linear
@@ -57,7 +58,7 @@ class ApiVector(object):
         if winapi1024_filepath:
             if os.path.isfile(winapi1024_filepath):
                 with open(winapi1024_filepath, "r") as infile:
-                    for line in infile.readlines():
+                    for line in sorted(infile.readlines(), key=lambda line: int(line.split(";")[3].strip()), reverse=True) if self._sort_vector else infile.readlines():
                         functionality = line.split(";")[0]
                         dll, function = line.split(";")[2].strip().split("!")
                         rank = int(line.split(";")[3].strip())
