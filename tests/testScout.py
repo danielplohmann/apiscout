@@ -28,7 +28,6 @@ import struct
 import os
 import unittest
 
-from .context import apiscout
 from apiscout.ApiScout import ApiScout
 
 LOG = logging.getLogger(__name__)
@@ -68,7 +67,7 @@ class ApiScoutTestSuite(unittest.TestCase):
         scout.api_maps["test_1"] = {0x1234: ("test.dll", "TestApi", 32)}
         scout.api_maps["test_2"] = {0x5678: ("test2.dll", "TestApi2", 64)}
         scout.has_64bit = True
-        results = {'test_2': [(36, 22136, 'test2.dll', 'TestApi2', 64)], 'test_1': [(16, 4660, 'test.dll', 'TestApi', 32)]}
+        results = {'test_2': [(36, 22136, 'test2.dll', 'TestApi2', 64, None, 1)], 'test_1': [(16, 4660, 'test.dll', 'TestApi', 32, None, 1)]}
         self.assertEqual(results, scout.crawl(test_binary))
 
     def testCrawlRealData(self):
@@ -79,7 +78,8 @@ class ApiScoutTestSuite(unittest.TestCase):
             test_binary = f_in.read()
         db_path = os.path.join(this_dir, "minimal_db.json")
         scout = ApiScout(db_path)
-        results = {u'Windows 7': [(4, 2105895504, u'KernelBase.dll', u'InterlockedIncrement', 32), (12, 8792746496016, u'KernelBase.dll', u'WaitForSingleObjectEx', 64)]}
+        print scout.crawl(test_binary)
+        results = {u'Windows 7': [(256, 2105895504, u'KernelBase.dll', u'InterlockedIncrement', 32, None, 1), (264, 8792746496016, u'KernelBase.dll', u'WaitForSingleObjectEx', 64, None, 1)]}
         self.assertEqual(results, scout.crawl(test_binary))
 
     def testFilter(self):
@@ -102,14 +102,15 @@ class ApiScoutTestSuite(unittest.TestCase):
 
     def testRender(self):
         scout = ApiScout()
-        results = {'test_1': [(16, 0x1032, 'test32.dll', 'TestApi32', 32), (40, 0x1064, 'test64.dll', 'TestApi64', 64)]}
+        results = {'test_1': [(16, 0x1032, 'test32.dll', 'TestApi32', 32, None, 1), (40, 0x1064, 'test64.dll', 'TestApi64', 64, None, 1)]}
         expected_hits = ['Results for API DB: test_1',
-                         'idx: offset    ; VA                ; DLL                           ; API',
-                         '  1: 0x00000010;         0x00001032; test32.dll (32bit)            ; TestApi32',
+                         'idx: offset    ; VA                ; IT?; #ref;DLL                                     ; API',
+                         '  1: 0x00000010;         0x00001032; err;    1; test32.dll (32bit)                      ; TestApi32',
                          '---------------------------------------------------------------------------------------------------------------------------------',
-                         '  2: 0x00000028; 0x0000000000001064; test64.dll (64bit)            ; TestApi64',
+                         '  2: 0x00000028; 0x0000000000001064; err;    1; test64.dll (64bit)                      ; TestApi64',
                          'DLLs: 2, APIs: 2']
         rendered = scout.render(results)
+        print rendered
         for hit in expected_hits:
             self.assertTrue(hit in rendered)
         expected_no_result = "No results for API map: test_2\n"

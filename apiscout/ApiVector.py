@@ -106,23 +106,32 @@ class ApiVector(object):
 
     def getApiVectorFromApiList(self, api_list):
         scout_format = {
-            "input_list": []
+            "user_list": []
         }
         for index, list_entry in enumerate(api_list):
             scout_list_entry = [
                 0,  # unknown offset
                 0,  # unknown api_address
-                list_entry.split("!")[0], 
+                list_entry.split("!")[0] + "_stubbedBitness", 
                 list_entry.split("!")[1], 
                 index + 1,  # IAT offset
                 1  # ref count
             ]
-            scout_format["input_list"].append(scout_list_entry)
+            scout_format["user_list"].append(scout_list_entry)
         return self.getApiVectors(scout_format)
+        
+    def getListFromApiVector(self, vector):
+        if not isinstance(vector, list):
+            vector = self.decompress(vector)
+        api_list = []
+        for index, entry in enumerate(self._winapi1024):
+            if vector[index]:
+                api_list.append("{}!{}".format(entry[0], entry[1]))
+        return sorted(api_list)
         
     def getApiVectorFromApiDictionary(self, api_dict):
         scout_format = {
-            "input_list": []
+            "user_list": []
         }
         index = 0
         for dll_entry in api_dict:
@@ -130,12 +139,12 @@ class ApiVector(object):
                 scout_list_entry = [
                     0,  # unknown offset
                     0,  # unknown api_address
-                    dll_entry, 
+                    dll_entry + "_stubbedBitness", 
                     api_entry, 
                     index + 1,  # IAT offset
                     1  # ref count
                 ]
-                scout_format["input_list"].append(scout_list_entry)
+                scout_format["user_list"].append(scout_list_entry)
                 index += 1
         return self.getApiVectors(scout_format)
         
@@ -160,7 +169,7 @@ class ApiVector(object):
         score = 0.0
         if sum(vector):
             # confidence is calculated based on APIs less common than top75 and total number of APIs in the vector
-            score = 100.0 * math.sqrt(1.0 * sum([1 for value in scores if value > 64]) / sum(vector)) * (min(sum(vector), 20) / 20)
+            score = 100.0 * math.sqrt(1.0 * sum([1 for value in scores if value > 64]) / sum(vector)) * (1.0 * min(sum(vector), 20) / 20)
         return score
 
     def compress(self, api_vector):

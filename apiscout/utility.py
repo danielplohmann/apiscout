@@ -27,7 +27,7 @@ def get_pe_offset(binary):
     if len(binary) >= 0x40:
         pe_offset = get_word(binary, 0x3c)
         return pe_offset
-    raise RuntimeError("Buffer too small to extract PE offset (< 0x40)")
+    return 0
 
 
 def check_pe(binary):
