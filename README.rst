@@ -18,6 +18,7 @@ Also, another blog post explaining how ApiVectors are constructed and stored: ht
 Version History
 ---------------
 
+* 2018-08-21: Added functionality that allows to use import table information instead of crawling for references.
 * 2018-07-31: Fixed convenience functions to create/export vectors from/to lists and dicts, added test coverage.
 * 2018-07-23: WARNING: Change in Apivector format -- Introduced sorted ApiVectors which are even more space efficient (20%+).
 * 2018-06-25: Fixed incompatibility with IDA Pro 7.0+ (THX to @nazywam!)
