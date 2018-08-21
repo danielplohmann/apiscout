@@ -5,7 +5,9 @@ import operator
 import logging
 import hashlib
 
-from .utility import get_pe_offset, check_pe, get_string, get_word, get_dword, get_qword
+from .utility import get_string, get_word, get_dword, get_qword
+from .PeTools import PeTools
+from .OrdinalHelper import OrdinalHelper
 
 
 class ImportDescriptor:
@@ -38,8 +40,10 @@ class ImportDescriptor:
         import_offset = get_dword(buf, offset)
         # import by ordinal
         if import_offset & 0x80000000:
-            return  {"ordinal": get_word(buf, offset), "name": ""}
-        return {"ordinal": get_word(buf, import_offset), "name": get_string(buf, import_offset + 2)}
+            ordinal = get_word(buf, offset)
+            name_by_ordinal = OrdinalHelper.resolveOrdinal(self.lib_name, ordinal)
+            return  {"ordinal": ordinal, "name": name_by_ordinal, "dll_name": self.lib_name}
+        return {"ordinal": get_word(buf, import_offset), "name": get_string(buf, import_offset + 2), "dll_name": self.lib_name}
 
     def __str__(self):
         return "{} - 0x{:x} -> 0x{:x} ({})".format(self.lib_name, self.name_table_offset, self.load_table_offset, len(self.imports))
@@ -49,12 +53,12 @@ class ImportTableLoader:
 
     def __init__(self, buffer, sample_name=""):
         self._buffer = buffer
-        self._is_pe = check_pe(buffer)
+        self._is_pe = PeTools.checkPe(buffer)
         self._is_64bit = self._check_64bit()
         self._sample_name = sample_name
 
     def _check_64bit(self):
-        pe_offset = get_pe_offset(self._buffer)
+        pe_offset = PeTools.getPeOffset(self._buffer)
         file_characteristics_offset = pe_offset + 0x18
         if len(self._buffer) > pe_offset + 0x18 + 2:
             file_characteristics = get_word(self._buffer, file_characteristics_offset)
@@ -85,7 +89,7 @@ class ImportTableLoader:
         import_address_table = {}
         if not self._is_pe:
             return import_address_table
-        pe_offset = get_pe_offset(self._buffer)
+        pe_offset = PeTools.getPeOffset(self._buffer)
         import_dd_offset = pe_offset + directory_offset + self. _get_64bit_bonus_offset()
         it_rva = get_dword(self._buffer, import_dd_offset)
         if it_rva:
@@ -113,4 +117,3 @@ class ImportTableLoader:
 
     def get_delay_import_table(self):
         return self._get_table(0xE0, 32)
-

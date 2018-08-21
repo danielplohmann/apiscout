@@ -64,6 +64,7 @@ def main():
     parser.add_argument('-i', '--ignore_aslr', action='store_true', help='Do not apply the per-module ASLR offset potentially contained in a API DB file.')
     parser.add_argument('-c', '--collection_file', type=str, default='', help='Optionally match the output against a WinApi1024 vector collection file.')
     parser.add_argument('-b', '--base_addr', type=str, default='', help='Set base address to given value (int or 0x-hex format).')
+    parser.add_argument('-t', '--import_table_only', action='store_true', help='Do not crawl for API references but only parse the import table instead - assumes an unmapped PE file as input.')
     parser.add_argument('binary_path', type=str, default='', help='Path to the memory dump to crawl.')
     parser.add_argument('db_path', type=str, nargs='*', help='Path to the DB(s). If no argument is given, use all files found in "./dbs"')
 
@@ -80,18 +81,26 @@ def main():
         # override potential ASLR offsets that are stored in the API DB files.
         scout.ignoreAslrOffsets(args.ignore_aslr)
         # load DB file
-        if not args.db_path:
-            args.db_path = get_all_db_files()
-        for db_path in args.db_path:
+        db_paths = []
+        if args.db_path:
+            db_paths = args.db_path
+        elif not args.import_table_only:
+            db_paths = get_all_db_files()
+        for db_path in db_paths:
             scout.loadDbFile(db_path)
         # load WinApi1024 vector
         scout.loadWinApi1024(get_winapi1024_path())
         # scout the binary
-        print("Using \n  {}\nto analyze\n  {}.".format("\n  ".join(args.db_path), args.binary_path))
-        num_apis_loaded = scout.getNumApisLoaded()
-        filter_info = " - neighbour filter: 0x%x" % args.filter if args.filter else ""
-        print("Buffer size is {} bytes, {} APIs loaded{}.\n".format(len(binary), num_apis_loaded, filter_info))
-        results = scout.crawl(binary)
+        results = {}
+        if args.import_table_only:
+            print("Parsing Import Table for\n  {}.".format(args.binary_path))
+            results = scout.evaluateImportTable(binary, is_unmapped=True)
+        else:
+            print("Using \n  {}\nto analyze\n  {}.".format("\n  ".join(db_paths), args.binary_path))
+            num_apis_loaded = scout.getNumApisLoaded()
+            filter_info = " - neighbour filter: 0x%x" % args.filter if args.filter else ""
+            print("Buffer size is {} bytes, {} APIs loaded{}.\n".format(len(binary), num_apis_loaded, filter_info))
+            results = scout.crawl(binary)
         filtered_results = scout.filter(results, 0, 0, args.filter)
         print(scout.render(filtered_results))
         print(scout.renderVectorResults(filtered_results))

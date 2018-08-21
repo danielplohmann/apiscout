@@ -32,6 +32,7 @@ import logging
 
 from .ImportTableLoader import ImportTableLoader
 from .ApiVector import ApiVector
+from .PeTools import PeTools
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)-15s %(message)s")
 LOG = logging.getLogger(__name__)
@@ -134,20 +135,11 @@ class ApiScout(object):
         else:
             return offset in self._import_table
 
-    def _getBaseAddressFromPeHeader(self, binary):
-        if len(binary) >= 0x40:
-            pe_offset = struct.unpack("I", binary[0x3c:0x40])[0]
-            if pe_offset and len(binary) >= pe_offset + 0x38:
-                base_addr = struct.unpack("I", binary[pe_offset + 0x34:pe_offset + 0x38])[0]
-                LOG.debug("Changing base address from 0 to: 0x%x for inference of reference counts (based on PE header)", base_addr)
-                return base_addr
-        return 0
-
     def _findBaseAddress(self, binary):
         if self.base_address:
             return self.base_address
         # try to extract from PE header
-        return self._getBaseAddressFromPeHeader(binary)
+        return PeTools.getBaseAddressFromPeHeader(binary)
 
     def _updateCodeReferences(self, references, binary, base_address, offset):
         # treat as 32bit code (absolute offsets)
@@ -180,6 +172,22 @@ class ApiScout(object):
         for match in re.finditer(b"\xFF\x15", binary):
             self._updateCodeReferences(references, binary, base_address, match.start())
         return references
+
+    def evaluateImportTable(self, binary, is_unmapped=True):
+        results = {"import_table": []}
+        mapped_binary = binary
+        if is_unmapped:
+            mapped_binary = PeTools.mapBinary(binary)
+        bitness = PeTools.getBitness(mapped_binary)
+        self._import_table = None
+        self._parseImportTable(mapped_binary)
+        references = self._getCodeReferences(mapped_binary)
+        for offset, import_entry in sorted(self._import_table.items()):
+            ref_count = 1
+            if bitness:
+                ref_count = 1 + references[bitness][offset] if offset in references[bitness] else 1
+            results["import_table"].append((offset + self.load_offset, 0, import_entry["dll_name"].lower() + "_0x0", import_entry["name"], bitness, True, ref_count))
+        return results
 
     def crawl(self, binary):
         results = {}
