@@ -39,8 +39,8 @@ class ApiScoutTestSuite(unittest.TestCase):
 
     def testIterators(self):
         scout = ApiScout()
-        result_dwords = [dword for dword in scout.iterateAllDwords("\x00\x00\x00\x00\x01\x02")]
-        result_qwords = [dword for dword in scout.iterateAllQwords("\x00\x00\x00\x00\x01\x02\x00\x00\x00")]
+        result_dwords = [dword for dword in scout.iterateAllDwords(b"\x00\x00\x00\x00\x01\x02")]
+        result_qwords = [dword for dword in scout.iterateAllQwords(b"\x00\x00\x00\x00\x01\x02\x00\x00\x00")]
         self.assertEqual([(0, 0), (1, 16777216), (2, 33619968)], result_dwords)
         self.assertEqual([(0, 2203318222848), (1, 8606711808)], result_qwords)
 
@@ -62,7 +62,7 @@ class ApiScoutTestSuite(unittest.TestCase):
             scout.loadDbFile("Error")
 
     def testCrawlToyData(self):
-        test_binary = "\00" * 0x10 + struct.pack("I", 0x1234) + "\00" * 0x10 + struct.pack("Q", 0x5678) + "\00" * 0x10
+        test_binary = b"\00" * 0x10 + b"\x34\x12\x00\x00" + b"\00" * 0x10 + b"\x78\x56\x00\x00\x00\x00\x00\x00" + b"\00" * 0x10
         scout = ApiScout()
         scout.api_maps["test_1"] = {0x1234: ("test.dll", "TestApi", 32)}
         scout.api_maps["test_2"] = {0x5678: ("test2.dll", "TestApi2", 64)}
@@ -78,7 +78,7 @@ class ApiScoutTestSuite(unittest.TestCase):
             test_binary = f_in.read()
         db_path = os.path.join(this_dir, "minimal_db.json")
         scout = ApiScout(db_path)
-        print scout.crawl(test_binary)
+        print(scout.crawl(test_binary))
         results = {u'Windows 7': [(256, 2105895504, u'KernelBase.dll', u'InterlockedIncrement', 32, None, 1), (264, 8792746496016, u'KernelBase.dll', u'WaitForSingleObjectEx', 64, None, 1)]}
         self.assertEqual(results, scout.crawl(test_binary))
 
@@ -110,7 +110,7 @@ class ApiScoutTestSuite(unittest.TestCase):
                          '  2: 0x00000028; 0x0000000000001064; err;    1; test64.dll (64bit)                      ; TestApi64',
                          'DLLs: 2, APIs: 2']
         rendered = scout.render(results)
-        print rendered
+        print(rendered)
         for hit in expected_hits:
             self.assertTrue(hit in rendered)
         expected_no_result = "No results for API map: test_2\n"

@@ -44,13 +44,14 @@ class PeTools(object):
             if section_infos:
                 for section_info in section_infos:
                     max_virt_section_offset = max(max_virt_section_offset, section_info["virt_size"] + section_info["virt_offset"])
-                    min_raw_section_offset = min(min_raw_section_offset, section_info["raw_offset"])
+                    if section_info["raw_offset"] > 0x200:
+                        min_raw_section_offset = min(min_raw_section_offset, section_info["raw_offset"])
             if max_virt_section_offset:
                 mapped_binary = bytearray([0] * max_virt_section_offset)
                 mapped_binary[0:min_raw_section_offset] = binary[0:min_raw_section_offset]
             for section_info in section_infos:
                 mapped_binary[section_info["virt_offset"]:section_info["virt_offset"] + section_info["virt_size"]] = binary[section_info["raw_offset"]:section_info["raw_offset"] + section_info["raw_size"]]
-        return mapped_binary
+        return bytes(mapped_binary)
 
     @staticmethod
     def getBitness(binary):
@@ -85,3 +86,4 @@ class PeTools(object):
             bitness = get_word(binary, pe_offset + 4)
             return bitness in PeTools.BITNESS_MAP
         return False
+

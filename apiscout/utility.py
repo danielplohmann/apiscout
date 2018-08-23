@@ -36,3 +36,4 @@ def get_string(buf, start_offset):
         current_offset += 1
         current_byte = buf[start_offset + current_offset]
     return string
+

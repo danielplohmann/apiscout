@@ -51,9 +51,9 @@ class ImportDescriptor:
 
 class ImportTableLoader:
 
-    def __init__(self, buffer, sample_name=""):
-        self._buffer = buffer
-        self._is_pe = PeTools.checkPe(buffer)
+    def __init__(self, buf, sample_name=""):
+        self._buffer = buf
+        self._is_pe = PeTools.checkPe(buf)
         self._is_64bit = self._check_64bit()
         self._sample_name = sample_name
 
@@ -117,3 +117,4 @@ class ImportTableLoader:
 
     def get_delay_import_table(self):
         return self._get_table(0xE0, 32)
+
