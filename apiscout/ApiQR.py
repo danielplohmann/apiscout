@@ -67,7 +67,17 @@ class ApiQR:
         return result
 
     def exportPng(self, destination_path, scale_factor=5):
-        colored_vector = list(map(self.__mapColor, self.vector_unsorted, self.context.colors))
+        # colored_vector = list(map(self.__mapColor, self.vector_unsorted, self.context.colors))
+        colored_vector = []
+        for index in range(len(self.vector_unsorted)):
+            value, raw_color = self.vector_unsorted[index], self.context.colors[index]
+            color = self.__mapColor(value, raw_color)
+            if color == self.context.colors_white: 
+                color = self.__mapColor(0.2, raw_color)
+            else:
+                value = 0.4 + (value * (1 - 0.4))
+                color = self.__mapColor(value, raw_color)
+            colored_vector.append(color)
         scaled_vector = sum(([e] * 4 ** scale_factor for e in colored_vector), [])
         transformed_vector = np.int8(self.__vectorToHilbert(scaled_vector))
         image = Image.fromarray(transformed_vector, mode=self.context.colors_format)
