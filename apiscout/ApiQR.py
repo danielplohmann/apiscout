@@ -30,8 +30,8 @@ import numbers
 import os
 from PIL import Image
 
-from ApiQRContext import ApiQRContext
-from ApiVector import ApiVector
+from .ApiQRContext import ApiQRContext
+from .ApiVector import ApiVector
 
 
 class ApiQR:
@@ -66,7 +66,7 @@ class ApiQR:
             result[translation[index]] = entry
         return result
 
-    def exportPng(self, destination_path, scale_factor=5):
+    def getPng(self, destination_path, scale_factor=5):
         # colored_vector = list(map(self.__mapColor, self.vector_unsorted, self.context.colors))
         colored_vector = []
         for index in range(len(self.vector_unsorted)):
@@ -81,23 +81,45 @@ class ApiQR:
         scaled_vector = sum(([e] * 4 ** scale_factor for e in colored_vector), [])
         transformed_vector = np.int8(self.__vectorToHilbert(scaled_vector))
         image = Image.fromarray(transformed_vector, mode=self.context.colors_format)
-        image.save(destination_path, format="PNG", compress_level=0)    
+        return image
 
-    def exportHtml(self, output_path, full=False):
-        vector = self.vector_unsorted
-        hilbert_size = int(len(vector) ** 0.5)
-        result = "<table>"
-        result += """\
+    def exportPng(self, destination_path, scale_factor=5):
+        image = self.getPng(destination_path, scale_factor=scale_factor)
+        image.save(destination_path, format="PNG", compress_level=0)
+
+    def getHtmlHeader(self):
+        hilbert_size = int(len(self.vector_unsorted) ** 0.5)
+        return """\
+        <meta charset="utf-8">
+        <link href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-Gn5384xqQ1aoWXA+058RXPxPg6fy4IWvTNh0E263XmFcJlSAwiGgFAW/dAiS6JXm" crossorigin="anonymous">
+        <script src="https://code.jquery.com/jquery-3.3.1.min.js" integrity="sha256-FgpCb/KJQlLNfOu91ta32o/NMZxltwRo8QtmkMRdAu8=" crossorigin="anonymous"></script>
+        <script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/js/bootstrap.bundle.min.js" integrity="sha384-feJI7QwhOS+hwpX2zkaeJQjeiwlhOP+SdQDqhgvvo1DsjtiSQByFdThsxO669S2D" crossorigin="anonymous"></script>
         <style>
-            td.api-cell {{
-                width: {:.4f}%;
-            }}
-            td.api-cell-white {{
-                background-color: rgb({white[0]:d}, {white[1]:d}, {white[2]:d});
-            }}
-        </style>""".format(1.0 / hilbert_size, white=self.context.colors_white)
+        td.apicell {{
+            position: relative;
+            width: {:.4f}%;
+        }}
+        td.apicell-white {{
+            background-color: rgb({white[0]:d}, {white[1]:d}, {white[2]:d});
+        }}
+        td.apicell:after {{
+            content: '';
+            display: block;
+            margin-top: 100%;
+        }}
+        td.apicell .content {{
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            left: 0;
+            right: 0;
+        }}
+        </style>\n""".format(1.0 / hilbert_size, white=self.context.colors_white)
+
+    def _getHtmlTableContent(self, hilbert_size, vector):
+        result = ""
         for hilbert_row in self.__hilbertCurve(hilbert_size):
-            result += "<tr>"
+            result += "<tr>\n"
             for index in hilbert_row:
                 value, raw_color = vector[index], self.context.colors[index]
                 color = self.__mapColor(value, raw_color)
@@ -105,21 +127,33 @@ class ApiQR:
                     # result += '<td class="api-cell api-cell-white"></td>'
                     color = self.__mapColor(0.2, raw_color)
                     text = ":".join(self.context.apis[index])
-                    result += '<td data-toggle="popover" data-content="{popover:s}" data-delay="200" class="api-cell" style="background-color: rgb({color[0]:d}, {color[1]:d}, {color[2]:d});"></td>'.format(popover=text, color=color)
+                    result += '<td data-toggle="popover" data-content="{popover:s}" data-delay="200" class="apicell" style="background-color: rgb({color[0]:d}, {color[1]:d}, {color[2]:d});"></td>'.format(popover=text, color=color)
                 else:
                     text = ":".join(self.context.apis[index])
                     # rescale value to range 0.4-1.0
                     value = 0.4 + (value * (1 - 0.4))
                     color = self.__mapColor(value, raw_color)
-                    result += '<td data-toggle="popover" data-content="{popover:s}" class="api-cell" style="background-color: rgb({color[0]:d}, {color[1]:d}, {color[2]:d});"></td>'.format(popover=text, color=color)
-            result += "</tr>"
-        result += "</table><script>$('td.api-cell').popover({trigger: 'hover'})</script>"
+                    result += '<td data-toggle="popover" data-content="{popover:s}" class="apicell" style="background-color: rgb({color[0]:d}, {color[1]:d}, {color[2]:d});"></td>'.format(popover=text, color=color)
+                result += "\n"
+            result += "</tr>\n"
+        return result
+
+    def getHtmlTable(self):
+        vector = self.vector_unsorted
+        hilbert_size = int(len(vector) ** 0.5)
+        result = "<table>\n"
+        result += self._getHtmlTableContent(hilbert_size, vector)
+        result += "</table>\n"
+        result += "<script>$('td.apicell').popover({trigger: 'hover'})</script>"
+        return result
+
+    def exportHtml(self, output_path, full=False):
+        result = self.getHtmlTable()
         if not full: return result
         this_path = os.path.abspath(os.path.join(os.path.dirname(__file__)))
         with open(os.sep.join([this_path, "..", "data", "html_frame.html"]), "r") as f_html:
-            with open(os.sep.join([this_path, "..", "data", "html_style.css"]), "r") as f_css:
-                compressed_vector = self._apivector.compress(vector)
-                result = f_html.read().format(vector=compressed_vector, body=result, head="<style>\n{}\n</style>".format(f_css.read()))
+            compressed_vector = self._apivector.compress(self.vector_unsorted)
+            result = f_html.read().format(vector=compressed_vector, body=result, head=self.getHtmlHeader())
         with open(output_path, "w") as f_out:
             f_out.write(result)
 
