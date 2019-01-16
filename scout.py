@@ -45,7 +45,7 @@ def get_all_db_files():
 
 
 def get_winapi1024_path():
-    return get_this_dir() + os.sep + "data" + os.sep + "winapi1024v1.txt"
+    return get_this_dir() + os.sep + "apiscout" + os.sep + "data" + os.sep + "winapi1024v1.txt"
 
 
 def get_base_addr(args):

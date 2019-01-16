@@ -18,5 +18,7 @@ setup(
     author_email='daniel.plohmann@mailbox.org',
     url='https://github.com/daniel-plohmann/apiscout',
     license=LICENSE,
-    packages=find_packages(exclude=('tests', 'docs'))
+    # packages=find_packages(exclude=('tests', 'docs')),
+    packages = ["apiscout"],
+    package_data={"apiscout": ["data/winapi1024v1.txt"]},
 )
