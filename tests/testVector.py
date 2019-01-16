@@ -29,6 +29,7 @@ import os
 import unittest
 
 from apiscout.ApiVector import ApiVector
+import apiscout
 
 LOG = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)-15s %(message)s")
@@ -97,9 +98,9 @@ class ApiVectorTestSuite(unittest.TestCase):
         self.assertEquals(result_dict, expected)
         
     def testLoadWinApi1024Definition(self):
-        THIS_FILE_PATH = str(os.path.abspath(__file__))
-        PROJECT_ROOT = str(os.path.abspath(os.sep.join([THIS_FILE_PATH, "..", ".."])))
-        winapi_path = os.sep.join([PROJECT_ROOT , "data", "winapi1024v1.txt"])
+        module_path = os.path.dirname(os.path.realpath(apiscout.__file__))
+        LOG.info("Using module path %s" % module_path)
+        winapi_path = os.sep.join([module_path, "data", "winapi1024v1.txt"])
         apivector = ApiVector(winapi_path)
         self.assertEquals(len(apivector._winapi1024), 1024)
         

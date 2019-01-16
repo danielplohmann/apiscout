@@ -39,7 +39,7 @@ def get_this_dir():
     return os.path.abspath(os.path.join(os.path.dirname(__file__)))
 
 def get_winapi1024_path():
-    return get_this_dir() + os.sep + "data" + os.sep + "winapi1024v1.txt"
+    return get_this_dir() + os.sep + "apiscout" + os.sep + "data" + os.sep + "winapi1024v1.txt"
 
 
 def main():
