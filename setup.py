@@ -11,7 +11,7 @@ with open('LICENSE') as f:
 
 setup(
     name='apiscout',
-    version='1.0.0',
+    version='1.0.1',
     description='Windows API recovery.',
     long_description=README,
     author='Daniel Plohmann',
