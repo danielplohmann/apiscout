@@ -32,8 +32,9 @@ import math
 from operator import itemgetter
 from itertools import groupby
 
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)-15s %(message)s")
+# Only do basicConfig if no handlers have been configured
+if len(logging._handlerList) == 0:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)-15s %(message)s")
 LOG = logging.getLogger(__name__)
 
 
