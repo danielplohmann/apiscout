@@ -3,7 +3,8 @@ import struct
 
 from .utility import get_word
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)-15s %(message)s")
+if len(logging._handlerList) == 0:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)-15s %(message)s")
 LOG = logging.getLogger(__name__)
 
 class PeTools(object):
