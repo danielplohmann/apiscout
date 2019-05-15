@@ -18,6 +18,8 @@ Also, another blog post explaining how ApiVectors are constructed and stored: ht
 Version History
 ---------------
 
+* 2019-05-15: Added numpy support for vector calculations (based on implementation provided by @garanews - THX!)
+* 2019-05-15: Fixed a bug in PE mapper where buffer would be shortened because of misinterpretation of section sizes.
 * 2019-01-23: QoL improvements: automated data folder deployment when used as module, logger initialization (THX to @jdval)
 * 2018-08-23: Fixed a bug in PE mapper where the PE header would be overwritten by (empty) section data.
 * 2018-08-21: Added functionality that allows to use import table information instead of crawling for references.

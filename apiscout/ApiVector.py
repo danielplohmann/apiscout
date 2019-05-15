@@ -37,6 +37,13 @@ if len(logging._handlerList) == 0:
     logging.basicConfig(level=logging.INFO, format="%(asctime)-15s %(message)s")
 LOG = logging.getLogger(__name__)
 
+NUMPY_AVAILABLE=False
+try:
+    import numpy as np
+    NUMPY_AVAILABLE = True
+except:
+    LOG.warning("numpy/scipy not available, which could otherwise speed up matching.")
+
 
 class ApiVector(object):
 
@@ -46,6 +53,9 @@ class ApiVector(object):
         self._dllapi_only = list(zip(map(itemgetter(0), self._winapi1024), map(itemgetter(1), self._winapi1024)))
         # linear
         self._vector_ranks_only = [entry[3] for entry in self._winapi1024]
+        self._n_vector_ranks_only = []
+        if NUMPY_AVAILABLE:
+            self._n_vector_ranks_only = np.array(self._vector_ranks_only)
         # equal
         # self._vector_ranks_only = [1 for entry in self._winapi1024]
         # sigmoid
@@ -65,7 +75,7 @@ class ApiVector(object):
                         rank = int(line.split(";")[3].strip())
                         winapi1024.append((dll, function, functionality, rank))
                 if len(winapi1024) != 1024:
-                    raise ValueError("WinApi1024 file contained {} instead of 1024 api definitions.".format(len(self._winapi1024)))
+                    LOG.warn("WinApi1024 file contained {} instead of 1024 api definitions.".format(len(winapi1024)))
             else:
                 LOG.error("Not a file: %s!", winapi1024_filepath)
                 raise ValueError
@@ -161,7 +171,7 @@ class ApiVector(object):
         return api_dict
         
     def getVectorConfidence(self, vector):
-        if not isinstance(vector, list):
+        if len(vector) != 1024:
             vector = self.decompress(vector)
         scores = []
         for index, entry in enumerate(self._winapi1024):
@@ -179,20 +189,36 @@ class ApiVector(object):
         return compressed_b64
 
     def decompress(self, compressed_vector):
+        if NUMPY_AVAILABLE:
+            return self.n_decompress(compressed_vector)
         decompressed_b64 = "".join(self._decompress_get(compressed_vector))
         vectorized = "".join(self._base642bin[c] for c in decompressed_b64)[:-2]
         as_binary = [int(i) for i in vectorized]
         return as_binary
-        
+    
+    def n_decompress(self, compressed_vector):
+        decompressed_b64 = "".join(self._decompress_get(compressed_vector))
+        vectorized = "".join(self._base642bin[c] for c in decompressed_b64)[:-2]
+        as_binary = np.fromiter(vectorized, int)
+        return as_binary
+    
+    def _isDecompressed(self, vector):
+        if NUMPY_AVAILABLE:
+            return isinstance(vector, np.ndarray)
+        return isinstance(vector, list)
+
     def matchVectors(self, vector_a, vector_b):
         # ensure binary representation and apply weights
-        if len(vector_a) != 1024:
+        if not self._isDecompressed(vector_a):
             vector_a = self.decompress(vector_a)
         vector_a = self._apply_weights(vector_a)
-        if len(vector_b) != 1024:
+        if not self._isDecompressed(vector_b):
             vector_b = self.decompress(vector_b)
         vector_b = self._apply_weights(vector_b)
         # calculate Jaccard index
+        if NUMPY_AVAILABLE:
+            maxPQ = np.sum(np.maximum(vector_a, vector_b))
+            return np.sum(np.minimum(vector_a, vector_b)) / maxPQ
         intersection_score = 0
         union_score = 0
         jaccard_index = 0
@@ -213,7 +239,9 @@ class ApiVector(object):
             "vectors_in_collection": sum([len(samples) for family, samples in collection_data.items()])
         }
         vector_collection_results = []
-        decompressed_vector = self.decompress(vector)
+        decompressed_vector = vector
+        if not self._isDecompressed(vector):
+            decompressed_vector = self.decompress(vector)
         for family, samples in collection_data.items():
             for sample, sample_vector in samples.items():
                 vector_collection_results.append((family, sample, self.matchVectors(decompressed_vector, sample_vector)))
@@ -256,5 +284,9 @@ class ApiVector(object):
         return dll_name, api_name
 
     def _apply_weights(self, vector):
+        if NUMPY_AVAILABLE:
+            return self._n_apply_weights(vector)
         return [f1 * f2 for f1, f2 in zip(vector, self._vector_ranks_only)]
 
+    def _n_apply_weights(self, vector):
+        return np.multiply(vector, self._n_vector_ranks_only)
