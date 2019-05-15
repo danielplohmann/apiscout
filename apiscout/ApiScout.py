@@ -179,6 +179,7 @@ class ApiScout(object):
         results = {"import_table": []}
         mapped_binary = binary
         if is_unmapped:
+            LOG.debug("Mapping unmapped binary before processing")
             mapped_binary = PeTools.mapBinary(binary)
         bitness = PeTools.getBitness(mapped_binary)
         self._import_table = None

@@ -9,6 +9,11 @@ from .utility import get_string, get_word, get_dword, get_qword
 from .PeTools import PeTools
 from .OrdinalHelper import OrdinalHelper
 
+# Only do basicConfig if no handlers have been configured
+if len(logging._handlerList) == 0:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)-15s %(message)s")
+LOG = logging.getLogger(__name__)
+
 
 class ImportDescriptor:
 
@@ -60,7 +65,7 @@ class ImportTableLoader:
     def _check_64bit(self):
         pe_offset = PeTools.getPeOffset(self._buffer)
         file_characteristics_offset = pe_offset + 0x18
-        if len(self._buffer) > pe_offset + 0x18 + 2:
+        if len(self._buffer) >= pe_offset + 0x18 + 2:
             file_characteristics = get_word(self._buffer, file_characteristics_offset)
             return True if file_characteristics == 0x20b else False
         return False
@@ -104,11 +109,11 @@ class ImportTableLoader:
                     descriptor = self._parse_descriptor(it_rva + it_offset, descriptor_size)
             except IndexError:
                 self._sample_name = self._sample_name if self._sample_name != "" else hashlib.sha256(self._buffer).hexdigest()
-                logging.warn("Import Table parsing was incomplete on file (%s), due to IndexError. Continuing with %d extracted imports...", self._sample_name, len(import_address_table.items()))
+                LOG.warn("Import Table parsing was incomplete on file (%s), due to IndexError. Continuing with %d extracted imports...", self._sample_name, len(import_address_table.items()))
                 return import_address_table
             except struct.error:
                 self._sample_name = self._sample_name if self._sample_name != "" else hashlib.sha256(self._buffer).hexdigest()
-                logging.warn("Import Table parsing was incomplete on file (%s), due to struct.error. Continuing  with %d extracted imports...", self._sample_name, len(import_address_table.items()))
+                LOG.warn("Import Table parsing was incomplete on file (%s), due to struct.error. Continuing  with %d extracted imports...", self._sample_name, len(import_address_table.items()))
                 return import_address_table
         return import_address_table
 
@@ -118,3 +123,5 @@ class ImportTableLoader:
     def get_delay_import_table(self):
         return self._get_table(0xE0, 32)
 
+    def __str__(self):
+        return "ImportTableLoader - buffer size: {} bytes, PE: {}, 64bit: {}".format(len(self._buffer), self._is_pe, self._is_64bit)

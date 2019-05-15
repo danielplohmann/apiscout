@@ -45,13 +45,16 @@ class PeTools(object):
             if section_infos:
                 for section_info in section_infos:
                     max_virt_section_offset = max(max_virt_section_offset, section_info["virt_size"] + section_info["virt_offset"])
+                    max_virt_section_offset = max(max_virt_section_offset, section_info["raw_size"] + section_info["virt_offset"])
                     if section_info["raw_offset"] > 0x200:
                         min_raw_section_offset = min(min_raw_section_offset, section_info["raw_offset"])
             if max_virt_section_offset:
                 mapped_binary = bytearray([0] * max_virt_section_offset)
                 mapped_binary[0:min_raw_section_offset] = binary[0:min_raw_section_offset]
             for section_info in section_infos:
-                mapped_binary[section_info["virt_offset"]:section_info["virt_offset"] + section_info["virt_size"]] = binary[section_info["raw_offset"]:section_info["raw_offset"] + section_info["raw_size"]]
+                mapped_binary[section_info["virt_offset"]:section_info["virt_offset"] + section_info["raw_size"]] = binary[section_info["raw_offset"]:section_info["raw_offset"] + section_info["raw_size"]]
+                LOG.debug("Mapping %d: raw 0x%x (0x%x bytes) -> virtual 0x%x (0x%x bytes)", section_info["section_index"], section_info["raw_offset"], section_info["raw_size"], section_info["virt_offset"], section_info["virt_size"])
+        LOG.debug("Mapped binary of size %d bytes (%d sections) to memory view of size %d bytes", len(binary), num_sections, len(mapped_binary))
         return bytes(mapped_binary)
 
     @staticmethod
