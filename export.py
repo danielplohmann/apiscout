@@ -32,7 +32,7 @@ import logging
 from apiscout.ApiQR import ApiQR
 
 LOG = logging.getLogger(__name__)
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)-15s %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)-15s %(message)s")
 
 
 def get_this_dir():

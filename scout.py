@@ -32,7 +32,7 @@ import logging
 from apiscout.ApiScout import ApiScout
 
 LOG = logging.getLogger(__name__)
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)-15s %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)-15s %(message)s")
 
 
 def get_this_dir():

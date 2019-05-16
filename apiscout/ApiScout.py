@@ -319,7 +319,7 @@ class ApiScout(object):
             if num_results > max_results:
                 break
             if result[0] not in seen_families:
-                output += "{:{fw}} - {:{sw}} - {:.3}\n".format(result[0], result[1], result[2], fw=family_width, sw=sample_width)
+                output += "{:{fw}} - {:{sw}} - {:.3f}\n".format(result[0], result[1], result[2], fw=family_width, sw=sample_width)
                 seen_families.append(result[0])
                 num_results += 1
         output += "-" * (family_width + sample_width + 5 + 6) + "\n"
@@ -328,6 +328,6 @@ class ApiScout(object):
         for result in results["match_results"]:
             if num_results > max_results:
                 break
-            output += "{:{fw}} - {:{sw}} - {:.3}\n".format(result[0], result[1], result[2], fw=family_width, sw=sample_width)
+            output += "{:{fw}} - {:{sw}} - {:.3f}\n".format(result[0], result[1], result[2], fw=family_width, sw=sample_width)
             num_results += 1
         return output

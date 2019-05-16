@@ -218,7 +218,7 @@ class ApiVector(object):
         # calculate Jaccard index
         if NUMPY_AVAILABLE:
             maxPQ = np.sum(np.maximum(vector_a, vector_b))
-            return np.sum(np.minimum(vector_a, vector_b)) / maxPQ
+            return 1.0 * np.sum(np.minimum(vector_a, vector_b)) / maxPQ
         intersection_score = 0
         union_score = 0
         jaccard_index = 0
