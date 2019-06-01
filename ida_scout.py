@@ -55,8 +55,9 @@ def main():
             updateResults(all_results, scout.crawl(binary))
         selected_apis = tools.formSelectResults(all_results)
         if selected_apis:
-            num_renamed, num_skipped = tools.applyApiNames(selected_apis)
-            print("Annotated %d APIs (%d skipped)." % (num_renamed, num_skipped))
+            tools.importTypeLibraries()
+            num_renamed, num_skipped, num_xrefs_adapted = tools.applyApiNames(selected_apis)
+            print("Annotated %d APIs and adapted %d Xrefs(%d skipped)." % (num_renamed, num_xrefs_adapted, num_skipped))
         else:
             print("No APIs selected for annotation, closing.")
 
