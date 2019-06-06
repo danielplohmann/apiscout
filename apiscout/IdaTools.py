@@ -113,9 +113,37 @@ class IdaTools(object):
         self.makeDQWord(api)
         return named
 
+    def importTypeLibraries(self):
+        if add_til("wdk8_um") != 1 or add_til("mssdk_win7") != 1:
+            return False
+        return True
+
+    def helper_getTinfoOfFuncName(self, funcName):
+        sym = til_symbol_t()
+        sym.til = cvar.idati
+        sym.name = funcName
+        tinfo = tinfo_t()
+        namedType = get_named_type(sym.til, sym.name, 0)
+        if namedType == None:
+            return tinfo, False
+        tinfo.deserialize(sym.til, namedType[1], namedType[2])
+        return tinfo, True
+
+    def setFunctionInformation(self, funcName, callAddress):
+        tinfo, success = self.helper_getTinfoOfFuncName(funcName)
+        if not success:
+            print("Error: Cannot resolve function %s - maybe the correct type library is not yet imported?" % (funcName))
+            return False
+        errorCode = apply_callee_tinfo(callAddress, tinfo) #in IDA 6.9 this returns <type 'NoneType'>, in IDA 7.1 it is "True"
+        success = set_op_tinfo2(callAddress, 0, tinfo)
+        if errorCode not in [None, True] or not success:
+            return False
+        return True
+
     def applyApiNames(self, api_results):
         num_renamed = 0
         num_skipped = 0
+        num_xrefs_adapted = 0
 
         prev_offset = 0
         for api in sorted(api_results):
@@ -138,7 +166,10 @@ class IdaTools(object):
                         print("  naming 0x{:x} to {} failed as well, trying next index...".format(api[0], str(api[3] + "_{}".format(suffix))))
             if named:
                 num_renamed += 1
-        return num_renamed, num_skipped
+                for xref in idautils.XrefsTo(api[0]):
+                    if self.setFunctionInformation(api[3], xref.frm):
+                        num_xrefs_adapted += 1
+        return num_renamed, num_skipped, num_xrefs_adapted
 
     def formGetParameters(self):
         parameters = {}
