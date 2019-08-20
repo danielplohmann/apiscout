@@ -46,6 +46,7 @@ class ApiScout(object):
         self.api_maps = {}
         self.has_64bit = False
         self.base_address = 0
+        self._binary_length = 0
         # Used to achieve coherent offset view in IdaScout
         self.load_offset = 0
         self.ignore_aslr_offsets = False
@@ -194,6 +195,7 @@ class ApiScout(object):
 
     def crawl(self, binary):
         results = {}
+        self._binary_length = len(binary)
         self._import_table = None
         self._parseImportTable(binary)
         self._isImportTableEntry(0)
@@ -227,10 +229,13 @@ class ApiScout(object):
                     distance_filtered.append(list_to_filter[index + 1])
         return distance_filtered
 
-    def filter(self, result, from_addr, to_addr, distance):
+    def filter(self, result, from_addr, to_addr, distance, own_image=True):
         filtered_result = {}
         for key in result:
             filtered_list = result[key]
+            # filter all entries pointing into our own image
+            if own_image:
+                filtered_list = [item for item in filtered_list if (self.base_address > item[1] or (self.base_address + self._binary_length) < item[1])]
             if from_addr:
                 filtered_list = [item for item in filtered_list if self.base_address + item[0] >= from_addr]
             if to_addr:

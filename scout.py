@@ -60,7 +60,7 @@ def get_base_addr(args):
 
 def main():
     parser = argparse.ArgumentParser(description='Demo: Use apiscout with a prepared api database (created using DatabaseBuilder.py) to crawl a dump for imports and render the results.')
-    parser.add_argument('-f', '--filter', type=int, default=0, help='Filter out APIs that do not have a neighbour within N bytes.')
+    parser.add_argument('-f', '--filter', type=int, default=0, help='Filter out APIs that do not have a neighbour within N bytes (e.g. 32 or 2048).')
     parser.add_argument('-i', '--ignore_aslr', action='store_true', help='Do not apply the per-module ASLR offset potentially contained in a API DB file.')
     parser.add_argument('-c', '--collection_file', type=str, default='', help='Optionally match the output against a WinApi1024 vector collection file.')
     parser.add_argument('-b', '--base_addr', type=str, default='', help='Set base address to given value (int or 0x-hex format).')

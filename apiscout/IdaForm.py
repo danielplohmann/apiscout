@@ -175,7 +175,7 @@ Filter APIs by Grouping - require another API
     'bApplyFilter': Form.ButtonInput(self.OnButtonApplyFilter),
     'iAddrFrom': Form.NumericInput(tp=Form.FT_ADDR, value=from_addr),
     'iAddrTo': Form.NumericInput(tp=Form.FT_ADDR, value=to_addr),
-    'iByteRange': Form.NumericInput(tp=Form.FT_UINT64, value=0x100),
+    'iByteRange': Form.NumericInput(tp=Form.FT_UINT64, value=0x800),
     'cGroup1': Form.ChkGroupControl(("rFilter", "rNormal")),
     'FormChangeCb': Form.FormChangeCb(self.OnFormChange),
     'cApiChooser' : Form.EmbeddedChooserControl(self.apiChooser)
@@ -203,3 +203,4 @@ Filter APIs by Grouping - require another API
     def OnClose(self):
         l = self.GetControlValue(self.cApiChooser)
         self.chosenApis = self.apiChooser.getItems(l)
+
