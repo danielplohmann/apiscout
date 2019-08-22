@@ -36,6 +36,7 @@ try:
     from idaapi import *
     import idc
     import idautils
+    import idaapi
 except:
     LOG.error("could not import IDA python packages - probably being used externally")
 
@@ -119,15 +120,18 @@ class IdaTools(object):
         return True
 
     def helper_getTinfoOfFuncName(self, funcName):
-        sym = til_symbol_t()
-        sym.til = cvar.idati
-        sym.name = funcName
-        tinfo = tinfo_t()
-        namedType = get_named_type(sym.til, sym.name, 0)
-        if namedType == None:
-            return tinfo, False
-        tinfo.deserialize(sym.til, namedType[1], namedType[2])
-        return tinfo, True
+        try:
+            sym = til_symbol_t()
+            sym.til = cvar.idati
+            sym.name = funcName
+            tinfo = idaapi.tinfo_t()
+            namedType = get_named_type(sym.til, sym.name, 0)
+            if namedType == None:
+                return tinfo, False
+            tinfo.deserialize(sym.til, namedType[1], namedType[2])
+            return tinfo, True
+        except:
+            return None, False
 
     def setFunctionInformation(self, funcName, callAddress):
         tinfo, success = self.helper_getTinfoOfFuncName(funcName)

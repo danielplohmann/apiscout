@@ -18,6 +18,7 @@ Also, another blog post explaining how ApiVectors are constructed and stored: ht
 Version History
 ---------------
 
+* 2019-08-22: Fixed a bug where missing type info in IDA would lead to a crash (now gives an error message instead).
 * 2019-08-20: Added self-filter to eliminate pointers to own memory image that could be mistakenly treated as API references.
 * 2019-06-06: Added support for proper type reconstruction for annotated APIs in IDA Pro (THX to @FlxP0c)
 * 2019-05-15: Added numpy support for vector calculations (based on implementation provided by @garanews - THX!)
