@@ -2586,7 +2586,7 @@ class PE:
         
         dir_entries = []
         
-        # Advance the RVA to the positon immediately following the directory
+        # Advance the RVA to the position immediately following the directory
         # table header and pointing to the first entry in the table
         #
         rva += resource_dir.sizeof()
@@ -3590,7 +3590,7 @@ class PE:
             if repeated_address >= MAX_REPEATED_ADDRESSES:
                 return []
                 
-            # if the addresses point somwhere but the difference between the highest
+            # if the addresses point somewhere but the difference between the highest
             # and lowest address is larger than MAX_ADDRESS_SPREAD we assume a bogus
             # table as the addresses should be contained within a module
             if (addresses_of_data_set_32 and 
@@ -3715,7 +3715,7 @@ class PE:
 
 
     def get_resources_strings(self):
-        """Returns a list of all the strings found withing the resources (if any).
+        """Returns a list of all the strings found within the resources (if any).
         
         This method will scan all entries in the resources directory of the PE, if
         there is one, and will return a list() with the strings.
