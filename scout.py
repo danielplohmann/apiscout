@@ -76,7 +76,7 @@ def main():
                 binary = f_binary.read()
         scout = ApiScout()
         base_addr = get_base_addr(args)
-        print("Using base adress 0x{:x} to infer reference counts.".format(base_addr))
+        print("Using base address 0x{:x} to infer reference counts.".format(base_addr))
         scout.setBaseAddress(base_addr)
         # override potential ASLR offsets that are stored in the API DB files.
         scout.ignoreAslrOffsets(args.ignore_aslr)
