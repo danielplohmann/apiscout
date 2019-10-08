@@ -18,6 +18,7 @@ Also, another blog post explaining how ApiVectors are constructed and stored: ht
 Version History
 ---------------
 
+* 2019-10-08: Workaround for broken filtering of the API view in IDA 7.3 (THX to @enzok for pointing this out).
 * 2019-08-22: Fixed a bug where missing type info in IDA would lead to a crash (now gives an error message instead).
 * 2019-08-20: Added self-filter to eliminate pointers to own memory image that could be mistakenly treated as API references.
 * 2019-06-06: Added support for proper type reconstruction for annotated APIs in IDA Pro (THX to @FlxP0c)
@@ -43,6 +44,7 @@ The idea has previously gone through multiple iterations until reaching this ref
 Thanks to Thorsten Jenke and Steffen Enders for their previous endeavours and evaluating a proof-of-concept of this method.
 More thanks to Steffen Enders for his work on the visualization of ApiQR diagrams.
 Also thanks to Ero Carrera for pefile and Elias Bachaalany for the IDA Python AskUsingForm template. :)
+Additionally many thanks to Andrea Garavaglia for his performance benchmarks that lead to drastic speedups in the applied matching!
 
 
 Pull requests welcome! :)

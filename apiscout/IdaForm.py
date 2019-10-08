@@ -171,7 +171,7 @@ Filter APIs by Grouping - require another API
 <##within:{iByteRange}> bytes
 <##Apply Filter:{bApplyFilter}>
 """, {
-    'cApiInfo': Form.StringLabel("APIs (unfiltered)"),
+    'cApiInfo': Form.StringLabel("APIs"),
     'bApplyFilter': Form.ButtonInput(self.OnButtonApplyFilter),
     'iAddrFrom': Form.NumericInput(tp=Form.FT_ADDR, value=from_addr),
     'iAddrTo': Form.NumericInput(tp=Form.FT_ADDR, value=to_addr),
@@ -186,10 +186,11 @@ Filter APIs by Grouping - require another API
         addr_to = self.GetControlValue(self.iAddrTo)
         byte_range = self.GetControlValue(self.iByteRange)
         self.apiChooser.filterDisplay(addr_from, addr_to, byte_range)
-        if addr_from == 0 and addr_to == 0 and byte_range == 0:
-            self.SetControlValue(self.cApiInfo, "APIs: %d/%d (unfiltered)" % (len(self.apiChooser.items), len(self.apiChooser.all_items)))
-        else:
-            self.SetControlValue(self.cApiInfo, "APIs: %d/%d (filtered to 0x%x - 0x%x, range: 0x%x)" % (len(self.apiChooser.items), len(self.apiChooser.all_items), addr_from, addr_to, byte_range))
+        # SetControlValue seems to have broken in some API migration...
+        # if addr_from == 0 and addr_to == 0 and byte_range == 0:
+        #     self.SetControlValue(self.cApiInfo, "APIs: %d/%d (unfiltered)" % (len(self.apiChooser.items), len(self.apiChooser.all_items)))
+        # else:
+        #     self.SetControlValue(self.cApiInfo, "APIs: %d/%d (filtered to 0x%x - 0x%x, range: 0x%x)" % (len(self.apiChooser.items), len(self.apiChooser.all_items), addr_from, addr_to, byte_range))
         l = self.GetControlValue(self.cApiChooser)
         self.chosenApis = self.apiChooser.getItems(l)
         self.RefreshField(self.cApiChooser)
