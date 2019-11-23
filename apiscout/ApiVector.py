@@ -184,7 +184,8 @@ class ApiVector(object):
         return score
 
     def compress(self, api_vector):
-        uncompressed_b64 = "".join(self._bin2base64[chunk] for chunk in self._chunks("".join(["%d" % bit for bit in api_vector]) + "00", 6))
+        bin_vector_string = "".join(["%d" % bit for bit in api_vector]) + "00" * (len(api_vector) % 3)
+        uncompressed_b64 = "".join(self._bin2base64[chunk] for chunk in self._chunks(bin_vector_string, 6))
         compressed_b64 = "".join(self._compress_rep(c, r) for c, r in groupby(uncompressed_b64))
         return compressed_b64
 
@@ -192,14 +193,16 @@ class ApiVector(object):
         if NUMPY_AVAILABLE:
             return self.n_decompress(compressed_vector)
         decompressed_b64 = "".join(self._decompress_get(compressed_vector))
-        vectorized = "".join(self._base642bin[c] for c in decompressed_b64)[:-2]
-        as_binary = [int(i) for i in vectorized]
+        vectorized = "".join(self._base642bin[c] for c in decompressed_b64)
+        padding_length = len(vectorized) - len(self._winapi1024)
+        as_binary = [int(i) for i in vectorized[:-padding_length]]
         return as_binary
     
     def n_decompress(self, compressed_vector):
         decompressed_b64 = "".join(self._decompress_get(compressed_vector))
-        vectorized = "".join(self._base642bin[c] for c in decompressed_b64)[:-2]
-        as_binary = np.fromiter(vectorized, int)
+        vectorized = "".join(self._base642bin[c] for c in decompressed_b64)
+        padding_length = len(vectorized) - len(self._winapi1024)
+        as_binary = np.fromiter(vectorized[:-padding_length], int)
         return as_binary
     
     def _isDecompressed(self, vector):
