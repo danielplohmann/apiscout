@@ -27,6 +27,7 @@ import logging
 import struct
 import os
 import unittest
+import random
 
 from apiscout.ApiVector import ApiVector
 import apiscout
@@ -117,6 +118,20 @@ class ApiVectorTestSuite(unittest.TestCase):
         vector = "QI"
         confidence = self.vector.getVectorConfidence(vector)
         self.assertEquals(confidence, 10.0)
+
+    def testVectorCompression(self):
+        apivector = ApiVector()
+        for exponent in range(3, 13, 1):
+            vector_length = 2**exponent
+            apivector._winapi1024 = [x for x in range(vector_length)]
+            random_vector = [random.randint(0,1) for i in range(vector_length)]
+            compressed = apivector.compress(random_vector)
+            decompressed = apivector.decompress(compressed)
+            n_decompressed = apivector.n_decompress(compressed)
+            self.assertEqual(vector_length, len(decompressed))
+            self.assertEqual(vector_length, len(n_decompressed))
+
+
 
 
 if __name__ == '__main__':

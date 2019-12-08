@@ -89,14 +89,14 @@ class ApiScoutTestSuite(unittest.TestCase):
                    'test_3': [(0x0,)],
                   }
         # no arguments = no filtering
-        filtered = scout.filter(results, 0, 0, 0)
+        filtered = scout.filter(results, 0, 0, 0, False)
         self.assertEqual(results, filtered)
         # filtering by range:
-        filtered = scout.filter(results, 0x14, 0x34, 0)
+        filtered = scout.filter(results, 0x14, 0x34, 0, False)
         expected = {'test_1': [(0x14,), (0x30,)], 'test_2': [(0x18,), (0x1c,)], 'test_3': []}
         self.assertEqual(expected, filtered)
         # filtering by distance:
-        filtered = scout.filter(results, 0, 0, 0x4)
+        filtered = scout.filter(results, 0, 0, 0x4, False)
         expected = {'test_1': [(0x10,), (0x14,), (0x40,), (0x44,), (0x48,)], 'test_2': [(0x18,), (0x1c,)], 'test_3': []}
         self.assertEqual(expected, filtered)
 
