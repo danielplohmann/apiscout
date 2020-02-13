@@ -30,6 +30,8 @@ from operator import attrgetter
 import os
 import re
 import sys
+import wmi
+import ctypes
 
 import pefile
 import config
@@ -39,17 +41,28 @@ LOG = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)-15s %(message)s")
 
 
-# courtesy of http://stackoverflow.com/a/1996085
+# courtesy of https://stackoverflow.com/a/11785020
 def get_system_info():
     values = {}
-    cache = os.popen2("SYSTEMINFO")
-    source = cache[1].read()
-    options = ["Host Name", "OS Name", "OS Version", "Product ID", "System Manufacturer", "System Model", "System type", "BIOS Version", "Domain", "Windows Directory", "Total Physical Memory", "Available Physical Memory", "Logon Server"]
-    try:
-        for opt in options:
-            values[opt] = [item.strip() for item in re.findall(r"%s:\w*(.*?)\n" % (opt), source, re.IGNORECASE)][0]
-    except IndexError:
-        values = {"OS Name": "unknown", "OS Version": "unknown"}
+    wmi_ctx = wmi.WMI()
+    systeminfo = wmi_ctx.Win32_ComputerSystem()[0]
+    osinfo = wmi_ctx.Win32_OperatingSystem()[0]
+
+    values = {}
+    values["Host Name"] = systeminfo.DNSHostName
+    values["OS Name"] = osinfo.Name
+    values["OS Version"] = osinfo.Version
+    values["Product ID"] = osinfo.SerialNumber
+    values["System Manufacturer"] = osinfo.Manufacturer
+    values["System Model"] = systeminfo.Model
+    values["System type"] = systeminfo.SystemType
+    values["BIOS Version"] = "unknown"
+    values["Domain"] = systeminfo.Domain
+    values["Windows Directory"] = osinfo.WindowsDirectory
+    values["Total Physical Memory"] = systeminfo.TotalPhysicalMemory
+    values["Available Physical Memory"] = osinfo.FreePhysicalMemory
+    values["Logon Server"] = "unknown"
+
     return values
 
 
@@ -81,7 +94,7 @@ def check_aslr():
     for dll_name in check_dlls:
         h_module_base = windll.kernel32.GetModuleHandleW(dll_name)
         # next get the module's file path
-        module_path = wintypes.create_unicode_buffer(255)
+        module_path = ctypes.create_unicode_buffer(255)
         windll.kernel32.GetModuleFileNameW(h_module_base, module_path, 255)
         # then the ImageBase from python.exe file
         pe = pefile.PE(module_path.value)
@@ -106,16 +119,15 @@ class DatabaseBuilder(object):
                 dll_entry["filepath"] = filepath
                 dll_entry["aslr_offset"] = 0
                 dll_entry["exports"] = []
-                min_addr = sys.maxint
+                min_addr = sys.maxsize   
                 max_addr = 0
-
                 for exp in sorted(pe.DIRECTORY_ENTRY_EXPORT.symbols, key=attrgetter("address")):
                     export_info = {}
                     min_addr = min(pe.OPTIONAL_HEADER.ImageBase + exp.address, min_addr)
                     max_addr = max(pe.OPTIONAL_HEADER.ImageBase + exp.address, max_addr)
 
                     export_info["address"] = exp.address
-                    export_info["name"] = exp.name
+                    export_info["name"] = exp.name.decode("utf-8")
                     export_info["ordinal"] = exp.ordinal
                     dll_entry["exports"].append(export_info)
 
