@@ -30,7 +30,7 @@ from operator import attrgetter
 import os
 import re
 import sys
-import wmi
+import platform
 import ctypes
 
 import pefile
@@ -41,29 +41,13 @@ LOG = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)-15s %(message)s")
 
 
-# courtesy of https://stackoverflow.com/a/11785020
 def get_system_info():
-    values = {}
-    wmi_ctx = wmi.WMI()
-    systeminfo = wmi_ctx.Win32_ComputerSystem()[0]
-    osinfo = wmi_ctx.Win32_OperatingSystem()[0]
+    platform_info = platform.uname()
+    version_info = sys.getwindowsversion()
+    os_name = "%s %s %s (%s)" % (platform_info.system, platform_info.release, version_info.service_pack, platform_info.machine)
+    os_version = platform_info.version
 
-    values = {}
-    values["Host Name"] = systeminfo.DNSHostName
-    values["OS Name"] = osinfo.Name
-    values["OS Version"] = osinfo.Version
-    values["Product ID"] = osinfo.SerialNumber
-    values["System Manufacturer"] = osinfo.Manufacturer
-    values["System Model"] = systeminfo.Model
-    values["System type"] = systeminfo.SystemType
-    values["BIOS Version"] = "unknown"
-    values["Domain"] = systeminfo.Domain
-    values["Windows Directory"] = osinfo.WindowsDirectory
-    values["Total Physical Memory"] = systeminfo.TotalPhysicalMemory
-    values["Available Physical Memory"] = osinfo.FreePhysicalMemory
-    values["Logon Server"] = "unknown"
-
-    return values
+    return os_name, os_version
 
 
 # courtesy of http://stackoverflow.com/a/16076661
@@ -180,12 +164,10 @@ class DatabaseBuilder(object):
                             duplicate_count += 1
         LOG.info("PEs examined: %d (%d duplicates, %d skipped)", pe_count, duplicate_count, skipped_count)
         LOG.info("Successfully evaluated %d DLLs with %d APIs", num_hit_dlls, api_count)
-        sys_info = get_system_info()
+        api_db["os_name"], api_db["os_version"] = get_system_info()
         api_db["aslr_offsets"] = False
         api_db["num_dlls"] = num_hit_dlls
         api_db["num_apis"] = api_count
-        api_db["os_name"] = sys_info["OS Name"]
-        api_db["os_version"] = sys_info["OS Version"]
         api_db["crawled_paths"] = paths
         api_db["filtered"] = filter_dlls
         return api_db
