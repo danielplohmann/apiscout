@@ -37,6 +37,7 @@ try:
     import idc
     import idautils
     import idaapi
+    import ida_bytes
 except:
     LOG.error("could not import IDA python packages - probably being used externally")
 
@@ -71,13 +72,13 @@ class IdaTools(object):
         result = {}
         seg_start = [ea for ea in idautils.Segments()][0]
         current_start = seg_start
-        seg_end = idc.SegEnd(current_start)
+        seg_end = idc.get_segm_end(current_start)
         current_buffer = ""
         for index, current_start in enumerate(idautils.Segments()):
             # get current buffer content
             current_buffer = ""
-            for ea in lrange(current_start, idc.SegEnd(current_start)):
-                current_buffer += chr(idc.Byte(ea))
+            for ea in lrange(current_start, idc.get_segm_end(current_start)):
+                current_buffer += chr(idc.get_wide_byte(ea))
             # first buffer is only saved
             if index == 0:
                 result[seg_start] = current_buffer
@@ -88,34 +89,34 @@ class IdaTools(object):
                 result[seg_start] = current_buffer
             else:
                 result[seg_start] += current_buffer
-            seg_end = idc.SegEnd(current_start)
+            seg_end = idc.get_segm_end(current_start)
         return result
 
     def getBaseAddress(self):
         return [ea for ea in idautils.Segments()][0]
 
     def getLastAddress(self):
-        return idc.SegEnd([ea for ea in idautils.Segments()][-1]) - 1
+        return idc.get_segm_end([ea for ea in idautils.Segments()][-1]) - 1
 
     def makeDQWord(self, api):
         match = re.search(r"\((?P<bitness>..)bit\)", api[2])
         if match:
             bitness = int(match.group("bitness"))
         if bitness == 32:
-            idc.MakeDword(api[0])
+            ida_bytes.create_data(api[0], FF_DWORD, 4, idaapi.BADADDR)
         elif bitness == 64:
-            idc.MakeQword(api[0])
+            ida_bytes.create_data(api[0], FF_QWORD, 8, idaapi.BADADDR)
 
     def makeNameAndStructure(self, api, suffix=None):
         if suffix is not None:
-            named = idc.MakeNameEx(api[0], str(api[3] + "_{}".format(suffix)), 256)
+            named = idc.set_name(api[0], str(api[3] + "_{}".format(suffix)), 256)
         else:
-            named = idc.MakeNameEx(api[0], str(api[3]), 256)
+            named = idc.set_name(api[0], str(api[3]), 256)
         self.makeDQWord(api)
         return named
 
     def importTypeLibraries(self):
-        if add_til("wdk8_um") != 1 or add_til("mssdk_win7") != 1:
+        if add_til("wdk8_um", idaapi.ADDTIL_DEFAULT) != 1 or add_til("mssdk_win7", idaapi.ADDTIL_DEFAULT) != 1:
             return False
         return True
 
