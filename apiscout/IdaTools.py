@@ -39,6 +39,10 @@ try:
     import idautils
     import idaapi
     import ida_bytes
+    if idaapi.IDA_SDK_VERSION < 700:
+        from idaapi import set_op_tinfo2 as set_op_tinfo
+    else:
+        from ida_nalt import set_op_tinfo
 except:
     LOG.error("could not import IDA python packages - probably being used externally")
 
@@ -92,9 +96,10 @@ class IdaTools(object):
                 result[seg_start] += current_buffer
             seg_end = idc.get_segm_end(current_start)
         # convert to bytes
-        for segment_offset, data in result.items():
-            if isinstance(data, str) and sys.version_info > (3,):
-                result[segment_offset] = data.encode()
+        if sys.version_info > (3,):
+            for segment_offset, data in result.items():
+                if isinstance(data, str):
+                    result[segment_offset] = bytes([ord(c) for c in data])
         return result
 
     def getBaseAddress(self):
@@ -145,7 +150,7 @@ class IdaTools(object):
             print("Error: Cannot resolve function %s - maybe the correct type library is not yet imported?" % (funcName))
             return False
         errorCode = apply_callee_tinfo(callAddress, tinfo) #in IDA 6.9 this returns <type 'NoneType'>, in IDA 7.1 it is "True"
-        success = set_op_tinfo2(callAddress, 0, tinfo)
+        success = set_op_tinfo(callAddress, 0, tinfo)
         if errorCode not in [None, True] or not success:
             return False
         return True
