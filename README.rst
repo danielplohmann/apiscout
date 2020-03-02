@@ -18,6 +18,7 @@ Also, another blog post explaining how ApiVectors are constructed and stored: ht
 Version History
 ---------------
 
+* 2020-03-02: Ported to IDA 7.4 (THX to @jenfrie).
 * 2019-10-08: Workaround for broken filtering of the API view in IDA 7.3 (THX to @enzok for pointing this out).
 * 2019-08-22: Fixed a bug where missing type info in IDA would lead to a crash (now gives an error message instead).
 * 2019-08-20: Added self-filter to eliminate pointers to own memory image that could be mistakenly treated as API references.
