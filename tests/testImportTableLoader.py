@@ -39,8 +39,8 @@ LOG = logging.getLogger(__name__)
 class ImportTableLoaderTestSuite(unittest.TestCase):
     """Basic test cases."""
     simple_peheader = b"MZ" + b"\x00" * 0x3a + b"\x60\x00\x00\x00" + b"\x00" * 0x20 + b"PE\x00\x00"
-    simple_x86 = simple_peheader + b"\x4c\x01" + b"\x00" * 0x12 + "\x0b\x01"
-    simple_x64 = simple_peheader + b"\x64\x86" + b"\x00" * 0x12 + "\x0b\x02"
+    simple_x86 = simple_peheader + b"\x4c\x01" + b"\x00" * 0x12 + b"\x0b\x01"
+    simple_x64 = simple_peheader + b"\x64\x86" + b"\x00" * 0x12 + b"\x0b\x02"
 
     def testPeParsing(self):
         loader_fail = ImportTableLoader(ImportTableLoaderTestSuite.simple_peheader)
