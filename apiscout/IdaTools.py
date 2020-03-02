@@ -29,6 +29,7 @@ import re
 import sys
 
 from apiscout.IdaForm import IdaApiScoutOptionsForm, IdaApiScoutResultsForm
+from apiscout.IdaProxy import IdaProxy
 
 LOG = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)-15s %(message)s")
@@ -38,15 +39,17 @@ try:
     import idc
     import idautils
     import idaapi
-    import ida_bytes
-    if idaapi.IDA_SDK_VERSION < 700:
-        from idaapi import set_op_tinfo2 as set_op_tinfo
+    if idaapi.IDA_SDK_VERSION < 740:
+        try:
+            from idaapi import set_op_tinfo2 as set_op_tinfo
+        except:
+            LOG.error("could not import set_op_tinfo(), application of type info will not work.")
     else:
+        import ida_bytes
         from ida_nalt import set_op_tinfo
 except:
     LOG.error("could not import IDA python packages - probably being used externally")
-
-
+    raise
 
 def lrange(num1, num2=None, step=1):
     """
@@ -73,17 +76,21 @@ def lrange(num1, num2=None, step=1):
 
 class IdaTools(object):
 
+    def init(self):
+        self.ida_proxy = IdaProxy()
+
     def getAllMemoryFromIda(self):
+        self.ida_proxy = IdaProxy()
         result = {}
         seg_start = [ea for ea in idautils.Segments()][0]
         current_start = seg_start
-        seg_end = idc.get_segm_end(current_start)
+        seg_end = self.ida_proxy.getSegEnd(current_start)
         current_buffer = ""
         for index, current_start in enumerate(idautils.Segments()):
             # get current buffer content
             current_buffer = ""
-            for ea in lrange(current_start, idc.get_segm_end(current_start)):
-                current_buffer += chr(idc.get_wide_byte(ea))
+            for ea in lrange(current_start, self.ida_proxy.getSegEnd(current_start)):
+                current_buffer += chr(self.ida_proxy.getByte(ea))
             # first buffer is only saved
             if index == 0:
                 result[seg_start] = current_buffer
@@ -94,7 +101,7 @@ class IdaTools(object):
                 result[seg_start] = current_buffer
             else:
                 result[seg_start] += current_buffer
-            seg_end = idc.get_segm_end(current_start)
+            seg_end = self.ida_proxy.getSegEnd(current_start)
         # convert to bytes
         if sys.version_info > (3,):
             for segment_offset, data in result.items():
@@ -106,27 +113,27 @@ class IdaTools(object):
         return [ea for ea in idautils.Segments()][0]
 
     def getLastAddress(self):
-        return idc.get_segm_end([ea for ea in idautils.Segments()][-1]) - 1
+        return self.ida_proxy.getSegEnd([ea for ea in idautils.Segments()][-1]) - 1
 
     def makeDQWord(self, api):
         match = re.search(r"\((?P<bitness>..)bit\)", api[2])
         if match:
             bitness = int(match.group("bitness"))
         if bitness == 32:
-            ida_bytes.create_data(api[0], FF_DWORD, 4, idaapi.BADADDR)
+            self.ida_proxy.MakeDWord(api[0])
         elif bitness == 64:
-            ida_bytes.create_data(api[0], FF_QWORD, 8, idaapi.BADADDR)
+            self.ida_proxy.MakeQWord(api[0])
 
     def makeNameAndStructure(self, api, suffix=None):
         if suffix is not None:
-            named = idc.set_name(api[0], str(api[3] + "_{}".format(suffix)), 256)
+            named = self.ida_proxy.MakeName(api[0], str(api[3] + "_{}".format(suffix)))
         else:
-            named = idc.set_name(api[0], str(api[3]), 256)
+            named = self.ida_proxy.MakeName(api[0], str(api[3]))
         self.makeDQWord(api)
         return named
 
     def importTypeLibraries(self):
-        if add_til("wdk8_um", idaapi.ADDTIL_DEFAULT) != 1 or add_til("mssdk_win7", idaapi.ADDTIL_DEFAULT) != 1:
+        if self.ida_proxy.addTil("wdk8_um") != 1 or self.ida_proxy.addTil("mssdk_win7") != 1:
             return False
         return True
 
@@ -150,7 +157,10 @@ class IdaTools(object):
             print("Error: Cannot resolve function %s - maybe the correct type library is not yet imported?" % (funcName))
             return False
         errorCode = apply_callee_tinfo(callAddress, tinfo) #in IDA 6.9 this returns <type 'NoneType'>, in IDA 7.1 it is "True"
-        success = set_op_tinfo(callAddress, 0, tinfo)
+        try:
+            success = set_op_tinfo(callAddress, 0, tinfo)
+        except:
+            LOG.error("Could not set type info, set_op_tinfo() not available.")
         if errorCode not in [None, True] or not success:
             return False
         return True
