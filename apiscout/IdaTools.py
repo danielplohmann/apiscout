@@ -26,8 +26,9 @@ import logging
 import operator
 import os
 import re
+import sys
 
-from IdaForm import IdaApiScoutOptionsForm, IdaApiScoutResultsForm
+from apiscout.IdaForm import IdaApiScoutOptionsForm, IdaApiScoutResultsForm
 
 LOG = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)-15s %(message)s")
@@ -90,6 +91,10 @@ class IdaTools(object):
             else:
                 result[seg_start] += current_buffer
             seg_end = idc.get_segm_end(current_start)
+        # convert to bytes
+        for segment_offset, data in result.items():
+            if isinstance(data, str) and sys.version_info > (3,):
+                result[segment_offset] = data.encode()
         return result
 
     def getBaseAddress(self):

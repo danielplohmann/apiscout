@@ -14,7 +14,7 @@ if idaapi.IDA_SDK_VERSION < 700:
 else:
     from idaapi import Form, Choose
 
-from ApiScout import ApiScout
+from apiscout.ApiScout import ApiScout
 
 
 class ApiDbChooser(Choose):
@@ -204,4 +204,3 @@ Filter APIs by Grouping - require another API
     def OnClose(self):
         l = self.GetControlValue(self.cApiChooser)
         self.chosenApis = self.apiChooser.getItems(l)
-
