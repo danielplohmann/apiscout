@@ -1,3 +1,4 @@
 nose
 PIL
 numpy
+requests
