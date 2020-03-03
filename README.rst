@@ -10,10 +10,12 @@ The output is an ordered list of identified Windows API references with some met
 * match.py -- demonstrates how ApiVectors can be matched against each other and collections of fingerprints.
 * collect.py -- builds a database of WinAPI fingerprints (ApiVectors) that can be used for matching.
 * export.py -- generates ApiQR diagrams that visualize ApiVectors.
+* update.py -- pull the most recent ApiVector DB from Malpedia (requires Malpedia account / API token). 
 
 The code should be fully compatible with Python 2 and 3.
 There is a blog post describing ApiScout in more detail: http://byte-atlas.blogspot.com/2017/04/apiscout.html.
 Also, another blog post explaining how ApiVectors are constructed and stored: https://byte-atlas.blogspot.com/2018/04/apivectors.html.
+We also presented a paper at Botconf 2018 that describes the ApiScout methodology in-depth, including an evaluation over Malpedia: https://journal.cecyf.fr/ojs/index.php/cybin/article/view/20/23
 
 Version History
 ---------------
