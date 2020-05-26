@@ -44,8 +44,12 @@ logging.basicConfig(level=logging.DEBUG, format="%(asctime)-15s %(message)s")
 def get_system_info():
     platform_info = platform.uname()
     version_info = sys.getwindowsversion()
-    os_name = "%s %s %s (%s)" % (platform_info.system, platform_info.release, version_info.service_pack, platform_info.machine)
-    os_version = platform_info.version
+    if sys.version > '3':
+    	os_name = "%s %s %s (%s)" % (platform_info.system, platform_info.release, version_info.service_pack, platform_info.machine)
+    	os_version = platform_info.version
+    else:
+    	os_name = "%s %s %s (%s)" % (platform_info[0], platform_info[2], version_info[4], platform_info[4])
+    	os_version = platform_info[3]
 
     return os_name, os_version
 
