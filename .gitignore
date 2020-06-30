@@ -63,3 +63,4 @@ ENV/
 # other
 dbs/*.csv
 config.py
+.pylintrc

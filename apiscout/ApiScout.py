@@ -30,6 +30,12 @@ import json
 import operator
 import logging
 
+try:
+    import lief
+except:
+    print("lief is not installed! We recommend installing lief to improve import table parsing capabilities of ApiScout!")
+    lief = None
+
 from .ImportTableLoader import ImportTableLoader
 from .ApiVector import ApiVector
 from .PeTools import PeTools
@@ -54,6 +60,7 @@ class ApiScout(object):
         if db_filepath:
             self.loadDbFile(db_filepath)
         self._apivector = ApiVector()
+        self.loadWinApi1024()
 
     def loadDbFile(self, db_filepath):
         api_db = {}
@@ -88,7 +95,10 @@ class ApiScout(object):
         LOG.info("loaded %d exports from %d DLLs (%s) with %d potential collisions.", num_apis_loaded, len(api_db["dlls"]), api_db["os_name"], num_collisions)
         self.api_maps[api_db["os_name"]] = api_map
 
-    def loadWinApi1024(self, winapi1024_filepath):
+    def loadWinApi1024(self, winapi1024_filepath=None):
+        if winapi1024_filepath is None:
+            this_dir = os.path.abspath(os.path.join(os.path.dirname(__file__)))
+            winapi1024_filepath =  this_dir + os.sep + "data" + os.sep + "winapi1024v1.txt"
         self._apivector = ApiVector(winapi1024_filepath)
 
     def _resolveApiByAddress(self, api_map_name, absolute_addr):
@@ -177,20 +187,30 @@ class ApiScout(object):
         return references
 
     def evaluateImportTable(self, binary, is_unmapped=True):
+        self._binary_length = len(binary)
         results = {"import_table": []}
-        mapped_binary = binary
-        if is_unmapped:
-            LOG.debug("Mapping unmapped binary before processing")
-            mapped_binary = PeTools.mapBinary(binary)
-        bitness = PeTools.getBitness(mapped_binary)
-        self._import_table = None
-        self._parseImportTable(mapped_binary)
-        references = self._getCodeReferences(mapped_binary)
-        for offset, import_entry in sorted(self._import_table.items()):
-            ref_count = 1
-            if bitness:
-                ref_count = 1 + references[bitness][offset] if offset in references[bitness] else 1
-            results["import_table"].append((offset + self.load_offset, 0, import_entry["dll_name"].lower() + "_0x0", import_entry["name"], bitness, True, ref_count))
+        if lief:
+            lief_binary = lief.parse(bytearray(binary))
+            bitness = 32 if lief_binary.header.machine == lief.PE.MACHINE_TYPES.I386 else 64
+            for imported_library in lief_binary.imports:
+                for func in imported_library.entries:
+                    if func.name:
+                        results["import_table"].append((func.iat_address + self.load_offset, 0xFFFFFFFF, imported_library.name.lower() + "_0x0", func.name, bitness, True, 0))
+        else:
+            # fallback using the old method and out own import table parser
+            mapped_binary = binary
+            if is_unmapped:
+                LOG.debug("Mapping unmapped binary before processing")
+                mapped_binary = PeTools.mapBinary(binary)
+            bitness = PeTools.getBitness(mapped_binary)
+            self._import_table = None
+            self._parseImportTable(mapped_binary)
+            references = self._getCodeReferences(mapped_binary)
+            for offset, import_entry in sorted(self._import_table.items()):
+                ref_count = 1
+                if bitness:
+                    ref_count = 1 + references[bitness][offset] if offset in references[bitness] else 1
+                results["import_table"].append((offset + self.load_offset, 0xFFFFFFFF, import_entry["dll_name"].lower() + "_0x0", import_entry["name"], bitness, True, ref_count))
         return results
 
     def crawl(self, binary):

@@ -44,10 +44,6 @@ def get_all_db_files():
     return [db_dir + fn for fn in os.listdir(db_dir) if fn.endswith(".json")]
 
 
-def get_winapi1024_path():
-    return get_this_dir() + os.sep + "apiscout" + os.sep + "data" + os.sep + "winapi1024v1.txt"
-
-
 def get_base_addr(args):
     if args.base_addr:
         return int(args.base_addr, 16) if args.base_addr.startswith("0x") else int(args.base_addr)
@@ -88,8 +84,6 @@ def main():
             db_paths = get_all_db_files()
         for db_path in db_paths:
             scout.loadDbFile(db_path)
-        # load WinApi1024 vector
-        scout.loadWinApi1024(get_winapi1024_path())
         # scout the binary
         results = {}
         if args.import_table_only:

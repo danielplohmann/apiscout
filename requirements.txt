@@ -2,3 +2,4 @@ nose
 Pillow
 numpy
 requests
+lief
