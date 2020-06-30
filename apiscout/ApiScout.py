@@ -195,7 +195,7 @@ class ApiScout(object):
             for imported_library in lief_binary.imports:
                 for func in imported_library.entries:
                     if func.name:
-                        results["import_table"].append((func.iat_address + self.load_offset, 0xFFFFFFFF, imported_library.name.lower() + "_0x0", func.name, bitness, True, 0))
+                        results["import_table"].append((func.iat_address + self.load_offset, 0xFFFFFFFF, imported_library.name.lower() + "_0x0", func.name, bitness, True, 1))
         else:
             # fallback using the old method and out own import table parser
             mapped_binary = binary
