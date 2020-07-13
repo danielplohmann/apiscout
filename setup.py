@@ -7,7 +7,7 @@ with open("README.md", "r") as fh:
 
 setup(
     name='apiscout',
-    version='1.1.2',
+    version='1.1.3',
     description='A library for Windows API usage recovery and similarity assessment with focus on memory dumps.',
     long_description_content_type="text/markdown",
     long_description=long_description,
@@ -19,6 +19,11 @@ setup(
     package_data={'apiscout': ['data/winapi1024v1.txt', 'data/winapi_contexts.csv', 'data/html_frame.html']},
     data_files=[
         ('', ['LICENSE']),
+    ],
+    install_requires=[
+        'numpy',
+        'lief',
+        'Pillow'
     ],
     classifiers=[
         "Development Status :: 4 - Beta",
