@@ -41,7 +41,7 @@ class ThreadedCommand(object):
     output, error = '', ''
 
     def __init__(self, command):
-        if isinstance(command, basestring):
+        if isinstance(command, str):
             command = shlex.split(command)
         self.command = command
 
