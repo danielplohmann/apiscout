@@ -115,7 +115,10 @@ class DatabaseBuilder(object):
                     max_addr = max(pe.OPTIONAL_HEADER.ImageBase + exp.address, max_addr)
 
                     export_info["address"] = exp.address
-                    export_info["name"] = exp.name.decode("utf-8")
+                    if exp.name == None:
+                        export_info["name"] = "None"
+                    else:
+                        export_info["name"] = exp.name.decode("utf-8")
                     export_info["ordinal"] = exp.ordinal
                     dll_entry["exports"].append(export_info)
 
