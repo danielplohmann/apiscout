@@ -204,7 +204,7 @@ class DatabaseBuilder(object):
         result = threaded_basecheck.run(10)
         load_address = 0
         aslr_offset = 0
-        if result["std_out"] and result["std_out"].startswith("DLL loaded at: 0x"):
+        if result["std_out"] and result["std_out"].startswith(b"DLL loaded at: 0x"):
             load_address = int(result["std_out"][15:], 16)
             if load_address:
                 aslr_offset = dll_entry["base_address"] - load_address
