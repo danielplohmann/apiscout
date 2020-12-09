@@ -18,6 +18,7 @@ We also presented a paper at Botconf 2018 that describes the ApiScout methodolog
 
 ## Version History
 
+ * 2020-12-09: v1.1.4 - Python3 fixes on DatabaseBuilder (THX to @Dump-GUY!)
  * 2020-07-13: v1.1.3 - Added "install_requires" to setup.py to ensure dependencies are installed.
  * 2020-06-30: v1.1.0 - Now using LIEF for import table parsing. Fixed bug which would not produce ApiVectors when using import table parsing. ApiScout is now also available through PyPI.
  * 2020-03-03: Added a script to pull the most recent ApiVector DB from Malpedia (requires Malpedia account / API token).
