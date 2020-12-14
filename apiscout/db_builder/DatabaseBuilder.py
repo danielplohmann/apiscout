@@ -155,7 +155,7 @@ class DatabaseBuilder(object):
                     if filter_dlls and not self._isInFilter(fn, config.DLL_FILTER):
                         skipped_count += 1
                         continue
-                    elif not (fn.endswith(".dll") or fn.endswith(".drv") or fn.endswith(".mui")):
+                    elif not (fn.lower().endswith(".dll") or fn.lower().endswith(".drv") or fn.lower().endswith(".mui")):
                         continue
                     pe_count += 1
                     LOG.info("processing: %s %s", root, fn)
