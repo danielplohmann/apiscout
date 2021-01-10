@@ -1,13 +1,23 @@
 # -*- coding: utf-8 -*-
-
+import sys
 from setuptools import setup, find_packages
 
 with open("README.md", "r") as fh:
     long_description = fh.read()
 
+
+requirements = ["numpy", "Pillow", "wheel"]
+
+if sys.version_info >= (3, 0):
+    # py3
+    requirements.append("lief==0.10.1")
+else:
+    # py2 - newer LIEF is Python3 only
+    requirements.append("lief==0.9.0")
+
 setup(
     name='apiscout',
-    version='1.1.4',
+    version='1.1.5',
     description='A library for Windows API usage recovery and similarity assessment with focus on memory dumps.',
     long_description_content_type="text/markdown",
     long_description=long_description,
@@ -20,11 +30,7 @@ setup(
     data_files=[
         ('', ['LICENSE']),
     ],
-    install_requires=[
-        'numpy',
-        'lief',
-        'Pillow'
-    ],
+    install_requires=requirements,
     classifiers=[
         "Development Status :: 4 - Beta",
         "License :: OSI Approved :: BSD License",

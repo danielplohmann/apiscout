@@ -18,6 +18,7 @@ We also presented a paper at Botconf 2018 that describes the ApiScout methodolog
 
 ## Version History
 
+ * 2021-01-10: v1.1.5 - Python3 LIEF package fixed to version 0.10.1 (THX to @akhribfarouk!)
  * 2020-12-09: v1.1.4 - Python3 fixes on DatabaseBuilder (THX to @Dump-GUY!)
  * 2020-07-13: v1.1.3 - Added "install_requires" to setup.py to ensure dependencies are installed.
  * 2020-06-30: v1.1.0 - Now using LIEF for import table parsing. Fixed bug which would not produce ApiVectors when using import table parsing. ApiScout is now also available through PyPI.
