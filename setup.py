@@ -17,7 +17,7 @@ else:
 
 setup(
     name='apiscout',
-    version='1.1.5',
+    version='1.1.6',
     description='A library for Windows API usage recovery and similarity assessment with focus on memory dumps.',
     long_description_content_type="text/markdown",
     long_description=long_description,
