@@ -10,7 +10,7 @@ requirements = ["numpy", "Pillow", "wheel"]
 
 if sys.version_info >= (3, 0):
     # py3
-    requirements.append("lief==0.10.1")
+    requirements.append("lief")
 else:
     # py2 - newer LIEF is Python3 only
     requirements.append("lief==0.9.0")
