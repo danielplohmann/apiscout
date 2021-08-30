@@ -115,7 +115,10 @@ class DatabaseBuilder(object):
                     max_addr = max(pe.OPTIONAL_HEADER.ImageBase + exp.address, max_addr)
 
                     export_info["address"] = exp.address
-                    export_info["name"] = exp.name.decode("utf-8")
+                    if exp.name == None:
+                        export_info["name"] = "None"
+                    else:
+                        export_info["name"] = exp.name.decode("utf-8")
                     export_info["ordinal"] = exp.ordinal
                     dll_entry["exports"].append(export_info)
 
@@ -152,7 +155,7 @@ class DatabaseBuilder(object):
                     if filter_dlls and not self._isInFilter(fn, config.DLL_FILTER):
                         skipped_count += 1
                         continue
-                    elif not (fn.endswith(".dll") or fn.endswith(".drv") or fn.endswith(".mui")):
+                    elif not (fn.lower().endswith(".dll") or fn.lower().endswith(".drv") or fn.lower().endswith(".mui")):
                         continue
                     pe_count += 1
                     LOG.info("processing: %s %s", root, fn)
@@ -201,7 +204,7 @@ class DatabaseBuilder(object):
         result = threaded_basecheck.run(10)
         load_address = 0
         aslr_offset = 0
-        if result["std_out"] and result["std_out"].startswith("DLL loaded at: 0x"):
+        if result["std_out"] and result["std_out"].startswith(b"DLL loaded at: 0x"):
             load_address = int(result["std_out"][15:], 16)
             if load_address:
                 aslr_offset = dll_entry["base_address"] - load_address
