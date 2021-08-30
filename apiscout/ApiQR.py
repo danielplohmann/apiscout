@@ -189,7 +189,7 @@ class ApiQR:
         b = t + t.size
         c = t + t.size*2
         d = np.flipud(np.rot90(t, -1)) + t.size*3
-        return np.vstack(map(np.hstack, [[a, b], [d, c]]))  
+        return np.vstack([i for i in map(np.hstack, [[a, b], [d, c]])])
 
     def __add__(self, other):
         if not isinstance(other, ApiQR):

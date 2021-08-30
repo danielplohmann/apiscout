@@ -7,7 +7,7 @@ with open("README.md", "r") as fh:
 
 setup(
     name='apiscout',
-    version='1.1.3',
+    version='1.1.4',
     description='A library for Windows API usage recovery and similarity assessment with focus on memory dumps.',
     long_description_content_type="text/markdown",
     long_description=long_description,
