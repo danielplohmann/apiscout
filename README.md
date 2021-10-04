@@ -18,7 +18,8 @@ We also presented a paper at Botconf 2018 that describes the ApiScout methodolog
 
 ## Version History
 
- * 2020-08-30: v1.1.7 - Fixed depreceation warning in ApiQR as raised by numpy.
+ * 2021-10-04: v1.1.8 - Extension of winapi contexts based on observations provided by @blattm (THX!).
+ * 2021-08-30: v1.1.7 - Fixed deprecation warning in ApiQR as raised by numpy.
  * 2021-07-31: v1.1.6 - It's no longer required to keep a fixed LIEF version. (THX to @cccs-rs!)
  * 2021-01-10: v1.1.5 - Python3 LIEF package fixed to version 0.10.1 (THX to @akhribfarouk!)
  * 2020-12-09: v1.1.4 - Python3 fixes on DatabaseBuilder (THX to @Dump-GUY!)
