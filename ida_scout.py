@@ -23,6 +23,9 @@
 #
 ########################################################################
 
+import os
+import sys
+
 from apiscout.IdaTools import IdaTools
 from apiscout.ApiScout import ApiScout
 
@@ -38,8 +41,11 @@ def updateResults(results, new_results):
 
 
 def main():
+    this_file = os.path.abspath(__file__)
+    this_dir = os.path.abspath(os.path.join(os.path.dirname(this_file)))
+    db_folder = os.path.abspath(os.path.join(this_dir, "dbs"))
     tools = IdaTools()
-    parameters = tools.formGetParameters()
+    parameters = tools.formGetParameters(db_folder)
     if parameters:
         scout = ApiScout()
         scout.ignoreAslrOffsets(parameters["ignore_aslr_offset"])
@@ -60,5 +66,8 @@ def main():
             print("Annotated %d APIs and adapted %d Xrefs(%d skipped)." % (num_renamed, num_xrefs_adapted, num_skipped))
         else:
             print("No APIs selected for annotation, closing.")
+    return 0
 
-main()
+
+if __name__ == "__main__":
+    main()

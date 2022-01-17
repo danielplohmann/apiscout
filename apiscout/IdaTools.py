@@ -196,10 +196,14 @@ class IdaTools(object):
                         num_xrefs_adapted += 1
         return num_renamed, num_skipped, num_xrefs_adapted
 
-    def formGetParameters(self):
+    def formGetParameters(self, db_folder=None):
         parameters = {}
-        this_dir = os.path.abspath(os.path.join(os.path.dirname(__file__)))
-        db_folder = os.path.abspath(os.path.join(this_dir, "..", "dbs"))
+        if db_folder is None:
+            this_dir = os.path.abspath(os.path.join(os.path.dirname(__file__)))
+            try:
+                db_folder = os.path.abspath(os.path.join(this_dir, "..", "dbs"))
+            except:
+                raise Exception("Was not able to automatically locate the ApiScout DB folder.")
 
         form = IdaApiScoutOptionsForm(db_folder)
         form.Compile()

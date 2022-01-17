@@ -18,6 +18,7 @@ We also presented a paper at Botconf 2018 that describes the ApiScout methodolog
 
 ## Version History
 
+ * 2022-01-17: v1.1.9 - Fixed `ida_scout.py` to work with IDA 7.5+ when apiscout is also installed as a Python package.
  * 2021-10-04: v1.1.8 - Extension of winapi contexts based on observations provided by @blattm (THX!).
  * 2021-08-30: v1.1.7 - Fixed deprecation warning in ApiQR as raised by numpy.
  * 2021-07-31: v1.1.6 - It's no longer required to keep a fixed LIEF version. (THX to @cccs-rs!)
