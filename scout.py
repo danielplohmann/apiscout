@@ -28,6 +28,7 @@ import os
 import sys
 import re
 import logging
+import json
 
 from apiscout.ApiScout import ApiScout
 
@@ -53,6 +54,20 @@ def get_base_addr(args):
         return int(baddr_match.group("base_addr"), 16)
     return 0
 
+def write_results_to_json(output_file, filtered_results):
+    json_results = []
+    for api_map_name in filtered_results:
+        for api in filtered_results[api_map_name]:
+            json_results.append({
+                    "offset": api[0],
+                    "apiAddress": api[1],
+                    "dll": api[2].split('_')[0]+f"({api[4]} bit)",
+                    "api": api[3]
+                    })
+
+    with open(output_file, 'w') as f:
+        json.dump(json_results, f)
+
 
 def main():
     parser = argparse.ArgumentParser(description='Demo: Use apiscout with a prepared api database (created using DatabaseBuilder.py) to crawl a dump for imports and render the results.')
@@ -61,6 +76,7 @@ def main():
     parser.add_argument('-c', '--collection_file', type=str, default='', help='Optionally match the output against a WinApi1024 vector collection file.')
     parser.add_argument('-b', '--base_addr', type=str, default='', help='Set base address to given value (int or 0x-hex format).')
     parser.add_argument('-t', '--import_table_only', action='store_true', help='Do not crawl for API references but only parse the import table instead - assumes an unmapped PE file as input.')
+    parser.add_argument('-o', '--json_file', type=str, default='', help='Write mapping from addresses to APIs found to JSON file.')
     parser.add_argument('binary_path', type=str, default='', help='Path to the memory dump to crawl.')
     parser.add_argument('db_path', type=str, nargs='*', help='Path to the DB(s). If no argument is given, use all files found in "./dbs"')
 
@@ -96,8 +112,12 @@ def main():
             print("Buffer size is {} bytes, {} APIs loaded{}.\n".format(len(binary), num_apis_loaded, filter_info))
             results = scout.crawl(binary)
         filtered_results = scout.filter(results, 0, 0, args.filter)
-        print(scout.render(filtered_results))
-        print(scout.renderVectorResults(filtered_results))
+        if not args.json_file:
+            print(scout.render(filtered_results))
+            print(scout.renderVectorResults(filtered_results))
+        else:
+            write_results_to_json(args.json_file, filtered_results)
+            print("Wrote ApiScout results to {}.".format(args.json_file))
         if args.collection_file:
             print(scout.renderResultsVsCollection(filtered_results, args.collection_file))
     else:
