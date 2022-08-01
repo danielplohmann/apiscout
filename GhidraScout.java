@@ -5,7 +5,8 @@
 //@menupath 
 //@toolbar 
 // Put the script in the Ghidra plugins directory (ghidra_scripts).
-// Requires working version of ApiScout (not bundled with this plugin).
+// Requires working version of ApiScout (not bundled with this plugin, available here:
+// https://github.com/danielplohmann/apiscout)
 // When run for the first time, the script will ask for the ApiScout directory.
 // Ctrl+A to choose all found APIs for annotation.
 
@@ -139,7 +140,7 @@ public class GhidraScout extends GhidraScript {
 		ProcessBuilder builder = new ProcessBuilder();
 		String executablePath = currentProgram.getExecutablePath();
 		String scoutPath = this.apiScoutPath + System.getProperty("file.separator") + scoutPy;
-		String apiScoutOptions = "-o";
+		String apiScoutOptions = "-s -o";
 		String shellCommandToRun = scoutPath + " " + apiScoutOptions + " " + tempScoutOutputFile + " " + executablePath
 				+ " " + dataBasePath;
 		boolean isWindows = System.getProperty("os.name").toLowerCase().startsWith("windows");

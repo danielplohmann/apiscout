@@ -92,7 +92,7 @@ class ApiScout(object):
                     num_collisions += 1
                 api_map[virtual_address] = (dll_name, api_name, bitness)
             LOG.debug("loaded %d exports", num_apis_loaded)
-        LOG.info("loaded %d exports from %d DLLs (%s) with %d potential collisions.", num_apis_loaded, len(api_db["dlls"]), api_db["os_name"], num_collisions)
+        LOG.debug("loaded %d exports from %d DLLs (%s) with %d potential collisions.", num_apis_loaded, len(api_db["dlls"]), api_db["os_name"], num_collisions)
         self.api_maps[api_db["os_name"]] = api_map
 
     def loadWinApi1024(self, winapi1024_filepath=None):

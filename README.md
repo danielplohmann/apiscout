@@ -6,7 +6,7 @@ The output is an ordered list of identified Windows API references with some met
 
 * scout.py -- should give a good outline on how to work with the library.  
 * ida_scout.py -- is a convenience GUI wrapper for use in IDA Pro.  
-* GhidraScout.java -- is a Ghidra plugin for ApiScout.
+* GhidraScout.java -- is a Ghidra plugin for ApiScout (contributed by @mari-mari).
 * match.py -- demonstrates how ApiVectors can be matched against each other and collections of fingerprints.  
 * collect.py -- builds a database of WinAPI fingerprints (ApiVectors) that can be used for matching.  
 * export.py -- generates ApiQR diagrams that visualize ApiVectors.  
@@ -19,6 +19,7 @@ We also presented a paper at Botconf 2018 that describes the ApiScout methodolog
 
 ## Version History
 
+ * 2022-08-01: v1.2.0 - Added plugin for Ghidra, contributed by @mari-mari (THX!!)
  * 2022-01-17: v1.1.9 - Fixed `ida_scout.py` to work with IDA 7.5+ when apiscout is also installed as a Python package.
  * 2021-10-04: v1.1.8 - Extension of winapi contexts based on observations provided by @blattm (THX!).
  * 2021-08-30: v1.1.7 - Fixed deprecation warning in ApiQR as raised by numpy.
