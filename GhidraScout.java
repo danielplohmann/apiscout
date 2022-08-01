@@ -71,56 +71,49 @@ public class GhidraScout extends GhidraScript {
 
 	private String initApiScoutPathProperty() {
 		Properties prop = new Properties();
-		String scoutPyAbsPath = null;
-		// String configAbsolutePath = getSourceFile().getParentFile() +
-		// System.getProperty("file.separator") + configFile;
+		String scoutPyAbsolutePath = null;
 		String configAbsolutePath = String.join(System.getProperty("file.separator"),
 				getSourceFile().getParentFile().toString(), configFile);
 		try {
 			prop.load(new BufferedReader(new FileReader(new File(configAbsolutePath))));
-			scoutPyAbsPath = prop.getProperty(configPropertyName);
-			if (prop.isEmpty() || scoutPyAbsPath == null) {
-				scoutPyAbsPath = createAndReadNewProperty(configAbsolutePath);
+			scoutPyAbsolutePath = prop.getProperty(configPropertyName);
+			if (prop.isEmpty() || scoutPyAbsolutePath == null) {
+				scoutPyAbsolutePath = createAndReadNewProperty(configAbsolutePath);
 			}
 		} catch (FileNotFoundException e1) {
 
-			scoutPyAbsPath = createAndReadNewProperty(configAbsolutePath);
+			scoutPyAbsolutePath = createAndReadNewProperty(configAbsolutePath);
 		} catch (IOException e1) {
 			Msg.error(GhidraScout.class, e1);
 		}
-		return scoutPyAbsPath;
+		return scoutPyAbsolutePath;
 	}
 
 	private String createAndReadNewProperty(String configAbsolutePath) {
-		String scoutPyAbsPath = null;
+		String scoutPyAbsolutePath = null;
 		try {
-			scoutPyAbsPath = askFile("Path to ApiScout's scout.py script", "Select").getAbsolutePath();
+			scoutPyAbsolutePath = askFile("Path to ApiScout's scout.py script", "Select").getAbsolutePath();
 		} catch (CancelledException e) {
 			e.printStackTrace();
 		}
 		try (OutputStream output = new FileOutputStream(configAbsolutePath)) {
 			Properties props = new Properties();
-			props.setProperty(configPropertyName, scoutPyAbsPath);
+			props.setProperty(configPropertyName, scoutPyAbsolutePath);
 			props.store(output, null);
 		} catch (IOException io) {
 			io.printStackTrace();
 		}
-		return scoutPyAbsPath;
+		return scoutPyAbsolutePath;
 	}
 
 	private String askUserForDatabaseToUse() {
 		String dataBasePath = "";
-		String apiScoutDir = new File(this.scoutPyPath).getParent().toString();
-		// String defaultDir = apiScoutDir + System.getProperty("file.separator") +
-		// "databases";
-		String defaultDir = String.join(System.getProperty("file.separator"), apiScoutDir, "databases");
 		List<String> choices = new ArrayList<String>();
 		choices.add("default");
 		choices.add("other");
 		String choice = null;
 		try {
-			choice = askChoice("Choose Api scout DB file", "Default is PATH_TO_API_SCOUT/dbs/*.db", choices,
-					defaultDir);
+			choice = askChoice("Choose Api scout DB file", "Default is PATH_TO_API_SCOUT/dbs/*.db", choices, "default");
 		} catch (CancelledException e) {
 			e.printStackTrace();
 		}
@@ -139,8 +132,6 @@ public class GhidraScout extends GhidraScript {
 		ProcessBuilder builder = new ProcessBuilder();
 		String executablePath = currentProgram.getExecutablePath();
 		String apiScoutOptions = "-s -o";
-//		String shellCommandToRun = this.scoutPyPath + " " + apiScoutOptions + " " + tempScoutOutputFile + " "
-//				+ executablePath + " " + dataBasePath;
 		String shellCommandToRun = String.join(" ", this.scoutPyPath, apiScoutOptions, tempScoutOutputFile,
 				executablePath, dataBasePath);
 		boolean isWindows = System.getProperty("os.name").toLowerCase().startsWith("windows");
@@ -308,8 +299,6 @@ public class GhidraScout extends GhidraScript {
 
 		public String toString() {
 			return String.join(" ", this.api, this.apiAddress.toString(), this.dll, this.offset.toString());
-			// return this.api + " " + this.apiAddress + " " + this.dll + " " + this.offset
-			// + " ";
 		}
 	}
 
