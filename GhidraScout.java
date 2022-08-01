@@ -72,7 +72,10 @@ public class GhidraScout extends GhidraScript {
 	private String initApiScoutPathProperty() {
 		Properties prop = new Properties();
 		String scoutPyAbsPath = null;
-		String configAbsolutePath = getSourceFile().getParentFile() + System.getProperty("file.separator") + configFile;
+		// String configAbsolutePath = getSourceFile().getParentFile() +
+		// System.getProperty("file.separator") + configFile;
+		String configAbsolutePath = String.join(System.getProperty("file.separator"),
+				getSourceFile().getParentFile().toString(), configFile);
 		try {
 			prop.load(new BufferedReader(new FileReader(new File(configAbsolutePath))));
 			scoutPyAbsPath = prop.getProperty(configPropertyName);
@@ -108,7 +111,9 @@ public class GhidraScout extends GhidraScript {
 	private String askUserForDatabaseToUse() {
 		String dataBasePath = "";
 		String apiScoutDir = new File(this.scoutPyPath).getParent().toString();
-		String defaultDir = apiScoutDir + System.getProperty("file.separator") + "databases";
+		// String defaultDir = apiScoutDir + System.getProperty("file.separator") +
+		// "databases";
+		String defaultDir = String.join(System.getProperty("file.separator"), apiScoutDir, "databases");
 		List<String> choices = new ArrayList<String>();
 		choices.add("default");
 		choices.add("other");
@@ -134,8 +139,10 @@ public class GhidraScout extends GhidraScript {
 		ProcessBuilder builder = new ProcessBuilder();
 		String executablePath = currentProgram.getExecutablePath();
 		String apiScoutOptions = "-s -o";
-		String shellCommandToRun = this.scoutPyPath + " " + apiScoutOptions + " " + tempScoutOutputFile + " "
-				+ executablePath + " " + dataBasePath;
+//		String shellCommandToRun = this.scoutPyPath + " " + apiScoutOptions + " " + tempScoutOutputFile + " "
+//				+ executablePath + " " + dataBasePath;
+		String shellCommandToRun = String.join(" ", this.scoutPyPath, apiScoutOptions, tempScoutOutputFile,
+				executablePath, dataBasePath);
 		boolean isWindows = System.getProperty("os.name").toLowerCase().startsWith("windows");
 		if (isWindows) {
 			builder.command("cmd.exe", "/c", "py.exe " + shellCommandToRun);
@@ -300,7 +307,9 @@ public class GhidraScout extends GhidraScript {
 		}
 
 		public String toString() {
-			return this.api + " " + this.apiAddress + " " + this.dll + " " + this.offset + " ";
+			return String.join(" ", this.api, this.apiAddress.toString(), this.dll, this.offset.toString());
+			// return this.api + " " + this.apiAddress + " " + this.dll + " " + this.offset
+			// + " ";
 		}
 	}
 
