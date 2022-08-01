@@ -23,13 +23,15 @@
 #
 ########################################################################
 
-import argparse
 import os
-import sys
 import re
+import sys
+import json
 import logging
+import argparse
 
 from apiscout.ApiScout import ApiScout
+
 
 LOG = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)-15s %(message)s")
@@ -53,6 +55,20 @@ def get_base_addr(args):
         return int(baddr_match.group("base_addr"), 16)
     return 0
 
+def write_results_to_json(output_file, filtered_results):
+    json_results = []
+    for api_map_name in filtered_results:
+        for api in filtered_results[api_map_name]:
+            json_results.append({
+                    "offset": api[0],
+                    "apiAddress": api[1],
+                    "dll": api[2].split('_')[0]+f"({api[4]} bit)",
+                    "api": api[3]
+                    })
+
+    with open(output_file, 'w') as f:
+        json.dump(json_results, f)
+
 
 def main():
     parser = argparse.ArgumentParser(description='Demo: Use apiscout with a prepared api database (created using DatabaseBuilder.py) to crawl a dump for imports and render the results.')
@@ -61,6 +77,8 @@ def main():
     parser.add_argument('-c', '--collection_file', type=str, default='', help='Optionally match the output against a WinApi1024 vector collection file.')
     parser.add_argument('-b', '--base_addr', type=str, default='', help='Set base address to given value (int or 0x-hex format).')
     parser.add_argument('-t', '--import_table_only', action='store_true', help='Do not crawl for API references but only parse the import table instead - assumes an unmapped PE file as input.')
+    parser.add_argument('-o', '--json_file', type=str, default='', help='Write mapping from addresses to APIs found to JSON file.')
+    parser.add_argument('-s', '--silent', action='store_true', default=False, help='Suppress all output.')
     parser.add_argument('binary_path', type=str, default='', help='Path to the memory dump to crawl.')
     parser.add_argument('db_path', type=str, nargs='*', help='Path to the DB(s). If no argument is given, use all files found in "./dbs"')
 
@@ -72,7 +90,8 @@ def main():
                 binary = f_binary.read()
         scout = ApiScout()
         base_addr = get_base_addr(args)
-        print("Using base address 0x{:x} to infer reference counts.".format(base_addr))
+        if not args.silent:
+            print("Using base address 0x{:x} to infer reference counts.".format(base_addr))
         scout.setBaseAddress(base_addr)
         # override potential ASLR offsets that are stored in the API DB files.
         scout.ignoreAslrOffsets(args.ignore_aslr)
@@ -87,18 +106,25 @@ def main():
         # scout the binary
         results = {}
         if args.import_table_only:
-            print("Parsing Import Table for\n  {}.".format(args.binary_path))
+            if not args.silent:
+                print("Parsing Import Table for\n  {}.".format(args.binary_path))
             results = scout.evaluateImportTable(binary, is_unmapped=True)
         else:
-            print("Using \n  {}\nto analyze\n  {}.".format("\n  ".join(db_paths), args.binary_path))
             num_apis_loaded = scout.getNumApisLoaded()
             filter_info = " - neighbour filter: 0x%x" % args.filter if args.filter else ""
-            print("Buffer size is {} bytes, {} APIs loaded{}.\n".format(len(binary), num_apis_loaded, filter_info))
+            if not args.silent:
+                print("Using \n  {}\nto analyze\n  {}.".format("\n  ".join(db_paths), args.binary_path))
+                print("Buffer size is {} bytes, {} APIs loaded{}.\n".format(len(binary), num_apis_loaded, filter_info))
             results = scout.crawl(binary)
         filtered_results = scout.filter(results, 0, 0, args.filter)
-        print(scout.render(filtered_results))
-        print(scout.renderVectorResults(filtered_results))
-        if args.collection_file:
+        if not args.silent:
+            print(scout.render(filtered_results))
+            print(scout.renderVectorResults(filtered_results))
+        if args.json_file:
+            write_results_to_json(args.json_file, filtered_results)
+            if not args.silent:
+                print("Wrote ApiScout results to {}.".format(args.json_file))
+        if args.collection_file and not args.silent:
             print(scout.renderResultsVsCollection(filtered_results, args.collection_file))
     else:
         parser.print_help()
