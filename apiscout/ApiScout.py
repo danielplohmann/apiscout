@@ -160,8 +160,8 @@ class ApiScout(object):
         function_addr = struct.unpack("I", addr_block)[0] - base_address
         if 0 < function_addr < len(binary):
             if function_addr not in references[32]:
-                references[32][function_addr] = 0
-            references[32][function_addr] += 1
+                references[32][function_addr] = set()
+            references[32][function_addr].add(offset)
         # treat as 64bit code (this means relative offsets for jmps/calls)
         addr_block = binary[offset + 2:offset + 2 + 4]
         function_addr = struct.unpack("i", addr_block)[0]
@@ -172,8 +172,8 @@ class ApiScout(object):
             function_addr += offset + 6
         if 0 < function_addr < len(binary):
             if function_addr not in references[64]:
-                references[64][function_addr] = 0
-            references[64][function_addr] += 1
+                references[64][function_addr] = set()
+            references[64][function_addr].add(offset)
 
     def _getCodeReferences(self, binary):
         references = {32: {}, 64: {}}
@@ -195,7 +195,7 @@ class ApiScout(object):
             for imported_library in lief_binary.imports:
                 for func in imported_library.entries:
                     if func.name:
-                        results["import_table"].append((func.iat_address + self.load_offset, 0xFFFFFFFF, imported_library.name.lower() + "_0x0", func.name, bitness, True, 1))
+                        results["import_table"].append((func.iat_address + self.load_offset, 0xFFFFFFFF, imported_library.name.lower() + "_0x0", func.name, bitness, True, 1, set()))
         else:
             # fallback using the old method and out own import table parser
             mapped_binary = binary
@@ -209,8 +209,8 @@ class ApiScout(object):
             for offset, import_entry in sorted(self._import_table.items()):
                 ref_count = 1
                 if bitness:
-                    ref_count = 1 + references[bitness][offset] if offset in references[bitness] else 1
-                results["import_table"].append((offset + self.load_offset, 0xFFFFFFFF, import_entry["dll_name"].lower() + "_0x0", import_entry["name"], bitness, True, ref_count))
+                    ref_count = 1 + len(references[bitness][offset]) if offset in references[bitness] else 1
+                results["import_table"].append((offset + self.load_offset, 0xFFFFFFFF, import_entry["dll_name"].lower() + "_0x0", import_entry["name"], bitness, True, ref_count, references[bitness].get(offset, set())))
         return results
 
     def crawl(self, binary):
@@ -225,14 +225,14 @@ class ApiScout(object):
             for offset, api_address in self.iterateAllDwords(binary):
                 dll, api, bitness = self._resolveApiByAddress(api_map_name, api_address)
                 if dll and api and bitness == 32:
-                    ref_count = 1 + references[32][offset] if offset in references[32] else 1
-                    recovered_apis.append((offset + self.load_offset, api_address, dll, api, bitness, self._isImportTableEntry(offset), ref_count))
+                    ref_count = 1 + len(references[32][offset]) if offset in references[32] else 1
+                    recovered_apis.append((offset + self.load_offset, api_address, dll, api, bitness, self._isImportTableEntry(offset), ref_count, references[bitness].get(offset, set())))
             if self.has_64bit:
                 for offset, api_address in self.iterateAllQwords(binary):
                     dll, api, bitness = self._resolveApiByAddress(api_map_name, api_address)
                     if dll and api and bitness == 64:
-                        ref_count = 1 + references[64][offset] if offset in references[64] else 1
-                        recovered_apis.append((offset + self.load_offset, api_address, dll, api, bitness, self._isImportTableEntry(offset), ref_count))
+                        ref_count = 1 + len(references[64][offset]) if offset in references[64] else 1
+                        recovered_apis.append((offset + self.load_offset, api_address, dll, api, bitness, self._isImportTableEntry(offset), ref_count, references[bitness].get(offset, set())))
             results[api_map_name] = recovered_apis
         return results
 
