@@ -166,9 +166,9 @@ class ApiScout(object):
         addr_block = binary[offset + 2:offset + 2 + 4]
         function_addr = struct.unpack("i", addr_block)[0]
         # we need to calculate RIP + offset + 7 (48 ff 25 ** ** ** **)
-        if binary[offset:offset + 2] == "\xFF\x25":
+        if binary[offset:offset + 2] == b"\xFF\x25":
             function_addr += offset + 7
-        elif binary[offset:offset + 2] == "\xFF\x15":
+        elif binary[offset:offset + 2] == b"\xFF\x15":
             function_addr += offset + 6
         if 0 < function_addr < len(binary):
             if function_addr not in references[64]:
