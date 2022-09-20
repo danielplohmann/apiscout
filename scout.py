@@ -63,7 +63,8 @@ def write_results_to_json(output_file, filtered_results):
                     "offset": api[0],
                     "apiAddress": api[1],
                     "dll": api[2].split('_')[0]+f"({api[4]} bit)",
-                    "api": api[3]
+                    "api": api[3],
+                    "references": sorted(api[7])
                     })
 
     with open(output_file, 'w') as f:

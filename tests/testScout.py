@@ -67,7 +67,7 @@ class ApiScoutTestSuite(unittest.TestCase):
         scout.api_maps["test_1"] = {0x1234: ("test.dll", "TestApi", 32)}
         scout.api_maps["test_2"] = {0x5678: ("test2.dll", "TestApi2", 64)}
         scout.has_64bit = True
-        results = {'test_2': [(36, 22136, 'test2.dll', 'TestApi2', 64, None, 1)], 'test_1': [(16, 4660, 'test.dll', 'TestApi', 32, None, 1)]}
+        results = {'test_2': [(36, 22136, 'test2.dll', 'TestApi2', 64, None, 1, set())], 'test_1': [(16, 4660, 'test.dll', 'TestApi', 32, None, 1, set())]}
         self.assertEqual(results, scout.crawl(test_binary))
 
     def testCrawlRealData(self):
@@ -79,7 +79,7 @@ class ApiScoutTestSuite(unittest.TestCase):
         db_path = os.path.join(this_dir, "minimal_db.json")
         scout = ApiScout(db_path)
         print(scout.crawl(test_binary))
-        results = {u'Windows 7': [(256, 2105895504, u'KernelBase.dll', u'InterlockedIncrement', 32, None, 1), (264, 8792746496016, u'KernelBase.dll', u'WaitForSingleObjectEx', 64, None, 1)]}
+        results = {u'Windows 7': [(256, 2105895504, u'KernelBase.dll', u'InterlockedIncrement', 32, None, 2, set([0])), (262, 8792746496016, u'KernelBase.dll', u'WaitForSingleObjectEx', 64, None, 2, set([0]))]}
         self.assertEqual(results, scout.crawl(test_binary))
 
     def testFilter(self):
