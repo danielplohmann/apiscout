@@ -190,7 +190,10 @@ class ApiScout(object):
         self._binary_length = len(binary)
         results = {"import_table": []}
         if lief:
-            lief_binary = lief.parse(bytearray(binary))
+            try:
+                lief_binary = lief.parse(binary)
+            except:
+                lief_binary = lief.parse(bytearray(binary))
             bitness = 32 if lief_binary.header.machine == lief.PE.MACHINE_TYPES.I386 else 64
             for imported_library in lief_binary.imports:
                 for func in imported_library.entries:
