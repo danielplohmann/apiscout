@@ -120,10 +120,20 @@ class ApiChooser(Choose):
         self.items = self.populate(filtered_items)
 
     def populate(self, api_results):
+
         api_rows = []
         unified_results = set([])
+        new_api_results = {}
+
+        # replace sets with frozensets, so that the tuple is hashable
         for key in api_results:
-            unified_results.update(api_results[key])
+            new_api_results[key] = []
+            for h in api_results[key]:
+                a1, a2, a3, a4, a5, a6, a7, a8 = h
+                new_api_results[key].append((a1, a2, a3, a4, a5, a6, a7, frozenset(a8)))
+
+        for key in new_api_results:
+            unified_results.update(new_api_results[key])
         for index, entry in enumerate(sorted(unified_results)):
             dll_name = "{} ({}bit)".format(entry[2], entry[4])
             api_rows.append(["%d" % (index + 1), "0x%x" % (self.base_address + entry[0]), "0x%x" % entry[1], dll_name, entry[3]])
