@@ -19,6 +19,7 @@ We also presented a paper at Botconf 2018 that describes the ApiScout methodolog
 
 ## Version History
 
+ * 2023-03-27: v2.0.2 - Bugfix for IdaScout and handling of sets, contributed by @7a6570 (THX!!)
  * 2023-01-02: v2.0.1 - Bugfix for lief-based import table parsing with Python 3.10, contributed by @malware-kitten (THX!!)
  * 2022-08-01: v1.2.0 - Added plugin for Ghidra, contributed by @mari-mari (THX!!)
  * 2022-09-20: v2.0.0 - (potentially BREAKING) crawl results now have one additional output field with a set of calling references for a given WinAPI. This is also included in the JSON output of `scout.py`, contributed by @renzhexigua (THX!!)
