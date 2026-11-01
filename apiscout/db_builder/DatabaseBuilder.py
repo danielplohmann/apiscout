@@ -61,8 +61,12 @@ def hiword(dword):
     return dword >> 16
 def get_product_version(pe):
     try:
-        ms = pe.VS_FIXEDFILEINFO.ProductVersionMS
-        ls = pe.VS_FIXEDFILEINFO.ProductVersionLS
+        fixed_file_info = pe.VS_FIXEDFILEINFO
+        # pefile >= 2018 keeps a list of VS_FIXEDFILEINFO structs, older versions a single one
+        if isinstance(fixed_file_info, list):
+            fixed_file_info = fixed_file_info[0]
+        ms = fixed_file_info.ProductVersionMS
+        ls = fixed_file_info.ProductVersionLS
         return "%d.%d.%d.%d" % (hiword(ms), loword(ms), hiword(ls), loword(ls))
     except AttributeError:
         return "0.0.0.0"
