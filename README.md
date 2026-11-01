@@ -19,7 +19,7 @@ We also presented a paper at Botconf 2018 that describes the ApiScout methodolog
 
 ## Version History
 
- * 2026-11-01: Added Windows 10 Pro 1803 (build 17134.1) 64bit import DB, including the ASLR offsets of the boot it was built in (as all 64bit system DLLs share the file ImageBase 0x180000000). For memory dumps from other boots, use `scout.py --ignore_aslr` (`ApiScout.ignoreAslrOffsets(True)`) or import table parsing. Also fixed DB Builder writing version 0.0.0.0 for all DLLs with recent pefile.
+ * 2026-11-01: Added Windows 10 Pro 1803 (build 17134.1) 64bit import DB, including the ASLR offsets of the boot it was built in (as all 64bit system DLLs share the file ImageBase 0x180000000). For memory dumps from other boots, use `scout.py --ignore_aslr` (`ApiScout.ignoreAslrOffsets(True)`) or import table parsing. Also fixed two DB Builder bugs: version 0.0.0.0 was written for all DLLs, and ordinal-only exports were truncated for DLLs mapping many ordinals to one address (e.g. mfc42.dll lost ~90% of its exports).
  * 2023-03-27: v2.0.2 - Bugfix for IdaScout and handling of sets, contributed by @7a6570 (THX!!)
  * 2023-01-02: v2.0.1 - Bugfix for lief-based import table parsing with Python 3.10, contributed by @malware-kitten (THX!!)
  * 2022-08-01: v1.2.0 - Added plugin for Ghidra, contributed by @mari-mari (THX!!)
