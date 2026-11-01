@@ -103,6 +103,9 @@ class DatabaseBuilder(object):
     def _extractPeExports(self, filepath):
         try:
             pe = pefile.PE(filepath)
+            for warning in pe.get_warnings():
+                if "export" in warning.lower():
+                    LOG.warning("pefile warning for %s: %s", filepath, warning)
             if hasattr(pe, "DIRECTORY_ENTRY_EXPORT"):
                 dll_entry = {}
                 dll_entry["base_address"] = pe.OPTIONAL_HEADER.ImageBase

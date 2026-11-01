@@ -4072,6 +4072,7 @@ class PE(object):
 
         symbol_counts = collections.defaultdict(int)
         export_parsing_loop_completed_normally = True
+        num_ordinal_exports = 0
         for idx in range(min(
                 export_dir.NumberOfFunctions,
                 int(safety_boundary / 4))):
@@ -4101,15 +4102,12 @@ class PE(object):
                 # File 0b1d3d3664915577ab9a32188d29bbf3542b86c7b9ce333e245496c3018819f1
                 # was being parsed as potentially containing millions of exports.
                 # Checking for duplicates addresses the issue.
+                # apiscout: legitimate DLLs (e.g. mfc42.dll) map hundreds of ordinals
+                # to the same folded stub, so instead of giving up after 10 repeats
+                # of one address, bound the total number of ordinal-only exports.
                 symbol_counts[symbol_address] += 1
-                if symbol_counts[symbol_address] > 10:
-                # if most_common and most_common[0][1] > 10:
-                    self.__warnings.append(
-                        'Export directory contains more than 10 repeated '
-                        'ordinal entries (0x{:x}). Assuming corrupt.'.format(
-                            symbol_address))
-                    break
-                elif len(symbol_counts) > self.max_symbol_exports:
+                num_ordinal_exports += 1
+                if num_ordinal_exports > self.max_symbol_exports:
                     self.__warnings.append(
                         'Export directory contains more than {} ordinal entries. Assuming corrupt.'.format(
                             self.max_symbol_exports))
