@@ -7,16 +7,15 @@
 // Put the script in the Ghidra plugins directory (ghidra_scripts).
 // Requires working version of ApiScout (not bundled with this plugin, available here:
 // https://github.com/danielplohmann/apiscout)
-// When run for the first time, the script will ask for the path to the scout.py (ApiScout root directory).
+// When run for the first time, the script will ask for the path to the scout.py (ApiScout root directory)
+// and remember it in the user preferences of Ghidra.
 // Ctrl+A to choose all found APIs for annotation.
 // Headless usage: -postScript GhidraScout.java <path to scout.py> [<path to API DB> ...], annotates all APIs found.
 
 import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.Reader;
@@ -25,7 +24,6 @@ import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Properties;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -35,8 +33,22 @@ import ghidra.app.tablechooser.StringColumnDisplay;
 import ghidra.app.tablechooser.TableChooserDialog;
 import ghidra.app.tablechooser.TableChooserExecutor;
 import ghidra.program.model.address.Address;
+import generic.jar.ResourceFile;
+import ghidra.app.cmd.function.ApplyFunctionSignatureCmd;
+import ghidra.framework.Application;
+import ghidra.framework.preferences.Preferences;
+import ghidra.program.model.data.DataType;
+import ghidra.program.model.data.DataTypeManager;
+import ghidra.program.model.data.FileDataTypeManager;
+import ghidra.program.model.data.FunctionDefinition;
+import ghidra.program.model.listing.Function;
+import ghidra.program.model.symbol.ExternalLocation;
+import ghidra.program.model.data.DataUtilities;
+import ghidra.program.model.data.DataUtilities.ClearDataMode;
 import ghidra.program.model.data.PointerDataType;
-import ghidra.program.model.listing.Data;
+import ghidra.program.model.symbol.RefType;
+import ghidra.program.model.symbol.SourceType;
+import ghidra.program.model.util.CodeUnitInsertionException;
 import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.symbol.SymbolUtilities;
 import ghidra.util.exception.CancelledException;
@@ -47,9 +59,10 @@ import com.google.gson.reflect.TypeToken;
 public class GhidraScout extends GhidraScript {
 	TableChooserDialog tableDialog;
 	String scoutPyPath = null;
+	FileDataTypeManager windowsArchive = null;
+	boolean windowsArchiveMissing = false;
 
-	static String configFile = "ghidrascout.config";
-	static String configPropertyName = "apiscout.scout.py.path";
+	static final String PREFERENCE_SCOUT_PY_PATH = "apiscout.scout.py.path";
 	static final Pattern ORDINAL_ONLY_API = Pattern.compile("None<(\\d+)>");
 
 	public void run() throws Exception {
@@ -88,6 +101,7 @@ public class GhidraScout extends GhidraScript {
 					annotated++;
 				}
 			}
+			closeWindowsArchive();
 			printf("Annotated %d API references\n", annotated);
 			return;
 		}
@@ -96,42 +110,23 @@ public class GhidraScout extends GhidraScript {
 		for (ApiScoutResultEntry entry : foundApis) {
 			tableDialog.add(new ApiRow(entry));
 		}
+		tableDialog.setClosedListener(this::closeWindowsArchive);
 		tableDialog.show();
 		tableDialog.setMessage("Found apis");
 	}
 
 	private String initApiScoutPathProperty() {
-		Properties prop = new Properties();
-		String scoutPyAbsolutePath = null;
-		File config = new File(getSourceFile().getParentFile().getAbsolutePath(), configFile);
-		if (config.isFile()) {
-			try (InputStream input = new FileInputStream(config)) {
-				prop.load(input);
-				scoutPyAbsolutePath = prop.getProperty(configPropertyName);
-			} catch (IOException e) {
-				printerr("Could not read " + config + ": " + e.getMessage());
-			}
+		String scoutPyAbsolutePath = Preferences.getProperty(PREFERENCE_SCOUT_PY_PATH);
+		if (scoutPyAbsolutePath != null && new File(scoutPyAbsolutePath).isFile()) {
+			return scoutPyAbsolutePath;
 		}
-		if (scoutPyAbsolutePath == null || !new File(scoutPyAbsolutePath).isFile()) {
-			scoutPyAbsolutePath = createAndReadNewProperty(config);
-		}
-		return scoutPyAbsolutePath;
-	}
-
-	private String createAndReadNewProperty(File config) {
-		String scoutPyAbsolutePath = null;
 		try {
 			scoutPyAbsolutePath = askFile("Path to ApiScout's scout.py script", "Select").getAbsolutePath();
 		} catch (CancelledException e) {
 			return null;
 		}
-		try (OutputStream output = new FileOutputStream(config)) {
-			Properties props = new Properties();
-			props.setProperty(configPropertyName, scoutPyAbsolutePath);
-			props.store(output, null);
-		} catch (IOException e) {
-			printerr("Could not store " + config + ": " + e.getMessage());
-		}
+		Preferences.setProperty(PREFERENCE_SCOUT_PY_PATH, scoutPyAbsolutePath);
+		Preferences.store();
 		return scoutPyAbsolutePath;
 	}
 
@@ -178,10 +173,13 @@ public class GhidraScout extends GhidraScript {
 		File jsonFile = File.createTempFile("ghidrascout", ".json");
 		try {
 			try (OutputStream output = new FileOutputStream(dumpFile)) {
+				byte[] chunk = new byte[0x100000];
 				for (MemoryBlock block : region.blocks) {
-					byte[] content = new byte[(int) block.getSize()];
-					block.getBytes(block.getStart(), content);
-					output.write(content);
+					for (long offset = 0; offset < block.getSize(); offset += chunk.length) {
+						int length = (int) Math.min(chunk.length, block.getSize() - offset);
+						block.getBytes(block.getStart().add(offset), chunk, 0, length);
+						output.write(chunk, 0, length);
+					}
 				}
 			}
 			if (!executeScoutPy(dumpFile, jsonFile, region.start, dataBasePaths)) {
@@ -253,20 +251,31 @@ public class GhidraScout extends GhidraScript {
 		return false;
 	}
 
+	// Annotates a reference the way Ghidra's own loaders describe an import:
+	// a pointer with an external reference to the function of its library.
 	private boolean annotate(ApiScoutResultEntry entry) {
 		if (entry.api == null || entry.api.isEmpty()) {
 			return false;
 		}
 		try {
-			Data data = getDataAt(entry.address);
-			if (data == null || !data.isDefined()) {
-				try {
-					createData(entry.address, PointerDataType.dataType);
-				} catch (Exception e) {
-					// something else is defined here already, the label is still of use
-				}
+			String name = SymbolUtilities.replaceInvalidChars(getLabelName(entry), true);
+			createLabel(entry.address, name, true);
+			if (getInstructionContaining(entry.address) != null) {
+				// an API address within an instruction, which is left as it is
+				return true;
 			}
-			createLabel(entry.address, SymbolUtilities.replaceInvalidChars(getLabelName(entry), true), true);
+			try {
+				DataUtilities.createData(currentProgram, entry.address, PointerDataType.dataType, -1,
+						ClearDataMode.CLEAR_ALL_UNDEFINED_CONFLICT_DATA);
+			} catch (CodeUnitInsertionException e) {
+				return true;
+			}
+			String library = getLibraryName(entry);
+			ExternalLocation location = currentProgram.getExternalManager().addExtFunction(library, name, null,
+					SourceType.ANALYSIS);
+			applyPrototype(location.getFunction(), entry.api);
+			currentProgram.getReferenceManager().addExternalReference(entry.address, library, name, null,
+					SourceType.ANALYSIS, 0, RefType.DATA);
 			return true;
 		} catch (Exception e) {
 			printerr("Could not annotate " + entry.address + " with " + entry.api + ": " + e.getMessage());
@@ -274,12 +283,63 @@ public class GhidraScout extends GhidraScript {
 		}
 	}
 
+	// Prototypes are taken from the Windows data type archive shipped with Ghidra.
+	private void applyPrototype(Function function, String api) {
+		if (function == null || function.getSignatureSource() != SourceType.DEFAULT) {
+			return;
+		}
+		DataTypeManager archive = getWindowsArchive();
+		if (archive == null) {
+			return;
+		}
+		List<DataType> candidates = new ArrayList<DataType>();
+		archive.findDataTypes(api, candidates);
+		for (DataType candidate : candidates) {
+			if (candidate instanceof FunctionDefinition) {
+				new ApplyFunctionSignatureCmd(function.getEntryPoint(), (FunctionDefinition) candidate,
+						SourceType.ANALYSIS).applyTo(currentProgram);
+				return;
+			}
+		}
+	}
+
+	private DataTypeManager getWindowsArchive() {
+		if (this.windowsArchive == null && !this.windowsArchiveMissing) {
+			int bits = currentProgram.getDefaultPointerSize() * 8;
+			try {
+				ResourceFile archiveFile = Application
+						.findDataFileInAnyModule("typeinfo/win32/windows_vs12_" + bits + ".gdt");
+				if (archiveFile != null) {
+					this.windowsArchive = FileDataTypeManager.openFileArchive(archiveFile, false);
+				}
+			} catch (IOException e) {
+				printerr("Could not open the Windows data type archive: " + e.getMessage());
+			}
+			this.windowsArchiveMissing = this.windowsArchive == null;
+		}
+		return this.windowsArchive;
+	}
+
+	private void closeWindowsArchive() {
+		if (this.windowsArchive != null) {
+			this.windowsArchive.close();
+			this.windowsArchive = null;
+		}
+	}
+
+	private String getDllName(ApiScoutResultEntry entry) {
+		return entry.dll == null ? "unknown" : entry.dll.replaceAll("\\(\\d+ bit\\)$", "");
+	}
+
+	private String getLibraryName(ApiScoutResultEntry entry) {
+		return getDllName(entry).toUpperCase();
+	}
+
 	private String getLabelName(ApiScoutResultEntry entry) {
 		Matcher ordinalOnly = ORDINAL_ONLY_API.matcher(entry.api);
 		if (ordinalOnly.matches()) {
 			// exported by ordinal only, so the API DB has no name for it
-			String dllName = entry.dll == null ? "unknown" : entry.dll.replaceAll("\\(\\d+ bit\\)$", "");
-			return dllName + "_ordinal_" + ordinalOnly.group(1);
+			return getDllName(entry) + "_ordinal_" + ordinalOnly.group(1);
 		}
 		return entry.api;
 	}
