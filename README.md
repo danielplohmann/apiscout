@@ -33,6 +33,7 @@ Headless: `analyzeHeadless <project> <name> -import <dump> -loader BinaryLoader 
 
 ## Version History
 
+ * 2026-11-16: Added a Windows Server 2022 (21H2, build 20348) 64bit import DB (`dbs/win2022_server_21h2_example.json`, 343 DLLs, built with `DatabaseBuilder.py --filter` on a fresh installation). Like the Windows 10 DB, it carries the ASLR offsets of the boot it was built in and serves as example and for tests, not for dumps of other systems.
  * 2026-11-16: v3.0.0 - (BREAKING) Python 2 and IDA < 7.4 are no longer supported. Packaging moved to `pyproject.toml` (with `uv.lock`), code is linted and formatted with ruff and type checked with ty, CI runs on GitHub Actions.
    * Library: fixed a crash when a buffer ends in `FF 15`/`FF 25`, import table parsing with current LIEF (`scout.py -t`), import descriptors without import name table, PE mapping of truncated or unusual files, matching of vectors given as lists, `NaN` when matching empty vectors, and API DBs of the same OS replacing each other. Crawl results are now ordered by offset. Imports by ordinal are resolved for `ws2_32.dll`, `wsock32.dll` and `oleaut32.dll`, compressed ApiVectors are validated, and a 32bit and a 64bit export at the same address are both resolved.
    * `export.py` (ApiQR) works again, `update.py` works from any directory, `collect.py -u` no longer writes a second file.

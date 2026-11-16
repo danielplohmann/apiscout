@@ -47,8 +47,8 @@ def is_windows():
 def get_system_info():
     platform_info = platform.uname()
     version_info = sys.getwindowsversion()
-    os_name = f"{platform_info.system} {platform_info.release} {version_info.service_pack} ({platform_info.machine})"
-    return os_name, platform_info.version
+    parts = [platform_info.system, platform_info.release, version_info.service_pack, f"({platform_info.machine})"]
+    return " ".join(part for part in parts if part), platform_info.version
 
 
 def normalize_dll_path(path):
