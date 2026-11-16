@@ -98,6 +98,26 @@ class ApiVectorTestSuite(unittest.TestCase):
         result_dict = self.vector.getDictionaryFromApiVector(result_apivector["user_list"]["vector"])
         self.assertEqual(result_dict, expected)
         
+    def testDllNameCaseInsensitivity(self):
+        this_dir = os.path.abspath(os.path.join(os.path.dirname(__file__)))
+        winapi_path = os.sep.join([this_dir, "..", "apiscout", "data", "winapi1024v1.txt"])
+        apivector = ApiVector(winapi_path)
+        # results as produced by ApiScout.crawl(): (offset, api_address, "<dll>_<base>", api, bitness, ...)
+        lower_case = {"db": [(0, 0, "iphlpapi.dll_0x180000000", "GetAdaptersInfo", 64), (8, 0, "sensapi.dll_0x180000000", "IsNetworkAlive", 64)]}
+        mixed_case = {"db": [(0, 0, "IPHLPAPI.DLL_0x180000000", "GetAdaptersInfo", 64), (8, 0, "SensApi.dll_0x180000000", "IsNetworkAlive", 64)]}
+        expected = apivector.getApiVectors(lower_case)["db"]
+        self.assertEqual(2, expected["in_api_vector"])
+        self.assertEqual(expected, apivector.getApiVectors(mixed_case)["db"])
+        self.assertEqual(["iphlpapi.dll!GetAdaptersInfo", "sensapi.dll!IsNetworkAlive"], apivector.getListFromApiVector(expected["vector"]))
+        # WinApi1024 definitions with mixed case DLL names are matched as well, e.g. by lower case import table results
+        mixed_definition = {"db": [(0, 0, "wldap32.dll_0x0", "ldap_init", 32), (4, 0, "Wldap32.dll_0x77000000", "ldap_search_s", 32), (8, 0, "GDIPLUS.DLL_0x0", "GdiplusStartup", 32)]}
+        result = apivector.getApiVectors(mixed_definition)["db"]
+        self.assertEqual(3, result["in_api_vector"])
+        self.assertEqual(["GdiPlus.dll!GdiplusStartup", "Wldap32.dll!ldap_init", "Wldap32.dll!ldap_search_s"], apivector.getListFromApiVector(result["vector"]))
+        # the same API found via differently cased DLL names is counted once
+        both = {"db": lower_case["db"] + mixed_case["db"]}
+        self.assertEqual(2, apivector.getApiVectors(both)["db"]["num_unique_apis"])
+
     def testLoadWinApi1024Definition(self):
         module_path = os.path.dirname(os.path.realpath(apiscout.__file__))
         LOG.info("Using module path %s" % module_path)
