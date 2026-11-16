@@ -1,5 +1,5 @@
 ########################################################################
-# Copyright (c) 2017
+# Copyright (c) 2020
 # Daniel Plohmann <daniel.plohmann<at>mailbox<dot>org>
 # All rights reserved.
 ########################################################################
@@ -23,90 +23,45 @@
 ########################################################################
 
 import logging
-import operator
 import os
 import re
-import sys
+
+import ida_idp
+import ida_nalt
+import ida_typeinf
+import ida_ua
+import idautils
 
 from apiscout.IdaForm import IdaApiScoutOptionsForm, IdaApiScoutResultsForm
 from apiscout.IdaProxy import IdaProxy
 
 LOG = logging.getLogger(__name__)
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)-15s %(message)s")
-
-try:
-    from idaapi import *
-    import idc
-    import idautils
-    import idaapi
-    if idaapi.IDA_SDK_VERSION < 740:
-        try:
-            from idaapi import set_op_tinfo2 as set_op_tinfo
-        except:
-            LOG.error("could not import set_op_tinfo(), application of type info will not work.")
-    else:
-        import ida_bytes
-        from ida_nalt import set_op_tinfo
-except:
-    LOG.error("could not import IDA python packages - probably being used externally")
-    raise
-
-def lrange(num1, num2=None, step=1):
-    """
-    Allows iteration over arbitrary numbers instead of dword long numbers.
-    Credits go to:
-    http://stackoverflow.com/questions/2187135/range-and-xrange-for-13-digit-numbers-in-python
-    http://stackoverflow.com/users/263162/ricardo-cardenes
-    """
-    op = operator.__lt__
-
-    if num2 is None:
-        num1, num2 = 0, num1
-    if num2 < num1:
-        if step > 0:
-            num1 = num2
-        op = operator.__gt__
-    elif step < 0:
-        num1 = num2
-
-    while op(num1, num2):
-        yield num1
-        num1 += step
 
 
 class IdaTools(object):
 
-    def init(self):
+    TYPE_LIBRARIES = {
+        32: ["wdk8_um", "mssdk_win7", "ntapi_win7"],
+        64: ["mssdk64_win7", "ntapi64_win7"],
+    }
+
+    def __init__(self):
         self.ida_proxy = IdaProxy()
 
     def getAllMemoryFromIda(self):
-        self.ida_proxy = IdaProxy()
+        """ returns the content of all segments, with adjacent segments merged into one buffer: {start address: bytes} """
         result = {}
-        seg_start = [ea for ea in idautils.Segments()][0]
-        current_start = seg_start
-        seg_end = self.ida_proxy.getSegEnd(current_start)
-        current_buffer = ""
-        for index, current_start in enumerate(idautils.Segments()):
-            # get current buffer content
-            current_buffer = ""
-            for ea in lrange(current_start, self.ida_proxy.getSegEnd(current_start)):
-                current_buffer += chr(self.ida_proxy.getByte(ea))
-            # first buffer is only saved
-            if index == 0:
-                result[seg_start] = current_buffer
-                continue
-            # otherwise decide if the buffers are consecutive and either save or update contents
-            if current_start != seg_end:
-                seg_start = current_start
-                result[seg_start] = current_buffer
+        block_start = None
+        block_end = None
+        for seg_start in idautils.Segments():
+            seg_end = self.ida_proxy.getSegEnd(seg_start)
+            content = self.ida_proxy.getBytes(seg_start, seg_end - seg_start) or b""
+            if block_start is not None and seg_start == block_end:
+                result[block_start] += content
             else:
-                result[seg_start] += current_buffer
-            seg_end = self.ida_proxy.getSegEnd(current_start)
-        # convert to bytes
-        if sys.version_info > (3,):
-            for segment_offset, data in result.items():
-                if isinstance(data, str):
-                    result[segment_offset] = bytes([ord(c) for c in data])
+                block_start = seg_start
+                result[block_start] = content
+            block_end = seg_end
         return result
 
     def getBaseAddress(self):
@@ -115,111 +70,139 @@ class IdaTools(object):
     def getLastAddress(self):
         return self.ida_proxy.getSegEnd([ea for ea in idautils.Segments()][-1]) - 1
 
+    def getBitness(self, api):
+        match = re.search(r"\((?P<bitness>\d+)bit\)", api[2])
+        return int(match.group("bitness")) if match else 0
+
     def makeDQWord(self, api):
-        match = re.search(r"\((?P<bitness>..)bit\)", api[2])
-        if match:
-            bitness = int(match.group("bitness"))
+        """ turn the location of an API reference into a pointer sized data item, returns False if this is not possible """
+        bitness = self.getBitness(api)
+        if bitness not in (32, 64):
+            return False
+        size = bitness // 8
+        if self.ida_proxy.isData(api[0], size):
+            return True
+        if self.ida_proxy.isPartOfFunctionCode(api[0], size):
+            # an API address within an instruction (e.g. an immediate operand), which must not be destroyed
+            return False
+        self.ida_proxy.undefine(api[0], size)
         if bitness == 32:
-            self.ida_proxy.MakeDWord(api[0])
-        elif bitness == 64:
-            self.ida_proxy.MakeQWord(api[0])
+            return self.ida_proxy.MakeDWord(api[0])
+        return self.ida_proxy.MakeQWord(api[0])
+
+    def getApiName(self, api):
+        match = re.match(r"None<(?P<ordinal>\d+)>$", str(api[3]))
+        if match:
+            # the API is exported by ordinal only, so the API DB has no name for it
+            dll_name = re.sub(r"\W", "_", re.sub(r"(_0x[0-9a-fA-F]+)? \(\d+bit\)$", "", api[2]))
+            return "{}_ordinal_{}".format(dll_name, match.group("ordinal"))
+        return str(api[3])
 
     def makeNameAndStructure(self, api, suffix=None):
+        name = self.getApiName(api)
         if suffix is not None:
-            named = self.ida_proxy.MakeName(api[0], str(api[3] + "_{}".format(suffix)))
-        else:
-            named = self.ida_proxy.MakeName(api[0], str(api[3]))
-        self.makeDQWord(api)
-        return named
+            name += "_{}".format(suffix)
+        return self.ida_proxy.MakeName(api[0], name)
 
     def importTypeLibraries(self):
-        if self.ida_proxy.addTil("wdk8_um") != 1 or self.ida_proxy.addTil("mssdk_win7") != 1:
-            return False
-        return True
+        """ load the type libraries matching the bitness of the database, returns True if all of them are available """
+        bitness = 64 if self.ida_proxy.is64bit() else 32
+        results = [self.ida_proxy.addTil(lib_name) for lib_name in self.TYPE_LIBRARIES[bitness]]
+        return all(result == 1 for result in results)
 
     def helper_getTinfoOfFuncName(self, funcName):
-        try:
-            sym = til_symbol_t()
-            sym.til = cvar.idati
-            sym.name = funcName
-            tinfo = idaapi.tinfo_t()
-            namedType = get_named_type(sym.til, sym.name, 0)
-            if namedType == None:
-                return tinfo, False
-            tinfo.deserialize(sym.til, namedType[1], namedType[2])
-            return tinfo, True
-        except:
-            return None, False
+        tinfo = ida_typeinf.tinfo_t()
+        til = ida_typeinf.get_idati()
+        named_type = ida_typeinf.get_named_type(til, funcName, ida_typeinf.NTF_SYMM)
+        if named_type is None:
+            return tinfo, False
+        if not tinfo.deserialize(til, named_type[1], named_type[2]) or not tinfo.is_func():
+            return tinfo, False
+        return tinfo, True
 
     def setFunctionInformation(self, funcName, callAddress):
+        """ apply the prototype of the API to a call instruction referencing it """
         tinfo, success = self.helper_getTinfoOfFuncName(funcName)
         if not success:
-            print("Error: Cannot resolve function %s - maybe the correct type library is not yet imported?" % (funcName))
             return False
-        errorCode = apply_callee_tinfo(callAddress, tinfo) #in IDA 6.9 this returns <type 'NoneType'>, in IDA 7.1 it is "True"
-        try:
-            success = set_op_tinfo(callAddress, 0, tinfo)
-        except:
-            LOG.error("Could not set type info, set_op_tinfo() not available.")
-        if errorCode not in [None, True] or not success:
+        return self._applyCalleeType(tinfo, callAddress)
+
+    def _applyCalleeType(self, tinfo, address):
+        instruction = ida_ua.insn_t()
+        if not ida_ua.decode_insn(instruction, address) or not ida_idp.is_call_insn(instruction):
             return False
-        return True
+        ida_typeinf.apply_callee_tinfo(address, tinfo)
+        # the operand type makes the decompiler use the prototype for this indirect call
+        return bool(ida_nalt.set_op_tinfo(address, 0, tinfo))
+
+    def setPointerType(self, tinfo, address):
+        """ type the location of the API address as pointer to the API's prototype """
+        pointer_tinfo = ida_typeinf.tinfo_t()
+        if not pointer_tinfo.create_ptr(tinfo):
+            return False
+        return bool(ida_typeinf.apply_tinfo(address, pointer_tinfo, ida_typeinf.TINFO_DEFINITE))
 
     def applyApiNames(self, api_results):
         num_renamed = 0
         num_skipped = 0
         num_xrefs_adapted = 0
+        unresolved_types = set()
 
         prev_offset = 0
         for api in sorted(api_results):
             if api[0] > prev_offset + 16:
                 print("Annotating API Block @0x{:x}.".format(api[0]))
             prev_offset = api[0]
-            if str(api[3]) == "None":
+            if not self.makeDQWord(api):
                 num_skipped += 1
-                print("Skipping 0x{:x}: no name provided by API DB (is None).".format(api[0]))
-                self.makeDQWord(api)
+                print("Skipping 0x{:x}: location of {} is part of an instruction.".format(api[0], self.getApiName(api)))
                 continue
             named = self.makeNameAndStructure(api)
             if not named:
+                # the same API may be referenced from several locations
                 for suffix in range(10):
-                    print("naming 0x{:x} to {} failed, trying with suffix \"_{}\".".format(api[0], str(api[3]), suffix))
                     named = self.makeNameAndStructure(api, suffix)
                     if named:
                         break
-                    else:
-                        print("  naming 0x{:x} to {} failed as well, trying next index...".format(api[0], str(api[3] + "_{}".format(suffix))))
-            if named:
-                num_renamed += 1
-                for xref in idautils.XrefsTo(api[0]):
-                    if self.setFunctionInformation(api[3], xref.frm):
-                        num_xrefs_adapted += 1
+            if not named:
+                num_skipped += 1
+                print("Skipping 0x{:x}: could not set name {}.".format(api[0], self.getApiName(api)))
+                continue
+            num_renamed += 1
+            tinfo, success = self.helper_getTinfoOfFuncName(str(api[3]))
+            if not success:
+                unresolved_types.add(str(api[3]))
+                continue
+            self.setPointerType(tinfo, api[0])
+            for xref in idautils.XrefsTo(api[0]):
+                if self._applyCalleeType(tinfo, xref.frm):
+                    num_xrefs_adapted += 1
+        if unresolved_types:
+            print("No type information available for {} APIs: {}".format(len(unresolved_types), ", ".join(sorted(unresolved_types))))
         return num_renamed, num_skipped, num_xrefs_adapted
 
     def formGetParameters(self, db_folder=None):
         parameters = {}
         if db_folder is None:
             this_dir = os.path.abspath(os.path.join(os.path.dirname(__file__)))
-            try:
-                db_folder = os.path.abspath(os.path.join(this_dir, "..", "dbs"))
-            except:
-                raise Exception("Was not able to automatically locate the ApiScout DB folder.")
-
+            db_folder = os.path.abspath(os.path.join(this_dir, "..", "dbs"))
         form = IdaApiScoutOptionsForm(db_folder)
         form.Compile()
         ok = form.Execute()
         if ok == 1:
-            if form.chosenValues:
-                parameters["api_dbs"] = form.chosenValues
+            api_dbs = form.chosenValues
+            if not api_dbs and os.path.isfile(form.iFileOpen.value):
+                api_dbs = [form.iFileOpen.value]
+            if api_dbs:
+                parameters["api_dbs"] = api_dbs
+                parameters["ignore_aslr_offset"] = form.rAslr.checked
             else:
-                parameters["api_dbs"] = [form.iFileOpen.value]
-            parameters["ignore_aslr_offset"] = form.rAslr.checked
+                print("No API DB selected, nothing to do.")
         form.Free()
         return parameters
 
     def formSelectResults(self, results):
         selected_apis = []
-
         form = IdaApiScoutResultsForm(results, self.getBaseAddress(), self.getLastAddress())
         form.Compile()
         ok = form.Execute()
@@ -227,4 +210,3 @@ class IdaTools(object):
             selected_apis = form.chosenApis
         form.Free()
         return selected_apis
-

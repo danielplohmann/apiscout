@@ -7,12 +7,8 @@ import json
 import os
 
 import idautils
-import idaapi
-if idaapi.IDA_SDK_VERSION < 700:
-    from idaapi import Form
-    from idaapi import Choose2 as Choose
-else:
-    from idaapi import Form, Choose
+import idc
+from idaapi import Form, Choose
 
 from apiscout.ApiScout import ApiScout
 
@@ -34,13 +30,18 @@ class ApiDbChooser(Choose):
 
     def populate(self, api_db_folder):
         api_dbs = []
-        for filename in os.listdir(api_db_folder):
+        if not os.path.isdir(api_db_folder):
+            return api_dbs
+        for filename in sorted(os.listdir(api_db_folder)):
             if not filename.endswith(".json"):
                 continue
-            db_data = {}
-            with open(api_db_folder + os.sep + filename, "r") as f_api_file:
-                db_data = json.loads(f_api_file.read())
-            api_dbs.append([filename, db_data["os_version"], "%s" % db_data["aslr_offsets"], "%d" % db_data["num_dlls"], "%d" % db_data["num_apis"]])
+            try:
+                with open(api_db_folder + os.sep + filename, "r") as f_api_file:
+                    db_data = json.loads(f_api_file.read())
+                api_dbs.append([filename, "%s" % db_data["os_version"], "%s" % db_data["aslr_offsets"], "%d" % db_data["num_dlls"], "%d" % db_data["num_apis"]])
+            except (ValueError, KeyError, TypeError):
+                # not an API DB
+                continue
             self.row_count += 1
         return api_dbs
 
@@ -109,6 +110,7 @@ class ApiChooser(Choose):
         self.base_address = [ea for ea in idautils.Segments()][0]
         self.scout = ApiScout()
         self.scout.setBaseAddress(self.base_address)
+        self.scout.setBinaryLength(idc.get_segm_end([ea for ea in idautils.Segments()][-1]) - self.base_address)
         self.api_results = api_results
         self.all_items = self.populate(api_results)
         self.items = self.populate(api_results)
@@ -134,7 +136,7 @@ class ApiChooser(Choose):
 
         for key in new_api_results:
             unified_results.update(new_api_results[key])
-        for index, entry in enumerate(sorted(unified_results)):
+        for index, entry in enumerate(sorted(unified_results, key=lambda entry: entry[:5])):
             dll_name = "{} ({}bit)".format(entry[2], entry[4])
             api_rows.append(["%d" % (index + 1), "0x%x" % (self.base_address + entry[0]), "0x%x" % entry[1], dll_name, entry[3]])
             self.row_count += 1

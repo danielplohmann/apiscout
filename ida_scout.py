@@ -57,6 +57,8 @@ def main():
         all_results = {}
         for segment_address, binary in sorted(segments.items()):
             scout.setLoadOffset(segment_address - base_address)
+            # code references are resolved relative to the buffer they are found in
+            scout.setBaseAddress(segment_address)
             print("Scanning %d bytes @0x%x in %s mode." % (len(binary), segment_address, bitness_string))
             updateResults(all_results, scout.crawl(binary))
         selected_apis = tools.formSelectResults(all_results)
