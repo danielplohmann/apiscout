@@ -66,6 +66,7 @@ public class GhidraScout extends GhidraScript {
 	boolean windowsArchiveMissing = false;
 
 	static final String PREFERENCE_SCOUT_PY_PATH = "apiscout.scout.py.path";
+	static final String OTHER_API_DB = "Other file...";
 	static final Pattern BITNESS_OF_DLL = Pattern.compile("\\((\\d+) bit\\)$");
 	static final Pattern ORDINAL_ONLY_API = Pattern.compile("None<(\\d+)>");
 
@@ -82,10 +83,7 @@ public class GhidraScout extends GhidraScript {
 		} else {
 			// cancelling one of the dialogs ends the script
 			this.scoutPyPath = this.initApiScoutPathProperty();
-			String dataBasePath = askUserForDatabaseToUse();
-			if (!dataBasePath.isEmpty()) {
-				dataBasePaths.add(dataBasePath);
-			}
+			dataBasePaths.addAll(askUserForDatabasesToUse());
 		}
 		printf("\nProcessing %s\nImage file: %s\n", currentProgram.getName(), currentProgram.getExecutablePath());
 
@@ -111,14 +109,15 @@ public class GhidraScout extends GhidraScript {
 			printf("Annotated %d API references\n", annotated);
 			return;
 		}
-		tableDialog = createTableChooserDialog("ApiScout results:", createTableExecutor());
+		tableDialog = createTableChooserDialog("ApiScout: API references", createTableExecutor());
 		configureTableColumns(tableDialog);
 		for (ApiScoutResultEntry entry : foundApis) {
 			tableDialog.add(new ApiRow(entry));
 		}
 		tableDialog.setClosedListener(this::closeWindowsArchive);
+		tableDialog.setPreferredSize(900, 600);
 		tableDialog.show();
-		tableDialog.setMessage("Found apis");
+		tableDialog.setMessage(foundApis.size() + " API references found, select the ones to annotate");
 	}
 
 	private String initApiScoutPathProperty() throws CancelledException {
@@ -132,18 +131,30 @@ public class GhidraScout extends GhidraScript {
 		return scoutPyAbsolutePath;
 	}
 
-	private String askUserForDatabaseToUse() throws CancelledException {
+	// The API DBs shipped next to scout.py are offered by name, any other file can be chosen as well.
+	private List<String> askUserForDatabasesToUse() throws CancelledException {
+		File dbFolder = new File(new File(this.scoutPyPath).getParentFile(), "dbs");
 		List<String> choices = new ArrayList<String>();
-		choices.add("default");
-		choices.add("other");
-		String choice = askChoice("Choose Api scout DB file", "Default is PATH_TO_API_SCOUT/dbs/*.json", choices,
-				"default");
-		if ("other".equals(choice)) {
-			String dataBasePath = askFile("Api Scout DB path", "OK").getAbsolutePath();
-			printf("ApiScout DB file(s): %s\n", dataBasePath);
-			return dataBasePath;
+		String[] dbFiles = dbFolder.list((folder, name) -> name.endsWith(".json"));
+		if (dbFiles != null) {
+			Arrays.sort(dbFiles);
+			choices.addAll(Arrays.asList(dbFiles));
 		}
-		return "";
+		choices.add(OTHER_API_DB);
+		List<String> chosen = askChoices("ApiScout",
+				"API DBs of the system the memory dump was taken from:", choices);
+		List<String> dataBasePaths = new ArrayList<String>();
+		for (String choice : chosen) {
+			if (OTHER_API_DB.equals(choice)) {
+				dataBasePaths.add(askFile("ApiScout: API DB file", "OK").getAbsolutePath());
+			} else {
+				dataBasePaths.add(new File(dbFolder, choice).getAbsolutePath());
+			}
+		}
+		if (dataBasePaths.isEmpty()) {
+			throw new CancelledException();
+		}
+		return dataBasePaths;
 	}
 
 	// The memory of the program as Ghidra knows it, adjacent initialized blocks merged.
@@ -364,28 +375,27 @@ public class GhidraScout extends GhidraScript {
 
 			@Override
 			public String getColumnValue(AddressableRowObject rowObject) {
-				String val = ((ApiRow) rowObject).entry.api;
-				return val == null ? "" : val;
+				ApiScoutResultEntry entry = ((ApiRow) rowObject).entry;
+				return entry.api == null ? "" : getLabelName(entry);
 			}
 		};
 
 		StringColumnDisplay dllColumn = new StringColumnDisplay() {
 			@Override
 			public String getColumnName() {
-				return "DLL";
+				return "Library";
 			}
 
 			@Override
 			public String getColumnValue(AddressableRowObject rowObject) {
-				String val = ((ApiRow) rowObject).entry.dll;
-				return val == null ? "" : val;
+				return getDllName(((ApiRow) rowObject).entry);
 			}
 		};
 
 		StringColumnDisplay addressColumn = new StringColumnDisplay() {
 			@Override
 			public String getColumnName() {
-				return "API address";
+				return "API Address";
 			}
 
 			@Override
@@ -394,8 +404,8 @@ public class GhidraScout extends GhidraScript {
 			}
 		};
 		tableChooserDialog.addCustomColumn(apiColumn);
-		tableChooserDialog.addCustomColumn(addressColumn);
 		tableChooserDialog.addCustomColumn(dllColumn);
+		tableChooserDialog.addCustomColumn(addressColumn);
 	}
 
 	private TableChooserExecutor createTableExecutor() {
