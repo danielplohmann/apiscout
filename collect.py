@@ -25,17 +25,15 @@
 
 import argparse
 import datetime
+import logging
 import os
 import sys
-import logging
 from multiprocessing import Pool, cpu_count
 
 from apiscout.FingerprintCrawler import FingerprintCrawler
 
 LOG = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)-15s %(message)s")
-
-
 
 
 def get_this_dir():
@@ -52,7 +50,9 @@ def select_db_files(db_paths, use_aslr_dbs=False):
     selected_paths = []
     for db_path in db_paths:
         if not use_aslr_dbs and FingerprintCrawler.dbHasAslrOffsets(db_path):
-            logging.info("Skipping API DB with ASLR offsets (use --use_aslr_dbs or --ignore_aslr to include it): {}".format(db_path))
+            logging.info(
+                f"Skipping API DB with ASLR offsets (use --use_aslr_dbs or --ignore_aslr to include it): {db_path}"
+            )
             continue
         selected_paths.append(db_path)
     return selected_paths
@@ -60,45 +60,84 @@ def select_db_files(db_paths, use_aslr_dbs=False):
 
 def get_winapi1024_path():
     return get_this_dir() + os.sep + "apiscout" + os.sep + "data" + os.sep + "winapi1024v1.txt"
-    
+
 
 def get_file_list(root_path, required_part):
     file_list = []
-    for root, subdir, files in os.walk(root_path):
+    for root, _subdir, files in os.walk(root_path):
         for filename in files:
             if required_part and required_part not in filename:
                 continue
             file_list.append(os.path.join(root, filename))
     return file_list
-    
+
 
 def main():
-    parser = argparse.ArgumentParser(description='Demo: Create a WinApi1024 fingerprint database.')
-    parser.add_argument('root_path', type=str, default='', help='Directory to crawl recursively for building the database (malpedia folder structure assumed).')
-    parser.add_argument('-f', '--filter_size', type=int, default=32, help='Filter out APIs that do not have a neighbour within N bytes (default: 32).')
-    parser.add_argument('-r', '--path_require', type=str, default='', help='A string that files should contain in order to be considered for crawling (e.g. "_dump" for malpedia files).')
-    parser.add_argument('-o', '--output_path', type=str, default='', help='Optionally save the fingerprint file to this location (instead of "./dbs/<YYYY-MM-DD>-winapi1024.csv".')
-    parser.add_argument('-u', '--update_path', type=str, default='', help='Instead of generating a fingerprint database from scratch, load and update an existing file (add new entries only).')
-    parser.add_argument('-i', '--ignore_empty', action='store_true', help='Do not store information for empty fingerprints.')
-    parser.add_argument('-a', '--use_aslr_dbs', action='store_true', help='Also use API DBs that contain ASLR offsets and apply these offsets (only valid for dumps from the boot the DB was built in). By default, such DBs are skipped.')
-    parser.add_argument('--ignore_aslr', action='store_true', help='Also use API DBs that contain ASLR offsets but do not apply these offsets (only meaningful for dumps from systems without ASLR, former default behaviour).')
+    parser = argparse.ArgumentParser(description="Demo: Create a WinApi1024 fingerprint database.")
+    parser.add_argument(
+        "root_path",
+        type=str,
+        default="",
+        help="Directory to crawl recursively for building the database (malpedia folder structure assumed).",
+    )
+    parser.add_argument(
+        "-f",
+        "--filter_size",
+        type=int,
+        default=32,
+        help="Filter out APIs that do not have a neighbour within N bytes (default: 32).",
+    )
+    parser.add_argument(
+        "-r",
+        "--path_require",
+        type=str,
+        default="",
+        help='A string that files should contain in order to be considered for crawling (e.g. "_dump" for malpedia files).',
+    )
+    parser.add_argument(
+        "-o",
+        "--output_path",
+        type=str,
+        default="",
+        help='Optionally save the fingerprint file to this location (instead of "./dbs/<YYYY-MM-DD>-winapi1024.csv".',
+    )
+    parser.add_argument(
+        "-u",
+        "--update_path",
+        type=str,
+        default="",
+        help="Instead of generating a fingerprint database from scratch, load and update an existing file (add new entries only).",
+    )
+    parser.add_argument(
+        "-i", "--ignore_empty", action="store_true", help="Do not store information for empty fingerprints."
+    )
+    parser.add_argument(
+        "-a",
+        "--use_aslr_dbs",
+        action="store_true",
+        help="Also use API DBs that contain ASLR offsets and apply these offsets (only valid for dumps from the boot the DB was built in). By default, such DBs are skipped.",
+    )
+    parser.add_argument(
+        "--ignore_aslr",
+        action="store_true",
+        help="Also use API DBs that contain ASLR offsets but do not apply these offsets (only meaningful for dumps from systems without ASLR, former default behaviour).",
+    )
 
     args = parser.parse_args()
     if args.root_path and os.path.isdir(args.root_path):
         fingerprints = []
         db_paths = select_db_files(get_all_db_files(), args.use_aslr_dbs or args.ignore_aslr)
-        crawler = FingerprintCrawler(db_paths, get_winapi1024_path(), args.root_path, args.filter_size, ignore_aslr_offsets=args.ignore_aslr)
+        crawler = FingerprintCrawler(
+            db_paths, get_winapi1024_path(), args.root_path, args.filter_size, ignore_aslr_offsets=args.ignore_aslr
+        )
         if args.update_path and os.path.isfile(args.update_path):
             crawler.loadIgnoreList(args.update_path)
         file_list = get_file_list(args.root_path, args.path_require)
-        logging.info("Located {} crawlable files for ApiScout, {}/{} can be ignored.".format(crawler.getNumberOfCrawlableFiles(file_list), crawler.getNumberOfIgnorableFiles(file_list), len(file_list)))
-        if sys.version_info >= (3,):
-            with Pool(cpu_count()) as pool:
-                fingerprints.extend(pool.map(crawler.getFingerprint, file_list))
-        else:
-            logging.warning("Using Python2 disables support for parallel processing")
-            for filepath in file_list:
-                fingerprints.append(crawler.getFingerprint(filepath))
+        logging.info(
+            f"Located {crawler.getNumberOfCrawlableFiles(file_list)} crawlable files for ApiScout, {crawler.getNumberOfIgnorableFiles(file_list)}/{len(file_list)} can be ignored."
+        )
+        with Pool(cpu_count()) as pool:
+            fingerprints.extend(pool.map(crawler.getFingerprint, file_list))
         if args.ignore_empty:
             empty_fingerprint = crawler.getEmptyFingerprint()
             fingerprints = [fp for fp in fingerprints if fp[-1] != empty_fingerprint]
@@ -107,12 +146,17 @@ def main():
         if args.output_path:
             crawler.persistFingerprintsToFile(fingerprints, args.output_path)
         elif not args.update_path:
-            # only fall back to the default location if no destination was given at all
-            output_path = get_this_dir() + os.sep + "dbs" + os.sep + "{}-winapi1024.csv".format(datetime.datetime.now().strftime("%Y-%m-%d"))
+            output_path = (
+                get_this_dir()
+                + os.sep
+                + "dbs"
+                + os.sep
+                + "{}-winapi1024.csv".format(datetime.datetime.now().strftime("%Y-%m-%d"))
+            )
             crawler.persistFingerprintsToFile(fingerprints, output_path)
     else:
         parser.print_help()
 
+
 if __name__ == "__main__":
     sys.exit(main())
-

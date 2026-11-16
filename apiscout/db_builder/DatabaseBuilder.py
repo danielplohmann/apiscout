@@ -24,18 +24,18 @@
 ########################################################################
 
 import argparse
+import ctypes
 import json
 import logging
-from operator import attrgetter
 import os
-import re
-import sys
 import platform
-import ctypes
+import sys
+from operator import attrgetter
 
 import pefile
-import config
 from ThreadedCommand import ThreadedCommand
+
+import config
 
 LOG = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)-15s %(message)s")
@@ -48,19 +48,19 @@ def is_windows():
 def get_system_info():
     platform_info = platform.uname()
     version_info = sys.getwindowsversion()
-    os_name = "%s %s %s (%s)" % (platform_info.system, platform_info.release, version_info.service_pack, platform_info.machine)
+    os_name = f"{platform_info.system} {platform_info.release} {version_info.service_pack} ({platform_info.machine})"
     return os_name, platform_info.version
 
 
 def normalize_dll_path(path):
-    """ DLL file name with its folder in lower case (system32/kernel32.dll), which identifies a DLL regardless of where a copy of the system is mounted """
+    """DLL file name with its folder in lower case (system32/kernel32.dll), which identifies a DLL regardless of where a copy of the system is mounted"""
     return "/".join(path.strip().lower().replace("\\", "/").split("/")[-2:])
 
 
 def read_load_addresses(filepath):
-    """ read lines of "<load address> <path of DLL>", as taken from the module list of a process on the target system """
+    """read lines of "<load address> <path of DLL>", as taken from the module list of a process on the target system"""
     load_addresses = []
-    with open(filepath, "r") as f_in:
+    with open(filepath) as f_in:
         for line in f_in:
             fields = line.strip().split(None, 1)
             if len(fields) != 2 or fields[0].startswith("#"):
@@ -74,9 +74,13 @@ def read_load_addresses(filepath):
 
 # courtesy of http://stackoverflow.com/a/16076661
 def loword(dword):
-    return dword & 0x0000ffff
+    return dword & 0x0000FFFF
+
+
 def hiword(dword):
     return dword >> 16
+
+
 def get_product_version(pe):
     try:
         fixed_file_info = pe.VS_FIXEDFILEINFO
@@ -85,15 +89,15 @@ def get_product_version(pe):
             fixed_file_info = fixed_file_info[0]
         ms = fixed_file_info.ProductVersionMS
         ls = fixed_file_info.ProductVersionLS
-        return "%d.%d.%d.%d" % (hiword(ms), loword(ms), hiword(ls), loword(ls))
+        return f"{hiword(ms)}.{loword(ms)}.{hiword(ls)}.{loword(ls)}"
     except AttributeError:
         return "0.0.0.0"
 
 
 def check_aslr():
     # first check for a potentially rebased user32.dll
-    from ctypes import windll
-    from ctypes import wintypes
+    from ctypes import windll, wintypes
+
     check_dlls = ["user32.dll", "kernel32.dll", "ntdll.dll"]
     offsets = []
     is_aslr = False
@@ -110,14 +114,13 @@ def check_aslr():
         pe = pefile.PE(module_path.value)
         pe_header_base_addr = pe.OPTIONAL_HEADER.ImageBase
         offsets.append(pe_header_base_addr - h_module_base)
-    for dll_name, offset in zip(check_dlls, offsets):
+    for dll_name, offset in zip(check_dlls, offsets, strict=False):
         LOG.debug("Memory vs. File ImageBase offset (%s): 0x%x", dll_name, offset)
         is_aslr |= offset != 0
     return is_aslr
 
 
-class DatabaseBuilder(object):
-
+class DatabaseBuilder:
     def _extractPeExports(self, filepath):
         try:
             pe = pefile.PE(filepath)
@@ -127,7 +130,7 @@ class DatabaseBuilder(object):
             if hasattr(pe, "DIRECTORY_ENTRY_EXPORT"):
                 dll_entry = {}
                 dll_entry["base_address"] = pe.OPTIONAL_HEADER.ImageBase
-                dll_entry["bitness"] = 32 if pe.FILE_HEADER.Machine == 0x14c else 64
+                dll_entry["bitness"] = 32 if pe.FILE_HEADER.Machine == 0x14C else 64
                 dll_entry["version"] = get_product_version(pe)
                 dll_entry["filepath"] = filepath
                 dll_entry["aslr_offset"] = 0
@@ -152,11 +155,7 @@ class DatabaseBuilder(object):
         return "{}_{}_{}_0x{:x}".format(dll_info["bitness"], dll_info["version"], filename, dll_info["base_address"])
 
     def _isInFilter(self, target_dll, filter_dlls):
-        # since we want to maintain compatibility with Python 2.7, we can't casefold - upper+lower should suffice though.
-        for check_dll in filter_dlls:
-            if target_dll.upper().lower() == check_dll.upper().lower():
-                return True
-        return False
+        return any(target_dll.casefold() == check_dll.casefold() for check_dll in filter_dlls)
 
     def extractRecursively(self, paths, filter_dlls=False, os_name=None, os_version=None):
         api_count = 0
@@ -176,7 +175,9 @@ class DatabaseBuilder(object):
                     if filter_dlls and not self._isInFilter(fn, config.DLL_FILTER):
                         skipped_count += 1
                         continue
-                    elif not (fn.lower().endswith(".dll") or fn.lower().endswith(".drv") or fn.lower().endswith(".mui")):
+                    elif not (
+                        fn.lower().endswith(".dll") or fn.lower().endswith(".drv") or fn.lower().endswith(".mui")
+                    ):
                         continue
                     pe_count += 1
                     LOG.info("processing: %s %s", root, fn)
@@ -220,7 +221,7 @@ class DatabaseBuilder(object):
         return api_db
 
     def applyLoadAddresses(self, api_db, load_addresses):
-        """ derive ASLR offsets from known load addresses of the DLLs, given as (normalized path, address) """
+        """derive ASLR offsets from known load addresses of the DLLs, given as (normalized path, address)"""
         num_offsets = 0
         known_addresses = dict(load_addresses)
         for dll in api_db["dlls"].values():
@@ -260,34 +261,61 @@ class DatabaseBuilder(object):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Build a database to be used by apiscout.')
-    parser.add_argument('--filter', dest='filter_dlls', action='store_true',
-                        help='(optional) filter DLLs by name (see config.py)')
-    parser.add_argument('--auto', dest='auto', action='store_true',
-                        help='Use default configuration (filtered DLLs from preconfigured paths (see config.py) and extract ASLR offsets.')
-    parser.add_argument('--paths', metavar='P', type=str, nargs='+', default=None,
-                        help='the paths to recursively crawl for DLLs (None -> use default, see config.py).')
-    parser.add_argument('--outfile', dest='output_file', type=str, default=None,
-                        help='(optional) filepath where to put the resulting API DB file.')
-    parser.add_argument('--ignore_aslr', dest='ignore_aslr', action='store_true',
-                        help='Do not perform extraction of ASLR offsets.')
-    parser.add_argument('--aslr_check', dest='aslr_check', action='store_true',
-                        help='Only show ASLR offset.')
+    parser = argparse.ArgumentParser(description="Build a database to be used by apiscout.")
+    parser.add_argument(
+        "--filter", dest="filter_dlls", action="store_true", help="(optional) filter DLLs by name (see config.py)"
+    )
+    parser.add_argument(
+        "--auto",
+        dest="auto",
+        action="store_true",
+        help="Use default configuration (filtered DLLs from preconfigured paths (see config.py) and extract ASLR offsets.",
+    )
+    parser.add_argument(
+        "--paths",
+        metavar="P",
+        type=str,
+        nargs="+",
+        default=None,
+        help="the paths to recursively crawl for DLLs (None -> use default, see config.py).",
+    )
+    parser.add_argument(
+        "--outfile",
+        dest="output_file",
+        type=str,
+        default=None,
+        help="(optional) filepath where to put the resulting API DB file.",
+    )
+    parser.add_argument(
+        "--ignore_aslr", dest="ignore_aslr", action="store_true", help="Do not perform extraction of ASLR offsets."
+    )
+    parser.add_argument("--aslr_check", dest="aslr_check", action="store_true", help="Only show ASLR offset.")
 
-    parser.add_argument('--os_name', type=str, default=None,
-                        help='Name of the OS the DLLs belong to. Together with --os_version, this allows to build an API DB from a copy of the DLLs on any system (without ASLR offsets, unless --load_addresses is given).')
-    parser.add_argument('--os_version', type=str, default=None,
-                        help='Version of the OS the DLLs belong to, e.g. 10.0.19045.')
-    parser.add_argument('--load_addresses', type=str, default=None,
-                        help='File with lines of "<hex load address> <DLL path>" (e.g. the module list of a process), used to derive the ASLR offsets instead of loading the DLLs.')
+    parser.add_argument(
+        "--os_name",
+        type=str,
+        default=None,
+        help="Name of the OS the DLLs belong to. Together with --os_version, this allows to build an API DB from a copy of the DLLs on any system (without ASLR offsets, unless --load_addresses is given).",
+    )
+    parser.add_argument(
+        "--os_version", type=str, default=None, help="Version of the OS the DLLs belong to, e.g. 10.0.19045."
+    )
+    parser.add_argument(
+        "--load_addresses",
+        type=str,
+        default=None,
+        help='File with lines of "<hex load address> <DLL path>" (e.g. the module list of a process), used to derive the ASLR offsets instead of loading the DLLs.',
+    )
 
     args = parser.parse_args()
     builder = DatabaseBuilder()
     offline = bool(args.os_name and args.os_version)
     if not is_windows() and not offline and not args.aslr_check:
-        parser.error("on systems other than Windows, --os_name and --os_version of the system the DLLs were taken from are required.")
+        parser.error(
+            "on systems other than Windows, --os_name and --os_version of the system the DLLs were taken from are required."
+        )
     if args.aslr_check:
-        print("OS has ASLR offsets: {}".format(check_aslr()))
+        print(f"OS has ASLR offsets: {check_aslr()}")
     elif args.auto or args.paths:
         paths = None if args.auto else args.paths
         filter_dlls = True if args.auto else args.filter_dlls
@@ -299,6 +327,7 @@ def main():
         builder.persistApiDb(api_db, args.output_file)
     else:
         parser.print_help()
+
 
 if __name__ == "__main__":
     sys.exit(main())

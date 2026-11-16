@@ -148,7 +148,6 @@ public class GhidraScout extends GhidraScript {
 				printf("ApiScout DB file(s): %s\n", dataBasePath);
 			}
 		} catch (CancelledException e) {
-			// keep the default
 		}
 		return dataBasePath;
 	}

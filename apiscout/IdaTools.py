@@ -38,8 +38,7 @@ from apiscout.IdaProxy import IdaProxy
 LOG = logging.getLogger(__name__)
 
 
-class IdaTools(object):
-
+class IdaTools:
     TYPE_LIBRARIES = {
         32: ["wdk8_um", "mssdk_win7", "ntapi_win7"],
         64: ["mssdk64_win7", "ntapi64_win7"],
@@ -49,7 +48,7 @@ class IdaTools(object):
         self.ida_proxy = IdaProxy()
 
     def getAllMemoryFromIda(self):
-        """ returns the content of all segments, with adjacent segments merged into one buffer: {start address: bytes} """
+        """returns the content of all segments, with adjacent segments merged into one buffer: {start address: bytes}"""
         result = {}
         block_start = None
         block_end = None
@@ -75,7 +74,7 @@ class IdaTools(object):
         return int(match.group("bitness")) if match else 0
 
     def makeDQWord(self, api):
-        """ turn the location of an API reference into a pointer sized data item, returns False if this is not possible """
+        """turn the location of an API reference into a pointer sized data item, returns False if this is not possible"""
         bitness = self.getBitness(api)
         if bitness not in (32, 64):
             return False
@@ -101,11 +100,11 @@ class IdaTools(object):
     def makeNameAndStructure(self, api, suffix=None):
         name = self.getApiName(api)
         if suffix is not None:
-            name += "_{}".format(suffix)
+            name += f"_{suffix}"
         return self.ida_proxy.MakeName(api[0], name)
 
     def importTypeLibraries(self):
-        """ load the type libraries matching the bitness of the database, returns True if all of them are available """
+        """load the type libraries matching the bitness of the database, returns True if all of them are available"""
         bitness = 64 if self.ida_proxy.is64bit() else 32
         results = [self.ida_proxy.addTil(lib_name) for lib_name in self.TYPE_LIBRARIES[bitness]]
         return all(result == 1 for result in results)
@@ -121,7 +120,7 @@ class IdaTools(object):
         return tinfo, True
 
     def setFunctionInformation(self, funcName, callAddress):
-        """ apply the prototype of the API to a call instruction referencing it """
+        """apply the prototype of the API to a call instruction referencing it"""
         tinfo, success = self.helper_getTinfoOfFuncName(funcName)
         if not success:
             return False
@@ -136,7 +135,7 @@ class IdaTools(object):
         return bool(ida_nalt.set_op_tinfo(address, 0, tinfo))
 
     def setPointerType(self, tinfo, address):
-        """ type the location of the API address as pointer to the API's prototype """
+        """type the location of the API address as pointer to the API's prototype"""
         pointer_tinfo = ida_typeinf.tinfo_t()
         if not pointer_tinfo.create_ptr(tinfo):
             return False
@@ -151,11 +150,11 @@ class IdaTools(object):
         prev_offset = 0
         for api in sorted(api_results):
             if api[0] > prev_offset + 16:
-                print("Annotating API Block @0x{:x}.".format(api[0]))
+                print(f"Annotating API Block @0x{api[0]:x}.")
             prev_offset = api[0]
             if not self.makeDQWord(api):
                 num_skipped += 1
-                print("Skipping 0x{:x}: location of {} is part of an instruction.".format(api[0], self.getApiName(api)))
+                print(f"Skipping 0x{api[0]:x}: location of {self.getApiName(api)} is part of an instruction.")
                 continue
             named = self.makeNameAndStructure(api)
             if not named:
@@ -166,7 +165,7 @@ class IdaTools(object):
                         break
             if not named:
                 num_skipped += 1
-                print("Skipping 0x{:x}: could not set name {}.".format(api[0], self.getApiName(api)))
+                print(f"Skipping 0x{api[0]:x}: could not set name {self.getApiName(api)}.")
                 continue
             num_renamed += 1
             tinfo, success = self.helper_getTinfoOfFuncName(str(api[3]))
@@ -178,7 +177,11 @@ class IdaTools(object):
                 if self._applyCalleeType(tinfo, xref.frm):
                     num_xrefs_adapted += 1
         if unresolved_types:
-            print("No type information available for {} APIs: {}".format(len(unresolved_types), ", ".join(sorted(unresolved_types))))
+            print(
+                "No type information available for {} APIs: {}".format(
+                    len(unresolved_types), ", ".join(sorted(unresolved_types))
+                )
+            )
         return num_renamed, num_skipped, num_xrefs_adapted
 
     def formGetParameters(self, db_folder=None):

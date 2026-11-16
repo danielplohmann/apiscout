@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-
 import json
 import logging
 import os
@@ -17,7 +15,6 @@ WINAPI1024_PATH = os.sep.join([PROJECT_ROOT, "apiscout", "data", "winapi1024v1.t
 
 
 class _RecordingHandler(logging.Handler):
-
     def __init__(self):
         logging.Handler.__init__(self)
         self.records = []
@@ -31,9 +28,11 @@ def _buildDll(bitness, base_address, aslr_offset, exports):
         "aslr_offset": aslr_offset,
         "base_address": base_address,
         "bitness": bitness,
-        "exports": [{"address": address, "name": name, "ordinal": index + 1} for index, (address, name) in enumerate(exports)],
+        "exports": [
+            {"address": address, "name": name, "ordinal": index + 1} for index, (address, name) in enumerate(exports)
+        ],
         "filepath": "/test/some.dll",
-        "version": "10.0.17134.1"
+        "version": "10.0.17134.1",
     }
 
 
@@ -42,14 +41,22 @@ def _buildDll(bitness, base_address, aslr_offset, exports):
 ASLR_DB = {
     "aslr_offsets": True,
     "dlls": {
-        "64_10.0.17134.1_kernel32.dll_0x180000000": _buildDll(64, 0x180000000, 0x180000000 - 0x7ffa55930000, [(0x1000, "CreateFileW"), (0x2000, "WriteFile")]),
-        "64_10.0.17134.1_advapi32.dll_0x180000000": _buildDll(64, 0x180000000, 0x180000000 - 0x7ffa54a10000, [(0x1000, "RegOpenKeyExW"), (0x2000, "RegSetValueExW")]),
+        "64_10.0.17134.1_kernel32.dll_0x180000000": _buildDll(
+            64, 0x180000000, 0x180000000 - 0x7FFA55930000, [(0x1000, "CreateFileW"), (0x2000, "WriteFile")]
+        ),
+        "64_10.0.17134.1_advapi32.dll_0x180000000": _buildDll(
+            64, 0x180000000, 0x180000000 - 0x7FFA54A10000, [(0x1000, "RegOpenKeyExW"), (0x2000, "RegSetValueExW")]
+        ),
     },
     "os_name": "Test Windows 10",
-    "os_version": "10.0.17134"
+    "os_version": "10.0.17134",
 }
 
-DUMP_OF_DB_BOOT = b"\x00" * 0x10 + struct.pack("<QQQQ", 0x7ffa55931000, 0x7ffa55932000, 0x7ffa54a11000, 0x7ffa54a12000) + b"\x00" * 0x10
+DUMP_OF_DB_BOOT = (
+    b"\x00" * 0x10
+    + struct.pack("<QQQQ", 0x7FFA55931000, 0x7FFA55932000, 0x7FFA54A11000, 0x7FFA54A12000)
+    + b"\x00" * 0x10
+)
 
 
 class FingerprintCrawlerTestSuite(unittest.TestCase):
@@ -98,17 +105,22 @@ class FingerprintCrawlerTestSuite(unittest.TestCase):
             "winxp_prof_sp3_example.json": False,
         }
         for db_name, has_offsets in sorted(expected.items()):
-            self.assertEqual(has_offsets, FingerprintCrawler.dbHasAslrOffsets(os.sep.join([PROJECT_ROOT, "dbs", db_name])))
+            self.assertEqual(
+                has_offsets, FingerprintCrawler.dbHasAslrOffsets(os.sep.join([PROJECT_ROOT, "dbs", db_name]))
+            )
 
     def testCollectSkipsAslrDbsByDefault(self):
         import collect
+
         minimal_db_path = os.path.join(THIS_DIR, "minimal_db.json")
         db_paths = [self._aslr_db_path, minimal_db_path]
         self.assertEqual([minimal_db_path], collect.select_db_files(db_paths))
         self.assertEqual(db_paths, collect.select_db_files(db_paths, use_aslr_dbs=True))
 
     def testCrawlerAppliesAslrOffsetsOnRequest(self):
-        crawler = FingerprintCrawler([self._aslr_db_path], WINAPI1024_PATH, self._root_path, 0, ignore_aslr_offsets=False)
+        crawler = FingerprintCrawler(
+            [self._aslr_db_path], WINAPI1024_PATH, self._root_path, 0, ignore_aslr_offsets=False
+        )
         family, path, in_api_vector, num_unique_apis, vector = crawler.getFingerprint(self._dump_path)
         self.assertEqual(("family", "sample_dump"), (family, path))
         self.assertEqual((4, 4), (in_api_vector, num_unique_apis))
@@ -133,10 +145,10 @@ class FingerprintCrawlerTestSuite(unittest.TestCase):
     def testAppliedAslrOffsetsDoNotCollide(self):
         scout, warnings = self._loadWithRecordedLog(self._aslr_db_path, False)
         expected = {
-            0x7ffa55931000: ("kernel32.dll_0x180000000", "CreateFileW", 64),
-            0x7ffa55932000: ("kernel32.dll_0x180000000", "WriteFile", 64),
-            0x7ffa54a11000: ("advapi32.dll_0x180000000", "RegOpenKeyExW", 64),
-            0x7ffa54a12000: ("advapi32.dll_0x180000000", "RegSetValueExW", 64),
+            0x7FFA55931000: ("kernel32.dll_0x180000000", "CreateFileW", 64),
+            0x7FFA55932000: ("kernel32.dll_0x180000000", "WriteFile", 64),
+            0x7FFA54A11000: ("advapi32.dll_0x180000000", "RegOpenKeyExW", 64),
+            0x7FFA54A12000: ("advapi32.dll_0x180000000", "RegSetValueExW", 64),
         }
         self.assertEqual(expected, scout.api_maps["Test Windows 10"])
         self.assertEqual([], warnings)
@@ -146,5 +158,5 @@ class FingerprintCrawlerTestSuite(unittest.TestCase):
         self.assertEqual([], warnings)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

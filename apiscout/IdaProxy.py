@@ -24,15 +24,15 @@
 
 import ida_bytes
 import ida_funcs
-import ida_idaapi
 import ida_ida
+import ida_idaapi
 import ida_name
 import ida_segment
 import ida_typeinf
 
 
-class IdaProxy(object):
-    """ Thin wrapper around the IDA API (IDA 7.4 and later, including IDA 9) """
+class IdaProxy:
+    """Thin wrapper around the IDA API (IDA 7.4 and later, including IDA 9)"""
 
     def is64bit(self):
         return ida_ida.inf_is_64bit()
@@ -45,7 +45,9 @@ class IdaProxy(object):
 
     def isPartOfFunctionCode(self, ea, size):
         for address in range(ea, ea + size):
-            if ida_bytes.is_code(ida_bytes.get_full_flags(ida_bytes.get_item_head(address))) and ida_funcs.get_func(address):
+            if ida_bytes.is_code(ida_bytes.get_full_flags(ida_bytes.get_item_head(address))) and ida_funcs.get_func(
+                address
+            ):
                 return True
         return False
 

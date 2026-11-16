@@ -24,15 +24,14 @@
 ########################################################################
 
 import os
-import sys
 
-from apiscout.IdaTools import IdaTools
 from apiscout.ApiScout import ApiScout
+from apiscout.IdaTools import IdaTools
 
 
 def updateResults(results, new_results):
     for key in new_results:
-        if not key in results:
+        if key not in results:
             results[key] = new_results[key]
         else:
             merged_results = results[key]
@@ -59,13 +58,13 @@ def main():
             scout.setLoadOffset(segment_address - base_address)
             # code references are resolved relative to the buffer they are found in
             scout.setBaseAddress(segment_address)
-            print("Scanning %d bytes @0x%x in %s mode." % (len(binary), segment_address, bitness_string))
+            print(f"Scanning {len(binary)} bytes @0x{segment_address:x} in {bitness_string} mode.")
             updateResults(all_results, scout.crawl(binary))
         selected_apis = tools.formSelectResults(all_results)
         if selected_apis:
             tools.importTypeLibraries()
             num_renamed, num_skipped, num_xrefs_adapted = tools.applyApiNames(selected_apis)
-            print("Annotated %d APIs and adapted %d Xrefs(%d skipped)." % (num_renamed, num_xrefs_adapted, num_skipped))
+            print(f"Annotated {num_renamed} APIs and adapted {num_xrefs_adapted} Xrefs ({num_skipped} skipped).")
         else:
             print("No APIs selected for annotation, closing.")
     return 0

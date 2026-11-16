@@ -1,22 +1,15 @@
-import struct
-import os
-import json
-import operator
-import logging
 import hashlib
+import logging
+import struct
 
-from .utility import get_string, get_word, get_dword, get_qword
-from .PeTools import PeTools
 from .OrdinalHelper import OrdinalHelper
+from .PeTools import PeTools
+from .utility import get_dword, get_qword, get_string, get_word
 
-# Only do basicConfig if no handlers have been configured
-if len(logging._handlerList) == 0:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)-15s %(message)s")
 LOG = logging.getLogger(__name__)
 
 
 class ImportDescriptor:
-
     def __init__(self, load_table_offset, name_table_offset, lib_name, is_64bit):
         self.load_table_offset = load_table_offset
         self.name_table_offset = name_table_offset
@@ -54,15 +47,18 @@ class ImportDescriptor:
         if is_ordinal_import:
             ordinal = get_word(buf, offset)
             name_by_ordinal = OrdinalHelper.resolveOrdinal(self.lib_name, ordinal)
-            return  {"ordinal": ordinal, "name": name_by_ordinal, "dll_name": self.lib_name}
-        return {"ordinal": get_word(buf, import_offset), "name": get_string(buf, import_offset + 2), "dll_name": self.lib_name}
+            return {"ordinal": ordinal, "name": name_by_ordinal, "dll_name": self.lib_name}
+        return {
+            "ordinal": get_word(buf, import_offset),
+            "name": get_string(buf, import_offset + 2),
+            "dll_name": self.lib_name,
+        }
 
     def __str__(self):
-        return "{} - 0x{:x} -> 0x{:x} ({})".format(self.lib_name, self.name_table_offset, self.load_table_offset, len(self.imports))
+        return f"{self.lib_name} - 0x{self.name_table_offset:x} -> 0x{self.load_table_offset:x} ({len(self.imports)})"
 
 
 class ImportTableLoader:
-
     def __init__(self, buf, sample_name=""):
         self._buffer = buf
         self._is_pe = PeTools.checkPe(buf)
@@ -74,7 +70,7 @@ class ImportTableLoader:
         file_characteristics_offset = pe_offset + 0x18
         if len(self._buffer) >= pe_offset + 0x18 + 2:
             file_characteristics = get_word(self._buffer, file_characteristics_offset)
-            return True if file_characteristics == 0x20b else False
+            return file_characteristics == 0x20B
         return False
 
     def _get_64bit_bonus_offset(self):
@@ -91,10 +87,10 @@ class ImportTableLoader:
         return descriptor
 
     def _parse_descriptor(self, offset, size):
-        if not size in [20, 32]:
+        if size not in [20, 32]:
             raise RuntimeError("Import Descriptors can only be of size 20 / 32 byte.")
         else:
-            values = struct.unpack("<" + "I" * int(size / 4), self._buffer[offset:offset + size])
+            values = struct.unpack("<" + "I" * int(size / 4), self._buffer[offset : offset + size])
             return self._parse_descriptor_fields(size, values)
 
     def _get_table(self, directory_offset, descriptor_size):
@@ -102,7 +98,7 @@ class ImportTableLoader:
         if not self._is_pe:
             return import_address_table
         pe_offset = PeTools.getPeOffset(self._buffer)
-        import_dd_offset = pe_offset + directory_offset + self. _get_64bit_bonus_offset()
+        import_dd_offset = pe_offset + directory_offset + self._get_64bit_bonus_offset()
         it_rva = get_dword(self._buffer, import_dd_offset)
         if it_rva:
             it_offset = 0
@@ -115,12 +111,24 @@ class ImportTableLoader:
                     it_offset += descriptor_size
                     descriptor = self._parse_descriptor(it_rva + it_offset, descriptor_size)
             except IndexError:
-                self._sample_name = self._sample_name if self._sample_name != "" else hashlib.sha256(self._buffer).hexdigest()
-                LOG.warning("Import Table parsing was incomplete on file (%s), due to IndexError. Continuing with %d extracted imports...", self._sample_name, len(import_address_table.items()))
+                self._sample_name = (
+                    self._sample_name if self._sample_name != "" else hashlib.sha256(self._buffer).hexdigest()
+                )
+                LOG.warning(
+                    "Import Table parsing was incomplete on file (%s), due to IndexError. Continuing with %d extracted imports...",
+                    self._sample_name,
+                    len(import_address_table.items()),
+                )
                 return import_address_table
             except struct.error:
-                self._sample_name = self._sample_name if self._sample_name != "" else hashlib.sha256(self._buffer).hexdigest()
-                LOG.warning("Import Table parsing was incomplete on file (%s), due to struct.error. Continuing  with %d extracted imports...", self._sample_name, len(import_address_table.items()))
+                self._sample_name = (
+                    self._sample_name if self._sample_name != "" else hashlib.sha256(self._buffer).hexdigest()
+                )
+                LOG.warning(
+                    "Import Table parsing was incomplete on file (%s), due to struct.error. Continuing  with %d extracted imports...",
+                    self._sample_name,
+                    len(import_address_table.items()),
+                )
                 return import_address_table
         return import_address_table
 
@@ -131,4 +139,4 @@ class ImportTableLoader:
         return self._get_table(0xE0, 32)
 
     def __str__(self):
-        return "ImportTableLoader - buffer size: {} bytes, PE: {}, 64bit: {}".format(len(self._buffer), self._is_pe, self._is_64bit)
+        return f"ImportTableLoader - buffer size: {len(self._buffer)} bytes, PE: {self._is_pe}, 64bit: {self._is_64bit}"

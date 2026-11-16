@@ -1,4 +1,4 @@
-class OrdinalHelper(object):
+class OrdinalHelper:
     """
     Names for APIs of DLLs which are frequently imported by ordinal only.
     The tables are those of pefile's ordlookup (see db_builder/ordlookup), ole32.dll and mfc42.dll are candidates for extension.

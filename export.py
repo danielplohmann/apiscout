@@ -25,9 +25,9 @@
 ########################################################################
 
 import argparse
+import logging
 import os
 import sys
-import logging
 
 from apiscout.ApiQR import ApiQR
 
@@ -38,15 +38,16 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)-15s %(message)s")
 def get_this_dir():
     return os.path.abspath(os.path.join(os.path.dirname(__file__)))
 
+
 def get_winapi1024_path():
     return get_this_dir() + os.sep + "apiscout" + os.sep + "data" + os.sep + "winapi1024v1.txt"
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Demo: Use apiscout to visualize WinApi1024 vectors as ApiQR.')
-    parser.add_argument('vector', type=str, default='', help='compressed vector to export.')
-    parser.add_argument('-w', '--web', type=str, default='', help='Path to output as html to.')
-    parser.add_argument('-p', '--png', type=str, default='', help='Path to output as PNG to.')
+    parser = argparse.ArgumentParser(description="Demo: Use apiscout to visualize WinApi1024 vectors as ApiQR.")
+    parser.add_argument("vector", type=str, default="", help="compressed vector to export.")
+    parser.add_argument("-w", "--web", type=str, default="", help="Path to output as html to.")
+    parser.add_argument("-p", "--png", type=str, default="", help="Path to output as PNG to.")
 
     args = parser.parse_args()
     apiqr = ApiQR(get_winapi1024_path())
@@ -59,6 +60,7 @@ def main():
             apiqr.exportPng(args.png)
     else:
         parser.print_help()
+
 
 if __name__ == "__main__":
     sys.exit(main())

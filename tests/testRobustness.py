@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(THIS_DIR, "..", "apiscout", "db_builder"))
 
 
 def build_pe32():
-    """ unmapped PE32 with one section at RVA 0x1000 that imports kernel32!CreateFileW, ws2_32!#16 and ws2_32!send """
+    """unmapped PE32 with one section at RVA 0x1000 that imports kernel32!CreateFileW, ws2_32!#16 and ws2_32!send"""
     section = bytearray(0x200)
     # kernel32.dll uses an import name table, ws2_32.dll has none (as produced by some linkers and packers)
     struct.pack_into("<IIIII", section, 0x00, 0x1080, 0, 0, 0x1100, 0x10A0)
@@ -47,26 +47,32 @@ def build_pe32():
     struct.pack_into("<I", header, optional_header + 92, 16)
     struct.pack_into("<II", header, optional_header + 104, 0x1000, 0x3C)
     section_header = optional_header + 0xE0
-    header[section_header:section_header + 8] = b".rdata\x00\x00"
+    header[section_header : section_header + 8] = b".rdata\x00\x00"
     struct.pack_into("<IIII", header, section_header + 8, 0x200, 0x1000, 0x200, 0x200)
     struct.pack_into("<I", header, section_header + 36, 0x40000040)
     return bytes(header + section)
 
 
-EXPECTED_IMPORTS = {(0x10A0, "kernel32.dll_0x0", "CreateFileW"), (0x10C0, "ws2_32.dll_0x0", "recv"), (0x10C4, "ws2_32.dll_0x0", "send")}
+EXPECTED_IMPORTS = {
+    (0x10A0, "kernel32.dll_0x0", "CreateFileW"),
+    (0x10C0, "ws2_32.dll_0x0", "recv"),
+    (0x10C4, "ws2_32.dll_0x0", "send"),
+}
 
 
 class CrawlTestSuite(unittest.TestCase):
-
     def _getScout(self):
         scout = ApiScout()
-        scout.api_maps["test"] = {0x71AB1000: ("ws2_32.dll_0x71ab0000", "connect", 32), 0x7FF000001000: ("kernel32.dll_0x7ff000000000", "Sleep", 64)}
+        scout.api_maps["test"] = {
+            0x71AB1000: ("ws2_32.dll_0x71ab0000", "connect", 32),
+            0x7FF000001000: ("kernel32.dll_0x7ff000000000", "Sleep", 64),
+        }
         scout.has_64bit = True
         return scout
 
     def testOpcodeAtEndOfBuffer(self):
         scout = self._getScout()
-        for tail in (b"\xFF\x15", b"\xFF\x25\x00", b"\xFF\x15\x00\x00\x00"):
+        for tail in (b"\xff\x15", b"\xff\x25\x00", b"\xff\x15\x00\x00\x00"):
             self.assertEqual({"test": []}, scout.crawl(b"\x00" * 16 + tail))
 
     def testResultsAreOrderedByOffset(self):
@@ -78,8 +84,8 @@ class CrawlTestSuite(unittest.TestCase):
 
     def testFilterDoesNotDependOnInputOrder(self):
         scout = ApiScout()
-        entries = [(0x40, ), (0x0, ), (0x100, ), (0x4, )]
-        self.assertEqual([(0x0, ), (0x4, )], scout.filter({"test": entries}, 0, 0, 0x8, False)["test"])
+        entries = [(0x40,), (0x0,), (0x100,), (0x4,)]
+        self.assertEqual([(0x0,), (0x4,)], scout.filter({"test": entries}, 0, 0, 0x8, False)["test"])
 
     def testPrimaryVectorWithoutApiDb(self):
         scout = ApiScout()
@@ -88,10 +94,19 @@ class CrawlTestSuite(unittest.TestCase):
         self.assertEqual("A171", vector["vector"])
 
     def testApiMapsOfSameOsDoNotReplaceEachOther(self):
-        db = {"os_name": "Windows 10", "dlls": {"64_1.0_a.dll_0x180000000": {"base_address": 0x180000000, "bitness": 64, "exports": [{"address": 0x1000, "name": "A", "ordinal": 1}]}}}
+        db = {
+            "os_name": "Windows 10",
+            "dlls": {
+                "64_1.0_a.dll_0x180000000": {
+                    "base_address": 0x180000000,
+                    "bitness": 64,
+                    "exports": [{"address": 0x1000, "name": "A", "ordinal": 1}],
+                }
+            },
+        }
         paths = []
         for index in range(2):
-            with tempfile.NamedTemporaryFile("w", suffix="_boot%d.json" % index, delete=False) as f_db:
+            with tempfile.NamedTemporaryFile("w", suffix=f"_boot{index}.json", delete=False) as f_db:
                 json.dump(db, f_db)
                 paths.append(f_db.name)
         try:
@@ -106,15 +121,20 @@ class CrawlTestSuite(unittest.TestCase):
 
     def testCollectionRendering(self):
         scout = ApiScout()
-        results = {"vector": "A171", "collection_filepath": "none", "families_in_collection": 0, "vectors_in_collection": 0, "match_results": []}
+        results = {
+            "vector": "A171",
+            "collection_filepath": "none",
+            "families_in_collection": 0,
+            "vectors_in_collection": 0,
+            "match_results": [],
+        }
         self.assertIn("nothing to match", scout.renderVectorCollectionResults(results))
-        results["match_results"] = [("family%d" % index, "sample", 0.5) for index in range(10)]
+        results["match_results"] = [(f"family{index}", "sample", 0.5) for index in range(10)]
         rendered = scout.renderVectorCollectionResults(results, max_results=3)
         self.assertEqual(6, rendered.count("- sample -"))
 
 
 class ImportTableTestSuite(unittest.TestCase):
-
     def _getImports(self, results):
         return set((entry[0], entry[2], entry[3]) for entry in results["import_table"])
 
@@ -134,7 +154,10 @@ class ImportTableTestSuite(unittest.TestCase):
 
     def testMissingImportNameTable(self):
         imports = ImportTableLoader(PeTools.mapBinary(build_pe32())).get_import_table()
-        self.assertEqual({0x10A0: "CreateFileW", 0x10C0: "recv", 0x10C4: "send"}, {offset: entry["name"] for offset, entry in imports.items()})
+        self.assertEqual(
+            {0x10A0: "CreateFileW", 0x10C0: "recv", 0x10C4: "send"},
+            {offset: entry["name"] for offset, entry in imports.items()},
+        )
 
     def testOrdinals(self):
         self.assertEqual("recv", OrdinalHelper.resolveOrdinal("WS2_32.dll", 16))
@@ -148,7 +171,6 @@ class ImportTableTestSuite(unittest.TestCase):
 
 
 class PeToolsTestSuite(unittest.TestCase):
-
     def testMapBinary(self):
         pe = build_pe32()
         mapped = PeTools.mapBinary(pe)
@@ -165,7 +187,7 @@ class PeToolsTestSuite(unittest.TestCase):
         pe = bytearray(build_pe32())
         # move the section table by 0x10 bytes, as given by SizeOfOptionalHeader
         section_header = 0x58 + 0xE0
-        pe[section_header + 0x10:section_header + 0x38] = pe[section_header:section_header + 0x28]
+        pe[section_header + 0x10 : section_header + 0x38] = pe[section_header : section_header + 0x28]
         struct.pack_into("<H", pe, 0x54, 0xF0)
         self.assertEqual(bytes(pe[0x200:]), PeTools.mapBinary(bytes(pe))[0x1000:])
 
@@ -177,7 +199,6 @@ class PeToolsTestSuite(unittest.TestCase):
 
 
 class VectorTestSuite(unittest.TestCase):
-
     @classmethod
     def setUpClass(cls):
         cls.apivector = ApiVector(WINAPI1024_PATH)
@@ -191,19 +212,28 @@ class VectorTestSuite(unittest.TestCase):
     def testMatchingAcceptsAllVectorRepresentations(self):
         for vector in (self.compressed, self.bits, tuple(self.bits), self.apivector.decompress(self.compressed)):
             self.assertEqual(1.0, self.apivector.matchVectors(vector, self.compressed))
-            self.assertEqual(self.apivector.getVectorConfidence(self.compressed), self.apivector.getVectorConfidence(vector))
-            self.assertEqual(self.apivector.getListFromApiVector(self.compressed), self.apivector.getListFromApiVector(vector))
+            self.assertEqual(
+                self.apivector.getVectorConfidence(self.compressed), self.apivector.getVectorConfidence(vector)
+            )
+            self.assertEqual(
+                self.apivector.getListFromApiVector(self.compressed), self.apivector.getListFromApiVector(vector)
+            )
 
     def testMatchingEmptyVectors(self):
         self.assertEqual(0.0, self.apivector.matchVectors("A171", "A171"))
 
     def testUnresolvedOrdinalsAreIgnored(self):
-        results = {"import_table": [(0, 0, "oleaut32.dll_0x0", "", 32, True, 1, set()), (4, 0, "kernel32.dll_0x0", "CreateFileW", 32, True, 1, set())]}
+        results = {
+            "import_table": [
+                (0, 0, "oleaut32.dll_0x0", "", 32, True, 1, set()),
+                (4, 0, "kernel32.dll_0x0", "CreateFileW", 32, True, 1, set()),
+            ]
+        }
         self.assertEqual(1, self.apivector.getApiVectors(results)["import_table"]["num_unique_apis"])
 
     def testCollectionWithBlankLines(self):
         with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as f_collection:
-            f_collection.write("\nfamily;sample;1;1;%s\n\nincomplete;line\n" % self.compressed)
+            f_collection.write(f"\nfamily;sample;1;1;{self.compressed}\n\nincomplete;line\n")
         try:
             results = self.apivector.matchVectorCollection(self.compressed, f_collection.name)
             self.assertEqual([("family", "sample", 1.0)], results["match_results"])
@@ -212,7 +242,6 @@ class VectorTestSuite(unittest.TestCase):
 
 
 class ApiQrTestSuite(unittest.TestCase):
-
     def _getApiQr(self):
         apiqr = ApiQR(WINAPI1024_PATH)
         apiqr.setVector(ApiVector(WINAPI1024_PATH).compress([1, 0, 0, 1] * 256))
@@ -231,7 +260,7 @@ class ApiQrTestSuite(unittest.TestCase):
             pass
         try:
             apiqr.exportHtml(f_html.name, full=True)
-            with open(f_html.name, "r") as f_in:
+            with open(f_html.name) as f_in:
                 html = f_in.read()
             self.assertEqual(1024, html.count('class="apicell"'))
             self.assertIn(ApiVector(WINAPI1024_PATH).compress([1, 0, 0, 1] * 256), html)
@@ -246,21 +275,39 @@ class ApiQrTestSuite(unittest.TestCase):
 
 
 class DatabaseBuilderTestSuite(unittest.TestCase):
-
     def testLoadAddresses(self):
         import DatabaseBuilder
+
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f_addresses:
-            f_addresses.write("# modules\n0x7ffb11110000 C:\\Windows\\System32\\kernel32.dll\n75990000 C:\\Windows\\SysWOW64\\kernel32.dll\n\n")
+            f_addresses.write(
+                "# modules\n0x7ffb11110000 C:\\Windows\\System32\\kernel32.dll\n75990000 C:\\Windows\\SysWOW64\\kernel32.dll\n\n"
+            )
         try:
             load_addresses = DatabaseBuilder.read_load_addresses(f_addresses.name)
         finally:
             os.remove(f_addresses.name)
-        self.assertEqual([("system32/kernel32.dll", 0x7FFB11110000), ("syswow64/kernel32.dll", 0x75990000)], load_addresses)
-        api_db = {"dlls": {
-            "64_kernel32.dll": {"filepath": "/mnt/win/Windows/System32/kernel32.dll", "base_address": 0x180000000, "aslr_offset": 0},
-            "32_kernel32.dll": {"filepath": "/mnt/win/Windows/SysWOW64/kernel32.dll", "base_address": 0x68900000, "aslr_offset": 0},
-            "64_ntdll.dll": {"filepath": "/mnt/win/Windows/System32/ntdll.dll", "base_address": 0x180000000, "aslr_offset": 0},
-        }}
+        self.assertEqual(
+            [("system32/kernel32.dll", 0x7FFB11110000), ("syswow64/kernel32.dll", 0x75990000)], load_addresses
+        )
+        api_db = {
+            "dlls": {
+                "64_kernel32.dll": {
+                    "filepath": "/mnt/win/Windows/System32/kernel32.dll",
+                    "base_address": 0x180000000,
+                    "aslr_offset": 0,
+                },
+                "32_kernel32.dll": {
+                    "filepath": "/mnt/win/Windows/SysWOW64/kernel32.dll",
+                    "base_address": 0x68900000,
+                    "aslr_offset": 0,
+                },
+                "64_ntdll.dll": {
+                    "filepath": "/mnt/win/Windows/System32/ntdll.dll",
+                    "base_address": 0x180000000,
+                    "aslr_offset": 0,
+                },
+            }
+        }
         api_db = DatabaseBuilder.DatabaseBuilder().applyLoadAddresses(api_db, load_addresses)
         self.assertTrue(api_db["aslr_offsets"])
         self.assertEqual(0x180000000 - 0x7FFB11110000, api_db["dlls"]["64_kernel32.dll"]["aslr_offset"])
