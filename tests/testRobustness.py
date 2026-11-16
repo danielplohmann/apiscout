@@ -194,7 +194,7 @@ class PeToolsTestSuite(unittest.TestCase):
     def testMapCorruptBinary(self):
         pe = bytearray(build_pe32())
         struct.pack_into("<I", pe, 0x58 + 0xE0 + 8, 0xFFFFFFF0)
-        self.assertEqual(b"", PeTools.mapBinary(bytes(pe)))
+        self.assertEqual(0x1200, len(PeTools.mapBinary(bytes(pe))))
         self.assertEqual(b"", PeTools.mapBinary(b"no pe file" * 20))
 
 
@@ -407,9 +407,11 @@ class HostileInputTestSuite(unittest.TestCase):
         }
         self.assertEqual("good", ApiScout().getPrimaryVector(vectors)[0])
 
-    def testOversizedImageIsNotMapped(self):
+    def testOversizedImageIsCutToItsFileData(self):
         pe = bytearray(build_pe32())
         struct.pack_into("<I", pe, 0x58 + 0xE0 + 8, 0x20000000)
+        self.assertEqual(0x1200, len(PeTools.mapBinary(bytes(pe))))
+        struct.pack_into("<I", pe, 0x58 + 0xE0 + 12, 0x20000000)
         self.assertEqual(b"", PeTools.mapBinary(bytes(pe)))
 
     def testUpdatingFingerprintsKeepsOtherEntries(self):
@@ -572,6 +574,60 @@ class ThirdAuditTestSuite(unittest.TestCase):
         mapped = PeTools.mapBinary(bytes(pe))
         self.assertEqual(0x1200, len(mapped))
         self.assertEqual(3, len(ImportTableLoader(mapped).get_import_table()))
+
+
+class FourthAuditTestSuite(unittest.TestCase):
+    def testImportBudgetFollowsTheFileSize(self):
+        pe = bytearray(build_pe32()) + bytearray(0x800)
+        struct.pack_into("<IIII", pe, 0x58 + 0xE0 + 8, 0xA00, 0x1000, 0xA00, 0x200)
+        # many descriptors sharing one long thunk list, as a crafted file would have
+        for index in range(0x40):
+            struct.pack_into("<I", pe, 0x200 + 0x200 + 4 * index, 0x1120)
+        num_descriptors = 0x28
+        for index in range(num_descriptors):
+            struct.pack_into("<IIIII", pe, 0x200 + 0x300 + 20 * index, 0x1200, 0, 0, 0x1100, 0x1200 + 0x10000 * index)
+        struct.pack_into("<II", pe, 0x58 + 104, 0x1300, 20 * num_descriptors)
+        entries = ApiScout().evaluateImportTable(bytes(pe))["import_table"]
+        self.assertLessEqual(len(entries), len(pe) // 4)
+        self.assertLess(len(entries), 0x40 * num_descriptors)
+
+    def testPeHeaderBehind64k(self):
+        pe = bytearray(build_pe32())
+        moved = bytearray(0x20000) + pe[0x40:0x200]
+        moved[0:0x40] = pe[0:0x40]
+        struct.pack_into("<I", moved, 0x3C, 0x20000)
+        self.assertTrue(PeTools.checkPe(bytes(moved)))
+        self.assertEqual(0x20000, PeTools.getPeOffset(bytes(moved)))
+        self.assertEqual(0, PeTools.getPeOffset(b"MZ" + b"\xff" * 0x100))
+
+    def testFileNamesThatAreNoValidUtf8(self):
+        from apiscout.FingerprintCrawler import FingerprintCrawler
+
+        crawler = FingerprintCrawler([], WINAPI1024_PATH, "/x")
+        name = b"bad\xff_dump".decode("utf-8", errors="surrogateescape")
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "list.csv")
+            crawler.persistFingerprintsToFile([("fam", name, 1, 1, "A171")], path)
+            crawler.loadIgnoreList(path)
+            self.assertIn(("fam", name), crawler._ignore_files)
+
+    def testLoadAddressesOfA32BitProcess(self):
+        import DatabaseBuilder
+
+        api_db = {
+            "dlls": {
+                "64": {
+                    "filepath": "C:\\Windows\\System32\\kernel32.dll",
+                    "base_address": 0x180000000,
+                    "aslr_offset": 0,
+                },
+                "32": {"filepath": "C:\\Windows\\SysWOW64\\kernel32.dll", "base_address": 0x6B800000, "aslr_offset": 0},
+            }
+        }
+        addresses = [("system32/kernel32.dll", 0x7FFB11110000), ("system32/kernel32.dll", 0x75990000)]
+        DatabaseBuilder.DatabaseBuilder().applyLoadAddresses(api_db, addresses)
+        self.assertEqual(0x180000000 - 0x7FFB11110000, api_db["dlls"]["64"]["aslr_offset"])
+        self.assertEqual(0x6B800000 - 0x75990000, api_db["dlls"]["32"]["aslr_offset"])
 
 
 if __name__ == "__main__":

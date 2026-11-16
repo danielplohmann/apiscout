@@ -230,8 +230,18 @@ class DatabaseBuilder:
 
     def applyLoadAddresses(self, api_db, load_addresses):
         """derive ASLR offsets from known load addresses of the DLLs, given as (normalized path, address)"""
+        has_wow64_dlls = any(
+            normalize_dll_path(dll["filepath"]).startswith("syswow64/") for dll in api_db["dlls"].values()
+        )
+        known_addresses = {}
+        for dll_path, load_address in load_addresses:
+            if has_wow64_dlls and dll_path.startswith("system32/") and load_address < 0x100000000:
+                # the module list of a 32bit process names its DLLs by their redirected System32 path
+                dll_path = "syswow64/" + dll_path.split("/", 1)[1]
+            if known_addresses.get(dll_path, load_address) != load_address:
+                LOG.warning("Several load addresses given for %s, using 0x%x.", dll_path, load_address)
+            known_addresses[dll_path] = load_address
         num_offsets = 0
-        known_addresses = dict(load_addresses)
         for dll_key, dll in api_db["dlls"].items():
             for filepath in [dll["filepath"]] + self._duplicate_paths.get(dll_key, []):
                 load_address = known_addresses.get(normalize_dll_path(filepath))
@@ -333,6 +343,8 @@ def main():
             "on systems other than Windows, --os_name and --os_version of the system the DLLs were taken from are required, and --aslr_check is not available."
         )
     load_addresses = read_load_addresses(args.load_addresses) if args.load_addresses else None
+    if args.output_file and not os.access(os.path.dirname(os.path.abspath(args.output_file)), os.W_OK):
+        parser.error(f"can not write to the folder of {args.output_file}")
     if args.aslr_check:
         print(f"OS has ASLR offsets: {check_aslr()}")
     elif args.auto or args.paths:

@@ -169,8 +169,11 @@ class IdaTools:
     def filterByDistance(self, rows, distance):
         return ApiScout._getFilteredList(distance, rows)
 
-    def applyApiNames(self, api_results, status=None):
-        """annotate the given rows, a description of the outcome per address is stored in the optional dict status"""
+    def applyApiNames(self, api_results, status=None, known_locations=None):
+        """
+        annotate the given rows, a description of the outcome per row is stored in the optional dict status.
+        known_locations are the locations of all API references found, also of those that are not annotated now.
+        """
         if status is None:
             status = {}
         num_renamed = 0
@@ -179,7 +182,7 @@ class IdaTools:
         unresolved_types = set()
 
         prev_offset = 0
-        locations = {api[0] for api in api_results}
+        locations = known_locations if known_locations is not None else {api[0] for api in api_results}
         annotated_locations = {}
         for api in sorted(api_results):
             if api[0] > prev_offset + 16:
@@ -188,30 +191,31 @@ class IdaTools:
             if api[0] in annotated_locations:
                 # several API DBs can resolve one location differently, the first one listed is applied
                 num_skipped += 1
+                status[tuple(api[:4])] = "skipped: location is annotated as " + annotated_locations[api[0]]
                 print(f"Skipping 0x{api[0]:x}: location is annotated as {annotated_locations[api[0]]} already.")
                 continue
-            annotated_locations[api[0]] = self.getApiName(api)
             size = self.getBitness(api) // 8
             in_table = bool(size) and (api[0] - size in locations or api[0] + size in locations)
             reason = self.makeDQWord(api, in_table)
             if reason:
                 num_skipped += 1
-                status[api[0]] = "skipped: " + reason
+                status[tuple(api[:4])] = "skipped: " + reason
                 print(f"Skipping 0x{api[0]:x}: location of {self.getApiName(api)} is {reason}.")
                 continue
             if not self.makeNameAndStructure(api):
                 num_skipped += 1
-                status[api[0]] = "skipped: name could not be set"
+                status[tuple(api[:4])] = "skipped: name could not be set"
                 print(f"Skipping 0x{api[0]:x}: could not set name {self.getApiName(api)}.")
                 continue
             num_renamed += 1
+            annotated_locations[api[0]] = self.getApiName(api)
             self.ida_proxy.grantUnknownPermissions(api[0])
             tinfo, success = self.helper_getTinfoOfFuncName(str(api[3]))
             if not success:
-                status[api[0]] = "annotated (no type information)"
+                status[tuple(api[:4])] = "annotated (no type information)"
                 unresolved_types.add(str(api[3]))
                 continue
-            status[api[0]] = "annotated"
+            status[tuple(api[:4])] = "annotated"
             self.setPointerType(tinfo, api[0])
             for xref in idautils.XrefsTo(api[0]):
                 if self._applyCalleeType(tinfo, xref.frm):

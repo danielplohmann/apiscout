@@ -33,6 +33,8 @@ import idautils
 
 
 class IdaProxy:
+    # segments are read in chunks of this size
+    CHUNK_SIZE = 0x100000
     """Thin wrapper around the IDA API (IDA 9)"""
 
     def is64bit(self):
@@ -43,23 +45,32 @@ class IdaProxy:
 
     def getLoadedRanges(self, ea, size):
         """the parts of a range that have a value in the database as list of (address, bytes)"""
-        result = ida_bytes.get_bytes_and_mask(ea, size)
-        if not result:
-            return []
-        content, mask = result
-        if mask.count(b"\xff") >= size // 8 and all(
-            (mask[index >> 3] >> (index & 7)) & 1 for index in range(size & ~7, size)
-        ):
-            return [(ea, content)]
         ranges = []
-        start = None
-        for index in range(size + 1):
-            is_loaded = index < size and (mask[index >> 3] >> (index & 7)) & 1
-            if is_loaded and start is None:
-                start = index
-            elif not is_loaded and start is not None:
-                ranges.append((ea + start, content[start:index]))
+        for chunk_start in range(ea, ea + size, self.CHUNK_SIZE):
+            chunk_size = min(self.CHUNK_SIZE, ea + size - chunk_start)
+            result = ida_bytes.get_bytes_and_mask(chunk_start, chunk_size)
+            if not result:
+                continue
+            content, mask = result
+            if not any(mask):
+                continue
+            if mask.count(b"\xff") == len(mask) and chunk_size % 8 == 0:
+                loaded = [(0, chunk_size)]
+            else:
+                loaded = []
                 start = None
+                for index in range(chunk_size + 1):
+                    is_loaded = index < chunk_size and (mask[index >> 3] >> (index & 7)) & 1
+                    if is_loaded and start is None:
+                        start = index
+                    elif not is_loaded and start is not None:
+                        loaded.append((start, index))
+                        start = None
+            for start, end in loaded:
+                if ranges and ranges[-1][0] + len(ranges[-1][1]) == chunk_start + start:
+                    ranges[-1] = (ranges[-1][0], ranges[-1][1] + content[start:end])
+                else:
+                    ranges.append((chunk_start + start, content[start:end]))
         return ranges
 
     def getNumReferences(self, ea):

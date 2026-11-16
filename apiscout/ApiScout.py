@@ -240,12 +240,20 @@ class ApiScout:
     def evaluateImportTable(self, binary, is_unmapped=True):
         self._binary_length = len(binary)
         results = {"import_table": []}
-        # LIEF expects the layout of a file, images that are mapped already are left to our own parser
-        lief_binary = self._parseWithLief(binary) if is_unmapped else None
+        mapped_binary = PeTools.mapBinary(binary) if is_unmapped else binary
+        # a file can not hold more imports than pointers, crafted tables referencing each other are cut off there
+        max_thunks = len(binary) // 8 if PeTools.getBitness(mapped_binary) == 64 else len(binary) // 4
+        import_table_loader = ImportTableLoader(mapped_binary, max_thunks=max_thunks)
+        self._import_table = import_table_loader.get_import_table()
+        # LIEF expects the layout of a file, images that are mapped already are left to our own parser.
+        # It has no limit for crafted import tables, so those are left to our own parser as well.
+        lief_binary = None
+        if is_unmapped and not import_table_loader.budget_exhausted:
+            lief_binary = self._parseWithLief(binary)
         if lief_binary is not None:
             # the machine type is read from the header directly, as its representation differs across LIEF versions
             bitness = PeTools.getBitness(binary)
-            references = self._getCodeReferences(PeTools.mapBinary(binary))
+            references = self._getCodeReferences(mapped_binary)
             for imported_library in lief_binary.imports:
                 dll_name = str(imported_library.name).lower()
                 for func in imported_library.entries:
@@ -268,12 +276,7 @@ class ApiScout:
                         )
         else:
             # fallback using the old method and out own import table parser
-            mapped_binary = binary
-            if is_unmapped:
-                LOG.debug("Mapping unmapped binary before processing")
-                mapped_binary = PeTools.mapBinary(binary)
             bitness = PeTools.getBitness(mapped_binary)
-            self._import_table = ImportTableLoader(mapped_binary).get_import_table()
             references = self._getCodeReferences(mapped_binary)
             for offset, import_entry in sorted(self._import_table.items()):
                 if not import_entry["name"]:

@@ -125,6 +125,10 @@ def main():
 
     args = parser.parse_args()
     if args.root_path and os.path.isdir(args.root_path):
+        for destination in (args.output_path, args.update_path):
+            # found out before the crawl, not after it
+            if destination and not os.access(os.path.dirname(os.path.abspath(destination)), os.W_OK):
+                parser.error(f"can not write to the folder of {destination}")
         fingerprints = []
         db_paths = select_db_files(get_all_db_files(), args.use_aslr_dbs or args.ignore_aslr)
         crawler = FingerprintCrawler(

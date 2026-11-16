@@ -21,6 +21,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -97,6 +98,10 @@ public class GhidraScout extends GhidraScript {
 			}
 		}
 		List<ApiScoutResultEntry> foundApis = new ArrayList<ApiScoutResultEntry>(uniqueApis.values());
+		// a hit of the program's pointer size is annotated before one of another size at the same location
+		int pointerBits = currentProgram.getDefaultPointerSize() * 8;
+		foundApis.sort(Comparator.comparing((ApiScoutResultEntry entry) -> entry.address)
+				.thenComparing(entry -> getBitness(entry) != pointerBits));
 		printf("ApiScout found %d API references\n", foundApis.size());
 
 		if (isRunningHeadless()) {

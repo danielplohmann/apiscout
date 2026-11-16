@@ -153,13 +153,13 @@ class ApiResultsChooser(Choose):
     def OnGetLine(self, n):
         row = self.rows[n]
         library = re.sub(r"(_0x[0-9a-fA-F]+)? \(\d+bit\)$", "", row[2])
-        return [f"{row[0]:X}", row[3], library, f"{row[1]:X}", str(row[4]), self.status.get(row[0], "")]
+        return [f"{row[0]:X}", row[3], library, f"{row[1]:X}", str(row[4]), self.status.get(tuple(row[:4]), "")]
 
     def OnGetEA(self, n):
         return self.rows[n][0]
 
     def OnGetIcon(self, n):
-        state = self.status.get(self.rows[n][0], "reference").split(":")[0].split(" ")[0]
+        state = self.status.get(tuple(self.rows[n][:4]), "reference").split(":")[0].split(" ")[0]
         return self.icons.get(state, self.icons["reference"])
 
     def OnRefresh(self, selection):
@@ -187,7 +187,7 @@ class ApiResultsChooser(Choose):
     def annotate(self, indices):
         self.tools.importTypeLibraries()
         num_renamed, num_skipped, num_xrefs_adapted = self.tools.applyApiNames(
-            [self.rows[index] for index in indices], self.status
+            [self.rows[index] for index in indices], self.status, {row[0] for row in self.all_rows}
         )
         print(f"Annotated {num_renamed} APIs and adapted {num_xrefs_adapted} Xrefs ({num_skipped} skipped).")
         self._redraw()

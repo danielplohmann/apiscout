@@ -1,7 +1,7 @@
 class OrdinalHelper:
     """
     Names for APIs of DLLs which are frequently imported by ordinal only.
-    The tables hold the ordinals that carry the same name in all API DBs shipped in dbs/,
+    The tables hold the ordinals that carry the same name in all API DBs shipped in dbs/ and on Windows 11 24H2,
     ole32.dll and mfc42.dll are candidates for extension.
     """
 
@@ -865,7 +865,6 @@ class OrdinalHelper:
         21: "setsockopt",
         22: "shutdown",
         23: "socket",
-        27: "FreeAddrInfoW",
         51: "gethostbyaddr",
         52: "gethostbyname",
         53: "getprotobyname",
@@ -918,11 +917,6 @@ class OrdinalHelper:
         21: "setsockopt",
         22: "shutdown",
         23: "socket",
-        24: "WSApSetPostRoutine",
-        25: "FreeAddrInfoEx",
-        26: "FreeAddrInfoExW",
-        27: "FreeAddrInfoW",
-        28: "GetAddrInfoExA",
         51: "gethostbyaddr",
         52: "gethostbyname",
         53: "getprotobyname",

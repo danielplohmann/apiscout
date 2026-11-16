@@ -89,7 +89,7 @@ class FingerprintCrawler:
     def loadIgnoreList(self, path_to_list):
         self._ignore_files = {}
         if os.path.isfile(path_to_list):
-            with open(path_to_list) as infile:
+            with open(path_to_list, encoding="utf-8", errors="surrogateescape") as infile:
                 for line in infile.readlines():
                     fields = tuple(line.strip().split(";"))
                     if len(fields) != 5:
@@ -121,14 +121,14 @@ class FingerprintCrawler:
     def persistFingerprintsToFile(self, fingerprint_list, dest_path):
         lines = ["{};{};{};{};{}\n".format(*entry) for entry in fingerprint_list]
         if os.path.exists(dest_path) and not os.path.isfile(dest_path):
-            with open(dest_path, "w") as f_destination:
+            with open(dest_path, "w", encoding="utf-8", errors="surrogateescape") as f_destination:
                 f_destination.writelines(lines)
             return
         # an existing file is only replaced once all fingerprints are written, links are followed
         dest_path = os.path.realpath(dest_path)
         file_descriptor, temp_path = tempfile.mkstemp(dir=os.path.dirname(dest_path), suffix=".tmp")
         try:
-            with os.fdopen(file_descriptor, "w") as f_destination:
+            with os.fdopen(file_descriptor, "w", encoding="utf-8", errors="surrogateescape") as f_destination:
                 f_destination.writelines(lines)
             # the temporary file is private, the result gets the mode of the file it replaces or of a new file
             if os.path.exists(dest_path):

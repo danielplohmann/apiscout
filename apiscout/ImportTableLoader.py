@@ -59,8 +59,10 @@ class ImportDescriptor:
 
 
 class ImportTableLoader:
-    def __init__(self, buf, sample_name=""):
+    def __init__(self, buf, sample_name="", max_thunks=None):
         self._buffer = buf
+        self._max_thunks = max_thunks
+        self.budget_exhausted = False
         self._is_pe = PeTools.checkPe(buf)
         self._is_64bit = self._check_64bit()
         self._sample_name = sample_name
@@ -106,12 +108,15 @@ class ImportTableLoader:
             it_offset = 0
             # a buffer can not hold more thunks than pointers, crafted tables referencing each other are cut off here
             thunks_left = len(self._buffer) // (8 if self._is_64bit else 4)
+            if self._max_thunks is not None:
+                thunks_left = min(thunks_left, self._max_thunks)
             try:
                 # the number of descriptors is not indicated, so we continue parsing until we hit zero.
                 descriptor = self._parse_descriptor(it_rva + it_offset, descriptor_size)
                 while descriptor.load_table_offset and thunks_left > 0:
                     descriptor.parse(self._buffer, thunks_left)
                     thunks_left -= len(descriptor.imports) + 1
+                    self.budget_exhausted = thunks_left <= 0
                     import_address_table.update(descriptor.imports)
                     it_offset += descriptor_size
                     descriptor = self._parse_descriptor(it_rva + it_offset, descriptor_size)

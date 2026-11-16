@@ -85,7 +85,7 @@ class ApiVector:
         vectors_by_family = {}
         if collection_filepath:
             if os.path.isfile(collection_filepath):
-                with open(collection_filepath) as infile:
+                with open(collection_filepath, encoding="utf-8", errors="surrogateescape") as infile:
                     for line in infile.readlines():
                         fields = line.strip().split(";")
                         if len(fields) < 5:
