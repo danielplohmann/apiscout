@@ -624,10 +624,37 @@ class FourthAuditTestSuite(unittest.TestCase):
                 "32": {"filepath": "C:\\Windows\\SysWOW64\\kernel32.dll", "base_address": 0x6B800000, "aslr_offset": 0},
             }
         }
-        addresses = [("system32/kernel32.dll", 0x7FFB11110000), ("system32/kernel32.dll", 0x75990000)]
-        DatabaseBuilder.DatabaseBuilder().applyLoadAddresses(api_db, addresses)
-        self.assertEqual(0x180000000 - 0x7FFB11110000, api_db["dlls"]["64"]["aslr_offset"])
+        api_db["dlls"]["64"]["bitness"] = 64
+        api_db["dlls"]["32"]["bitness"] = 32
+        builder = DatabaseBuilder.DatabaseBuilder()
+        # the list of a 32bit process names the SysWOW64 DLL by its System32 path
+        builder.applyLoadAddresses(api_db, [("system32/kernel32.dll", 0x75990000)])
         self.assertEqual(0x6B800000 - 0x75990000, api_db["dlls"]["32"]["aslr_offset"])
+        self.assertEqual(0, api_db["dlls"]["64"]["aslr_offset"])
+        # a 64bit process can have its System32 DLLs below 4 GB as well (Windows 7)
+        api_db["dlls"]["32"]["aslr_offset"] = 0
+        builder.applyLoadAddresses(
+            api_db, [("system32/kernel32.dll", 0x77A10000), ("system32/ntdll.dll", 0x7FFB11110000)]
+        )
+        self.assertEqual(0x180000000 - 0x77A10000, api_db["dlls"]["64"]["aslr_offset"])
+        self.assertEqual(0, api_db["dlls"]["32"]["aslr_offset"])
+
+    def testLiefIsNotUsedForCraftedImportTables(self):
+        pe = bytearray(build_pe32()) + bytearray(0x800)
+        struct.pack_into("<IIII", pe, 0x58 + 0xE0 + 8, 0xA00, 0x1000, 0xA00, 0x200)
+        for index in range(0x40):
+            struct.pack_into("<I", pe, 0x200 + 0x200 + 4 * index, 0x1120)
+        # the first descriptor has an unreadable thunk, the others share one long thunk list
+        struct.pack_into("<IIIII", pe, 0x200 + 0x300, 0x1180, 0, 0, 0x1100, 0x1180)
+        struct.pack_into("<II", pe, 0x200 + 0x180, 0x7FFFFF00, 0)
+        num_descriptors = 0x28
+        for index in range(1, num_descriptors):
+            struct.pack_into("<IIIII", pe, 0x200 + 0x300 + 20 * index, 0x1200, 0, 0, 0x1100, 0x1200 + 0x10000 * index)
+        struct.pack_into("<II", pe, 0x58 + 104, 0x1300, 20 * num_descriptors)
+        mapped = PeTools.mapBinary(bytes(pe))
+        self.assertTrue(ImportTableLoader(mapped).exceedsThunkBudget(len(pe) // 4))
+        self.assertFalse(ImportTableLoader(PeTools.mapBinary(build_pe32())).exceedsThunkBudget(len(build_pe32()) // 4))
+        self.assertLessEqual(len(ApiScout().evaluateImportTable(bytes(pe))["import_table"]), len(pe) // 4)
 
 
 if __name__ == "__main__":

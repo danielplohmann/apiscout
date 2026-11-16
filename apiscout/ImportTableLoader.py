@@ -62,7 +62,6 @@ class ImportTableLoader:
     def __init__(self, buf, sample_name="", max_thunks=None):
         self._buffer = buf
         self._max_thunks = max_thunks
-        self.budget_exhausted = False
         self._is_pe = PeTools.checkPe(buf)
         self._is_64bit = self._check_64bit()
         self._sample_name = sample_name
@@ -116,7 +115,6 @@ class ImportTableLoader:
                 while descriptor.load_table_offset and thunks_left > 0:
                     descriptor.parse(self._buffer, thunks_left)
                     thunks_left -= len(descriptor.imports) + 1
-                    self.budget_exhausted = thunks_left <= 0
                     import_address_table.update(descriptor.imports)
                     it_offset += descriptor_size
                     descriptor = self._parse_descriptor(it_rva + it_offset, descriptor_size)
@@ -141,6 +139,34 @@ class ImportTableLoader:
                 )
                 return import_address_table
         return import_address_table
+
+    def exceedsThunkBudget(self, max_thunks, directory_offset=0x80, descriptor_size=20):
+        """
+        counts the thunks of all import descriptors without parsing them and regardless of unreadable entries,
+        to recognize crafted tables whose descriptors share thunk lists before another parser expands them
+        """
+        if not self._is_pe:
+            return False
+        import_dd_offset = PeTools.getPeOffset(self._buffer) + directory_offset + self._get_64bit_bonus_offset()
+        if len(self._buffer) < import_dd_offset + 4:
+            return False
+        thunk_size = 8 if self._is_64bit else 4
+        descriptor_offset = get_dword(self._buffer, import_dd_offset)
+        num_thunks = 0
+        while descriptor_offset and descriptor_offset + descriptor_size <= len(self._buffer):
+            values = struct.unpack_from("<IIIII", self._buffer, descriptor_offset)
+            if not values[4]:
+                break
+            thunk_offset = values[0] if values[0] else values[4]
+            while thunk_offset + thunk_size <= len(self._buffer) and any(
+                self._buffer[thunk_offset : thunk_offset + thunk_size]
+            ):
+                num_thunks += 1
+                if num_thunks > max_thunks:
+                    return True
+                thunk_offset += thunk_size
+            descriptor_offset += descriptor_size
+        return False
 
     def get_import_table(self):
         return self._get_table(0x80, 20)

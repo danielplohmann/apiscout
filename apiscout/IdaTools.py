@@ -30,6 +30,7 @@ import ida_idp
 import ida_nalt
 import ida_typeinf
 import ida_ua
+import ida_xref
 import idautils
 
 from apiscout.ApiScout import ApiScout
@@ -126,14 +127,18 @@ class IdaTools:
         tinfo, success = self.helper_getTinfoOfFuncName(funcName)
         if not success:
             return False
-        return self._applyCalleeType(tinfo, callAddress)
+        return any(
+            self._applyCalleeType(tinfo, callAddress, location) for location in idautils.DataRefsFrom(callAddress)
+        )
 
-    def _applyCalleeType(self, tinfo, address):
+    def _applyCalleeType(self, tinfo, address, location):
         instruction = ida_ua.insn_t()
         if not ida_ua.decode_insn(instruction, address) or not ida_idp.is_call_insn(instruction):
             return False
         operand = instruction.ops[0]
-        if operand.type != ida_ua.o_mem or self.ida_proxy.hasIndexRegister(instruction, operand):
+        if operand.type != ida_ua.o_mem or operand.addr != location:
+            return False
+        if self.ida_proxy.hasIndexRegister(instruction, operand):
             # e.g. call table[reg*4], which only uses the location as start of a table
             return False
         ida_typeinf.apply_callee_tinfo(address, tinfo)
@@ -184,7 +189,9 @@ class IdaTools:
         prev_offset = 0
         locations = known_locations if known_locations is not None else {api[0] for api in api_results}
         annotated_locations = {}
-        for api in sorted(api_results):
+        # of several rows for one location, the one of the database's pointer size is applied
+        pointer_bits = 64 if self.ida_proxy.is64bit() else 32
+        for api in sorted(api_results, key=lambda api: (api[0], self.getBitness(api) != pointer_bits, api[1:4])):
             if api[0] > prev_offset + 16:
                 print(f"Annotating API Block @0x{api[0]:x}.")
             prev_offset = api[0]
@@ -209,7 +216,7 @@ class IdaTools:
                 continue
             num_renamed += 1
             annotated_locations[api[0]] = self.getApiName(api)
-            self.ida_proxy.grantUnknownPermissions(api[0])
+            self.ida_proxy.makeSegmentWritable(api[0])
             tinfo, success = self.helper_getTinfoOfFuncName(str(api[3]))
             if not success:
                 status[tuple(api[:4])] = "annotated (no type information)"
@@ -217,8 +224,8 @@ class IdaTools:
                 continue
             status[tuple(api[:4])] = "annotated"
             self.setPointerType(tinfo, api[0])
-            for xref in idautils.XrefsTo(api[0]):
-                if self._applyCalleeType(tinfo, xref.frm):
+            for xref in idautils.XrefsTo(api[0], ida_xref.XREF_FAR):
+                if self._applyCalleeType(tinfo, xref.frm, api[0]):
                     num_xrefs_adapted += 1
         if unresolved_types:
             print(

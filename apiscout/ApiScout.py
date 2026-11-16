@@ -248,7 +248,7 @@ class ApiScout:
         # LIEF expects the layout of a file, images that are mapped already are left to our own parser.
         # It has no limit for crafted import tables, so those are left to our own parser as well.
         lief_binary = None
-        if is_unmapped and not import_table_loader.budget_exhausted:
+        if is_unmapped and not import_table_loader.exceedsThunkBudget(max_thunks):
             lief_binary = self._parseWithLief(binary)
         if lief_binary is not None:
             # the machine type is read from the header directly, as its representation differs across LIEF versions

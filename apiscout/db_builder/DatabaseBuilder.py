@@ -230,21 +230,34 @@ class DatabaseBuilder:
 
     def applyLoadAddresses(self, api_db, load_addresses):
         """derive ASLR offsets from known load addresses of the DLLs, given as (normalized path, address)"""
+
+        def all_paths(dll_key, dll):
+            return [normalize_dll_path(path) for path in [dll["filepath"]] + self._duplicate_paths.get(dll_key, [])]
+
         has_wow64_dlls = any(
-            normalize_dll_path(dll["filepath"]).startswith("syswow64/") for dll in api_db["dlls"].values()
+            path.startswith("syswow64/") for dll_key, dll in api_db["dlls"].items() for path in all_paths(dll_key, dll)
+        )
+        # the module list of a 32bit process names its DLLs by their redirected System32 path
+        is_list_of_32bit_process = has_wow64_dlls and all(
+            load_address < 0x100000000 and not dll_path.startswith("syswow64/")
+            for dll_path, load_address in load_addresses
         )
         known_addresses = {}
         for dll_path, load_address in load_addresses:
-            if has_wow64_dlls and dll_path.startswith("system32/") and load_address < 0x100000000:
-                # the module list of a 32bit process names its DLLs by their redirected System32 path
+            if is_list_of_32bit_process and dll_path.startswith("system32/"):
                 dll_path = "syswow64/" + dll_path.split("/", 1)[1]
             if known_addresses.get(dll_path, load_address) != load_address:
                 LOG.warning("Several load addresses given for %s, using 0x%x.", dll_path, load_address)
             known_addresses[dll_path] = load_address
         num_offsets = 0
         for dll_key, dll in api_db["dlls"].items():
-            for filepath in [dll["filepath"]] + self._duplicate_paths.get(dll_key, []):
-                load_address = known_addresses.get(normalize_dll_path(filepath))
+            for dll_path in all_paths(dll_key, dll):
+                if has_wow64_dlls and dll_path.startswith(
+                    {32: "system32/", 64: "syswow64/"}.get(dll.get("bitness"), "-")
+                ):
+                    # a copy of the DLL for the other bitness
+                    continue
+                load_address = known_addresses.get(dll_path)
                 if load_address is not None:
                     dll["aslr_offset"] = dll["base_address"] - load_address
                     num_offsets += 1
@@ -343,8 +356,10 @@ def main():
             "on systems other than Windows, --os_name and --os_version of the system the DLLs were taken from are required, and --aslr_check is not available."
         )
     load_addresses = read_load_addresses(args.load_addresses) if args.load_addresses else None
-    if args.output_file and not os.access(os.path.dirname(os.path.abspath(args.output_file)), os.W_OK):
-        parser.error(f"can not write to the folder of {args.output_file}")
+    if args.auto or args.paths:
+        output_folder = os.path.dirname(os.path.abspath(args.output_file)) if args.output_file else os.getcwd()
+        if not os.access(output_folder, os.W_OK):
+            parser.error(f"can not write to {output_folder}")
     if args.aslr_check:
         print(f"OS has ASLR offsets: {check_aslr()}")
     elif args.auto or args.paths:

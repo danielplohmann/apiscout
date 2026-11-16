@@ -47,7 +47,7 @@ def download_apivector_db():
         version = re.search(
             r"\d{4}-\d\d-\d\d-apivectors-v(?P<version_number>\d+)\.csv", response.headers.get("Content-Disposition", "")
         )
-        if version:
+        if version and response.text.strip():
             result["filename"] = version.group(0)
             result["content"] = response.text
             result["version"] = int(version.group("version_number"))
@@ -73,8 +73,15 @@ def main():
         apivector_update = download_apivector_db()
         if apivector_update["version"]:
             update_db_path = get_db_dir() + os.sep + apivector_update["filename"]
-            with open(update_db_path, "w") as fout:
-                fout.write(apivector_update["content"])
+            # stored under its final name only once it is written completely
+            temp_path = update_db_path + ".tmp"
+            try:
+                with open(temp_path, "w", encoding="utf-8", newline="") as fout:
+                    fout.write(apivector_update["content"])
+                os.replace(temp_path, update_db_path)
+            finally:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
             delete_existing_dbs(keep=apivector_update["filename"])
             print("Downloaded and stored ApiVector DB file: ", update_db_path)
         else:

@@ -53,6 +53,7 @@ import ghidra.program.model.data.PointerDataType;
 import ghidra.program.model.data.QWordDataType;
 import ghidra.program.model.symbol.RefType;
 import ghidra.program.model.symbol.SourceType;
+import ghidra.program.model.symbol.Symbol;
 import ghidra.program.model.util.CodeUnitInsertionException;
 import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.symbol.SymbolUtilities;
@@ -275,7 +276,11 @@ public class GhidraScout extends GhidraScript {
 		}
 		try {
 			String name = SymbolUtilities.replaceInvalidChars(getLabelName(entry), true);
-			createLabel(entry.address, name, true);
+			// of several hits at one location, the one of the program's pointer size keeps the primary label
+			Symbol primary = getSymbolAt(entry.address);
+			boolean isPointerSizedHit = getBitness(entry) == currentProgram.getDefaultPointerSize() * 8;
+			createLabel(entry.address, name,
+					isPointerSizedHit || primary == null || primary.getSource() == SourceType.DEFAULT);
 			if (getInstructionContaining(entry.address) != null) {
 				// an API address within an instruction, which is left as it is
 				return true;

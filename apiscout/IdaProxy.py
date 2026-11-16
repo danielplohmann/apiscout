@@ -29,6 +29,7 @@ import ida_idaapi
 import ida_name
 import ida_segment
 import ida_typeinf
+import ida_xref
 import idautils
 
 
@@ -74,7 +75,8 @@ class IdaProxy:
         return ranges
 
     def getNumReferences(self, ea):
-        return sum(1 for _ in idautils.XrefsTo(ea))
+        # without the ordinary flow from the preceding instruction
+        return sum(1 for _ in idautils.XrefsTo(ea, ida_xref.XREF_FAR))
 
     def getBytes(self, ea, size):
         return ida_bytes.get_bytes(ea, size)
@@ -98,15 +100,19 @@ class IdaProxy:
                 return "a structure"
         return None
 
-    def grantUnknownPermissions(self, ea):
+    def makeSegmentWritable(self, ea):
         """
-        Segments of a dump loaded as binary file carry no permissions. The decompiler treats their content as
-        constant then and shows calls through API pointers as calls to numbers, so such a segment gets all permissions.
+        The decompiler treats the content of a segment that is not writable as constant and shows calls through
+        API pointers as calls to numbers. Segments of a dump loaded as binary file carry no permissions at all
+        and get all of them, other segments (e.g. .rdata) become writable in addition.
         """
         segment = ida_segment.getseg(ea)
-        if segment is None or segment.perm != 0:
+        if segment is None or segment.perm & ida_segment.SEGPERM_WRITE:
             return False
-        segment.perm = ida_segment.SEGPERM_READ | ida_segment.SEGPERM_WRITE | ida_segment.SEGPERM_EXEC
+        if segment.perm == 0:
+            segment.perm = ida_segment.SEGPERM_READ | ida_segment.SEGPERM_WRITE | ida_segment.SEGPERM_EXEC
+        else:
+            segment.perm |= ida_segment.SEGPERM_WRITE
         return segment.update()
 
     def undefine(self, ea, size):
