@@ -12,7 +12,7 @@ The output is an ordered list of identified Windows API references with some met
 * export.py -- generates ApiQR diagrams that visualize ApiVectors.  
 * update.py -- pull the most recent ApiVector DB from Malpedia (requires Malpedia account / API token).  
 
-ApiScout requires Python 3.10 or newer (`pip install apiscout`), the IDA plugin is tested with IDA 9.0 and 9.5, the Ghidra plugin with Ghidra 12.2.  
+ApiScout requires Python 3.10 or newer (`pip install apiscout`), the IDA plugin requires IDA 9.0 or newer (tested with all releases from 9.0 to 9.5), the Ghidra script is tested with Ghidra 12.2.  
 For development, [uv](https://docs.astral.sh/uv/) sets up the environment: `uv sync`, then `uv run python -m unittest discover -s tests -p "test*.py" -t .`, `uv run ruff check`, `uv run ruff format` and `uv run ty check`.  
 There is a blog post describing ApiScout in more detail: http://byte-atlas.blogspot.com/2017/04/apiscout.html.  
 Also, another blog post explaining how ApiVectors are constructed and stored: https://byte-atlas.blogspot.com/2018/04/apivectors.html.  
@@ -27,14 +27,14 @@ In batch mode, all references are annotated: `idat -A -TBinary -b<dump address /
 
 ## Ghidra
 
-Copy `GhidraScout.java` into a script directory of Ghidra and run it from the Script Manager or Tools > ApiScout. It asks for the location of `scout.py` once and runs it on the memory of the current program, so `python3` needs to be able to run `scout.py`.
+Copy `GhidraScout.java` into a script directory of Ghidra and run it from the Script Manager (ticking its "In Tool" checkbox adds it as Tools > ApiScout). It asks for the location of `scout.py` once and runs it on the memory of the current program, so `python3` needs to be able to run `scout.py`.
 The table lists the API references found, the selected ones are annotated like imports: a pointer with an external reference to the function of its library, with the prototype of Ghidra's Windows data type archive.
 Headless: `analyzeHeadless <project> <name> -import <dump> -loader BinaryLoader -loader-baseAddr <address> -processor x86:LE:64:default -postScript GhidraScout.java <path to scout.py> [<API DB> ...]`.
 
 ## Version History
 
  * 2026-11-16: Added a Windows Server 2022 (21H2, build 20348) 64bit import DB (`dbs/win2022_server_21h2_example.json`, 343 DLLs, built with `DatabaseBuilder.py --filter` on a fresh installation). Like the Windows 10 DB, it carries the ASLR offsets of the boot it was built in and serves as example and for tests, not for dumps of other systems.
- * 2026-11-16: v3.0.0 - (BREAKING) Python 2 and IDA < 7.4 are no longer supported. Packaging moved to `pyproject.toml` (with `uv.lock`), code is linted and formatted with ruff and type checked with ty, CI runs on GitHub Actions.
+ * 2026-11-16: v3.0.0 - (BREAKING) Python 2 and IDA before 9.0 are no longer supported. Packaging moved to `pyproject.toml` (with `uv.lock`), code is linted and formatted with ruff and type checked with ty, CI runs on GitHub Actions.
    * Library: fixed a crash when a buffer ends in `FF 15`/`FF 25`, import table parsing with current LIEF (`scout.py -t`), import descriptors without import name table, PE mapping of truncated or unusual files, matching of vectors given as lists, `NaN` when matching empty vectors, and API DBs of the same OS replacing each other. Crawl results are now ordered by offset. Imports by ordinal are resolved for `ws2_32.dll`, `wsock32.dll` and `oleaut32.dll`, compressed ApiVectors are validated, and a 32bit and a 64bit export at the same address are both resolved.
    * `export.py` (ApiQR) works again, `update.py` works from any directory, `collect.py -u` no longer writes a second file.
    * IDA: `ida_scout.py` is a plugin now (see above) with a dockable results view instead of a modal dialog, a batch mode and `ida-plugin.json` for the plugin manager. APIs are also annotated when their location was defined as something else before, type libraries match the bitness of the database and include ntapi, API locations are typed as function pointers, and the decompiler shows the API names for dumps loaded as binary file.

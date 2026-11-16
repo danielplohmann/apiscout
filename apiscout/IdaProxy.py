@@ -33,7 +33,7 @@ import idautils
 
 
 class IdaProxy:
-    """Thin wrapper around the IDA API (IDA 7.4 and later, including IDA 9)"""
+    """Thin wrapper around the IDA API (IDA 9)"""
 
     def is64bit(self):
         return ida_ida.inf_is_64bit()
