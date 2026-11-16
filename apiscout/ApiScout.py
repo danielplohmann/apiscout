@@ -48,6 +48,9 @@ LOG = logging.getLogger(__name__)
 
 class ApiScout(object):
 
+    # share of exports overwriting another DLL's address above which loading an API DB issues a warning
+    COLLISION_WARNING_RATIO = 0.01
+
     def __init__(self, db_filepath=None):
         self.api_maps = {}
         self.has_64bit = False
@@ -93,6 +96,11 @@ class ApiScout(object):
                 api_map[virtual_address] = (dll_name, api_name, bitness)
             LOG.debug("loaded %d exports", num_apis_loaded)
         LOG.debug("loaded %d exports from %d DLLs (%s) with %d potential collisions.", num_apis_loaded, len(api_db["dlls"]), api_db["os_name"], num_collisions)
+        if num_apis_loaded and num_collisions > self.COLLISION_WARNING_RATIO * num_apis_loaded:
+            hint = ""
+            if self.ignore_aslr_offsets and api_db.get("aslr_offsets", False):
+                hint = " The ASLR offsets of this DB were ignored, so DLLs sharing a file ImageBase overlap."
+            LOG.warning("API DB %s: %d of %d exports collide with exports of other DLLs, APIs at these addresses may be resolved to the wrong DLL.%s", db_filepath, num_collisions, num_apis_loaded, hint)
         self.api_maps[api_db["os_name"]] = api_map
 
     def loadWinApi1024(self, winapi1024_filepath=None):

@@ -47,6 +47,17 @@ def get_all_db_files():
     return [db_dir + fn for fn in os.listdir(db_dir) if fn.endswith(".json")]
 
 
+def select_db_files(db_paths, use_aslr_dbs=False):
+    # API DBs with ASLR offsets only describe the boot they were built in, so they are not used unless requested.
+    selected_paths = []
+    for db_path in db_paths:
+        if not use_aslr_dbs and FingerprintCrawler.dbHasAslrOffsets(db_path):
+            logging.info("Skipping API DB with ASLR offsets (use --use_aslr_dbs or --ignore_aslr to include it): {}".format(db_path))
+            continue
+        selected_paths.append(db_path)
+    return selected_paths
+
+
 def get_winapi1024_path():
     return get_this_dir() + os.sep + "apiscout" + os.sep + "data" + os.sep + "winapi1024v1.txt"
     
@@ -69,11 +80,14 @@ def main():
     parser.add_argument('-o', '--output_path', type=str, default='', help='Optionally save the fingerprint file to this location (instead of "./dbs/<YYYY-MM-DD>-winapi1024.csv".')
     parser.add_argument('-u', '--update_path', type=str, default='', help='Instead of generating a fingerprint database from scratch, load and update an existing file (add new entries only).')
     parser.add_argument('-i', '--ignore_empty', action='store_true', help='Do not store information for empty fingerprints.')
+    parser.add_argument('-a', '--use_aslr_dbs', action='store_true', help='Also use API DBs that contain ASLR offsets and apply these offsets (only valid for dumps from the boot the DB was built in). By default, such DBs are skipped.')
+    parser.add_argument('--ignore_aslr', action='store_true', help='Also use API DBs that contain ASLR offsets but do not apply these offsets (only meaningful for dumps from systems without ASLR, former default behaviour).')
 
     args = parser.parse_args()
     if args.root_path and os.path.isdir(args.root_path):
         fingerprints = []
-        crawler = FingerprintCrawler(get_all_db_files(), get_winapi1024_path(), args.root_path, args.filter_size)
+        db_paths = select_db_files(get_all_db_files(), args.use_aslr_dbs or args.ignore_aslr)
+        crawler = FingerprintCrawler(db_paths, get_winapi1024_path(), args.root_path, args.filter_size, ignore_aslr_offsets=args.ignore_aslr)
         if args.update_path and os.path.isfile(args.update_path):
             crawler.loadIgnoreList(args.update_path)
         file_list = get_file_list(args.root_path, args.path_require)

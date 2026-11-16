@@ -1,4 +1,5 @@
 import os
+import json
 from multiprocessing import Pool, cpu_count
 
 from apiscout.ApiScout import ApiScout
@@ -6,7 +7,11 @@ from apiscout.ApiScout import ApiScout
 
 class FingerprintCrawler():
 
-    def __init__(self, db_paths, winapi1024_path, root_path, filter_size=0):
+    def __init__(self, db_paths, winapi1024_path, root_path, filter_size=0, ignore_aslr_offsets=True):
+        # ignore_aslr_offsets=True (default, previous behaviour) addresses all DLLs at their file ImageBase,
+        # which is only meaningful for dumps from systems without ASLR and ambiguous for DBs in which
+        # many DLLs share one ImageBase (e.g. 64bit Windows 10: 0x180000000).
+        self._ignore_aslr_offsets = ignore_aslr_offsets
         self._scout = self._initScout(db_paths, winapi1024_path)
         self._filter_size = filter_size
         self._root_path = root_path
@@ -15,8 +20,8 @@ class FingerprintCrawler():
         
     def _initScout(self, db_paths, winapi1024_path):
         scout = ApiScout()
-        # override potential ASLR offsets that are stored in the API DB files.
-        scout.ignoreAslrOffsets(True)
+        # optionally override potential ASLR offsets that are stored in the API DB files.
+        scout.ignoreAslrOffsets(self._ignore_aslr_offsets)
         # load DB file
         for db_path in db_paths:
             scout.loadDbFile(db_path)
@@ -24,6 +29,15 @@ class FingerprintCrawler():
         scout.loadWinApi1024(winapi1024_path)
         return scout
         
+    @staticmethod
+    def dbHasAslrOffsets(db_path):
+        """ check if an API DB carries per-module ASLR offsets, i.e. is bound to the boot it was built in """
+        with open(db_path, "r") as f_json:
+            api_db = json.loads(f_json.read())
+        if api_db.get("aslr_offsets", False):
+            return True
+        return any(dll.get("aslr_offset", 0) for dll in api_db.get("dlls", {}).values())
+
     def _getFamilyAndPath(self, path_to_binary):
         sub_path = path_to_binary[len(self._root_path):]
         path_parts = [part for part in sub_path.split(os.sep) if part]
