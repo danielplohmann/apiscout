@@ -32,10 +32,9 @@ import platform
 import sys
 from operator import attrgetter
 
+import config
 import pefile
 from ThreadedCommand import ThreadedCommand
-
-import config
 
 LOG = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)-15s %(message)s")

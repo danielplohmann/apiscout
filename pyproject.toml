@@ -44,7 +44,7 @@ select = ["E", "F", "UP", "B", "SIM", "I"]
 ignore = ["E501"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["apiscout"]
+known-first-party = ["apiscout", "config", "pefile", "ThreadedCommand", "DatabaseBuilder"]
 
 [tool.ty.src]
 exclude = ["apiscout/db_builder"]
