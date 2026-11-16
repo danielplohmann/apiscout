@@ -1,4 +1,3 @@
-nose
 Pillow
 numpy
 requests
