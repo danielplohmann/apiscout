@@ -69,8 +69,10 @@ class ApiQR:
     def getPng(self, destination_path, scale_factor=5):
         # colored_vector = list(map(self.__mapColor, self.vector_unsorted, self.context.colors))
         colored_vector = []
-        for index in range(len(self.vector_unsorted)):
-            value, raw_color = self.vector_unsorted[index], self.context.colors[index]
+        vector = self.vector_unsorted
+        colors = self.context.colors
+        for index in range(len(vector)):
+            value, raw_color = vector[index], colors[index]
             color = self.__mapColor(value, raw_color)
             if color == self.context.colors_white: 
                 color = self.__mapColor(0.2, raw_color)
@@ -78,9 +80,10 @@ class ApiQR:
                 value = 0.4 + (value * (1 - 0.4))
                 color = self.__mapColor(value, raw_color)
             colored_vector.append(color)
-        scaled_vector = sum(([e] * 4 ** scale_factor for e in colored_vector), [])
-        transformed_vector = np.int8(self.__vectorToHilbert(scaled_vector))
-        image = Image.fromarray(transformed_vector, mode=self.context.colors_format)
+        # each API is drawn as a square of 2**scale_factor pixels edge length, which is 4**scale_factor consecutive points on the curve
+        scaled_vector = np.repeat(np.array(colored_vector, dtype=np.uint8), 4 ** scale_factor, axis=0)
+        transformed_vector = np.uint8(self.__vectorToHilbert(scaled_vector))
+        image = Image.fromarray(transformed_vector).convert(self.context.colors_format)
         return image
 
     def exportPng(self, destination_path, scale_factor=5):
@@ -118,18 +121,20 @@ class ApiQR:
 
     def _getHtmlTableContent(self, hilbert_size, vector):
         result = ""
+        colors = self.context.colors
+        apis = self.context.apis
         for hilbert_row in self.__hilbertCurve(hilbert_size):
             result += "<tr>\n"
             for index in hilbert_row:
-                value, raw_color = vector[index], self.context.colors[index]
+                value, raw_color = vector[index], colors[index]
                 color = self.__mapColor(value, raw_color)
                 if color == self.context.colors_white: 
                     # result += '<td class="api-cell api-cell-white"></td>'
                     color = self.__mapColor(0.2, raw_color)
-                    text = ":".join(self.context.apis[index])
+                    text = ":".join(apis[index])
                     result += '<td data-toggle="popover" data-content="{popover:s}" data-delay="200" class="apicell" style="background-color: rgb({color[0]:d}, {color[1]:d}, {color[2]:d});"></td>'.format(popover=text, color=color)
                 else:
-                    text = ":".join(self.context.apis[index])
+                    text = ":".join(apis[index])
                     # rescale value to range 0.4-1.0
                     value = 0.4 + (value * (1 - 0.4))
                     color = self.__mapColor(value, raw_color)
@@ -151,8 +156,9 @@ class ApiQR:
         result = self.getHtmlTable()
         if not full: return result
         this_path = os.path.abspath(os.path.join(os.path.dirname(__file__)))
-        with open(os.sep.join([this_path, "..", "data", "html_frame.html"]), "r") as f_html:
-            compressed_vector = self._apivector.compress(self.vector_unsorted)
+        with open(os.sep.join([this_path, "data", "html_frame.html"]), "r") as f_html:
+            # the vector is kept in the order of the (rank sorted) WinApi1024 definition, which is also the order of its compressed form
+            compressed_vector = self._apivector.compress(self.vector)
             result = f_html.read().format(vector=compressed_vector, body=result, head=self.getHtmlHeader())
         with open(output_path, "w") as f_out:
             f_out.write(result)
@@ -194,19 +200,19 @@ class ApiQR:
     def __add__(self, other):
         if not isinstance(other, ApiQR):
             raise ValueError("Only another ApiQR instance can be added.")
-        if self.context != other.context:
+        if self.context.data != other.context.data:
             raise ValueError("Both ApiQR instances need to share the same context in order to be added together!")
-        return ApiQR(vector=list(map(operator.add, self.vector, other.vector)), context=self.context)
+        return ApiQR(self._apivector_path, vector=list(map(operator.add, self.vector, other.vector)))
 
     def __mul__(self, other):
         if not isinstance(other, numbers.Number):
             raise ValueError("An ApiQR instance can only be multiplied with numbers.")
-        return ApiQR(vector=list(map(lambda x: x * other, self.vector)), context=self.context)
+        return ApiQR(self._apivector_path, vector=list(map(lambda x: x * other, self.vector)))
 
     def __div__(self, other):
         if not isinstance(other, numbers.Number):
             raise ValueError("An ApiQR instance can only be divided by numbers.")
-        return ApiQR(vector=list(map(lambda x: 1.0 * x / other, self.vector)), context=self.context)
+        return ApiQR(self._apivector_path, vector=list(map(lambda x: 1.0 * x / other, self.vector)))
 
     def __truediv__(self, other):
         return self.__div__(other)

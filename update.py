@@ -10,17 +10,22 @@ except:
     sys.exit()
 
 
+def get_db_dir():
+    """ the dbs folder next to this script, regardless of the current working directory """
+    return os.path.join(os.path.abspath(os.path.dirname(__file__)), "dbs")
+
+
 def delete_existing_dbs():
     """ delete potentially existing old apivector db files """
-    for filename in os.listdir("dbs"):
+    for filename in os.listdir(get_db_dir()):
         if re.search(r"\d{4}-\d\d-\d\d-apivectors-v\d+\.csv", filename):
-            os.remove("dbs" + os.sep + filename)
+            os.remove(get_db_dir() + os.sep + filename)
 
 
 def get_newest_db_version():
     """ find ApiVector DB files and return newest version number found """
     max_version = 0
-    for filename in os.listdir("dbs"):
+    for filename in os.listdir(get_db_dir()):
         version = re.search(r"\d{4}-\d\d-\d\d-apivectors-v(?P<version_number>\d+)\.csv", filename)
         if version:
             max_version = max(max_version, int(version.group("version_number")))
@@ -38,7 +43,7 @@ def download_apivector_db():
         headers={'Authorization': 'apitoken ' + config.APITOKEN},
     )
     if response.status_code == 200:
-        result["filename"] = response.headers['Content-Disposition'].split("=")[1].strip()
+        result["filename"] = os.path.basename(response.headers['Content-Disposition'].split("=")[1].strip().strip('"'))
         result["content"] = response.text
         version = re.search(r"\d{4}-\d\d-\d\d-apivectors-v(?P<version_number>\d+)\.csv", result["filename"])
         result["version"] = version
@@ -67,7 +72,7 @@ def main():
         apivector_update = download_apivector_db()
         if apivector_update["version"]:
             delete_existing_dbs()
-            update_db_path = "dbs" + os.sep + apivector_update["filename"]
+            update_db_path = get_db_dir() + os.sep + apivector_update["filename"]
             with open(update_db_path, "w") as fout:
                 fout.write(apivector_update["content"])
             print("Downloaded and stored ApiVector DB file: ", update_db_path)

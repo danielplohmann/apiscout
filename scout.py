@@ -48,7 +48,7 @@ def get_all_db_files():
 
 def get_base_addr(args):
     if args.base_addr:
-        return int(args.base_addr, 16) if args.base_addr.startswith("0x") else int(args.base_addr)
+        return int(args.base_addr, 16) if args.base_addr.lower().startswith("0x") else int(args.base_addr)
     # try to infer from filename:
     baddr_match = re.search(re.compile("0x(?P<base_addr>[0-9a-fA-F]{8,16})$"), args.binary_path)
     if baddr_match:
@@ -90,10 +90,11 @@ def main():
 
     args = parser.parse_args()
     if args.binary_path:
-        binary = ""
-        if os.path.isfile(args.binary_path):
-            with open(args.binary_path, "rb") as f_binary:
-                binary = f_binary.read()
+        if not os.path.isfile(args.binary_path):
+            sys.stderr.write("Not a file: {}\n".format(args.binary_path))
+            return 1
+        with open(args.binary_path, "rb") as f_binary:
+            binary = f_binary.read()
         scout = ApiScout()
         base_addr = get_base_addr(args)
         if not args.silent:
@@ -108,6 +109,9 @@ def main():
         elif not args.import_table_only:
             db_paths = get_all_db_files()
         for db_path in db_paths:
+            if not os.path.isfile(db_path):
+                sys.stderr.write("Not a file: {}\n".format(db_path))
+                return 1
             scout.loadDbFile(db_path)
         # scout the binary
         results = {}

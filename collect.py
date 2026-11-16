@@ -96,7 +96,7 @@ def main():
             with Pool(cpu_count()) as pool:
                 fingerprints.extend(pool.map(crawler.getFingerprint, file_list))
         else:
-            logging.warn("Using Python2 disables support for parallel processing")
+            logging.warning("Using Python2 disables support for parallel processing")
             for filepath in file_list:
                 fingerprints.append(crawler.getFingerprint(filepath))
         if args.ignore_empty:
@@ -106,8 +106,9 @@ def main():
             crawler.persistFingerprintsToFile(fingerprints, args.update_path)
         if args.output_path:
             crawler.persistFingerprintsToFile(fingerprints, args.output_path)
-        else:
-            output_path = get_this_dir() + os.sep + "dbs" + os.sep + "{}-winapi1024.csv".format(datetime.datetime.utcnow().strftime("%Y-%m-%d"))
+        elif not args.update_path:
+            # only fall back to the default location if no destination was given at all
+            output_path = get_this_dir() + os.sep + "dbs" + os.sep + "{}-winapi1024.csv".format(datetime.datetime.now().strftime("%Y-%m-%d"))
             crawler.persistFingerprintsToFile(fingerprints, output_path)
     else:
         parser.print_help()
