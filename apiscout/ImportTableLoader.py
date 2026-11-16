@@ -27,19 +27,22 @@ class ImportDescriptor:
     def parse(self, buf):
         self.imports = {}
         imp_offset = 0
+        # some linkers and most packers leave the import name table (OriginalFirstThunk) empty.
+        # In this case, the import address table still carries the name references as long as the file was not loaded.
+        name_table_offset = self.name_table_offset if self.name_table_offset else self.load_table_offset
         if self._is_64bit:
-            imp = get_qword(buf, self.name_table_offset + imp_offset)
+            imp = get_qword(buf, name_table_offset + imp_offset)
         else:
-            imp = get_dword(buf, self.name_table_offset + imp_offset)
+            imp = get_dword(buf, name_table_offset + imp_offset)
         # there is no length indicated for the array of imports, so we simply continue parsing until we hit zero.
         while imp != 0:
             thunk = self.load_table_offset + imp_offset
-            self.imports[thunk] = self._parse_import(buf, self.name_table_offset + imp_offset)
+            self.imports[thunk] = self._parse_import(buf, name_table_offset + imp_offset)
             imp_offset += 8 if self._is_64bit else 4
             if self._is_64bit:
-                imp = get_qword(buf, self.name_table_offset + imp_offset)
+                imp = get_qword(buf, name_table_offset + imp_offset)
             else:
-                imp = get_dword(buf, self.name_table_offset + imp_offset)
+                imp = get_dword(buf, name_table_offset + imp_offset)
 
     def _parse_import(self, buf, offset):
         import_offset = get_dword(buf, offset)
@@ -91,7 +94,7 @@ class ImportTableLoader:
         if not size in [20, 32]:
             raise RuntimeError("Import Descriptors can only be of size 20 / 32 byte.")
         else:
-            values = struct.unpack("I" * int(size / 4), self._buffer[offset:offset + size])
+            values = struct.unpack("<" + "I" * int(size / 4), self._buffer[offset:offset + size])
             return self._parse_descriptor_fields(size, values)
 
     def _get_table(self, directory_offset, descriptor_size):
@@ -113,11 +116,11 @@ class ImportTableLoader:
                     descriptor = self._parse_descriptor(it_rva + it_offset, descriptor_size)
             except IndexError:
                 self._sample_name = self._sample_name if self._sample_name != "" else hashlib.sha256(self._buffer).hexdigest()
-                LOG.warn("Import Table parsing was incomplete on file (%s), due to IndexError. Continuing with %d extracted imports...", self._sample_name, len(import_address_table.items()))
+                LOG.warning("Import Table parsing was incomplete on file (%s), due to IndexError. Continuing with %d extracted imports...", self._sample_name, len(import_address_table.items()))
                 return import_address_table
             except struct.error:
                 self._sample_name = self._sample_name if self._sample_name != "" else hashlib.sha256(self._buffer).hexdigest()
-                LOG.warn("Import Table parsing was incomplete on file (%s), due to struct.error. Continuing  with %d extracted imports...", self._sample_name, len(import_address_table.items()))
+                LOG.warning("Import Table parsing was incomplete on file (%s), due to struct.error. Continuing  with %d extracted imports...", self._sample_name, len(import_address_table.items()))
                 return import_address_table
         return import_address_table
 

@@ -2,9 +2,9 @@ import struct
 
 
 _UNSIGNED_UNPACK_FORMATS = {
-    2: "H",
-    4: "I",
-    8: "Q"
+    2: "<H",
+    4: "<I",
+    8: "<Q"
 }
 
 
@@ -27,12 +27,10 @@ def _get_binary_data(buf, start, length):
 
 
 def get_string(buf, start_offset):
-    string = ""
-    current_offset = 0
-    buf = bytearray(buf)
-    current_byte = buf[start_offset]
-    while current_byte != 0 and start_offset + current_offset < len(buf) - 1:
-        string += chr(current_byte)
-        current_offset += 1
-        current_byte = buf[start_offset + current_offset]
-    return string
+    if start_offset < 0 or start_offset >= len(buf):
+        raise IndexError("string offset out of range")
+    end_offset = buf.find(b"\x00", start_offset)
+    if end_offset < 0:
+        # unterminated string, runs until the end of the buffer
+        end_offset = len(buf)
+    return "".join(chr(byte) for byte in bytearray(buf[start_offset:end_offset]))

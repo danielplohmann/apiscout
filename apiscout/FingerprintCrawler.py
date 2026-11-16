@@ -1,8 +1,11 @@
 import os
 import json
+import logging
 from multiprocessing import Pool, cpu_count
 
 from apiscout.ApiScout import ApiScout
+
+LOG = logging.getLogger(__name__)
 
 
 class FingerprintCrawler():
@@ -61,17 +64,17 @@ class FingerprintCrawler():
         family, path = self._getFamilyAndPath(path_to_binary)
         if self._isIgnorableBinary(family, path):
             return self._ignore_files[family + "_" + path]
-        if os.path.isfile(path_to_binary):
-            with open(path_to_binary, "rb") as f_binary:
-                binary = f_binary.read()
         # scout the binary
         try:
+            with open(path_to_binary, "rb") as f_binary:
+                binary = f_binary.read()
             results = self._scout.crawl(binary)
             filtered_results = self._scout.filter(results, 0, 0, self._filter_size)
             api_vectors = self._scout.getWinApi1024Vectors(filtered_results)
             apiscout_db_name, primary_vector = self._scout.getPrimaryVector(api_vectors)
             return (family, path, primary_vector["in_api_vector"], primary_vector["num_unique_apis"], primary_vector["vector"])
-        except:
+        except Exception as exc:
+            LOG.warning("Could not create a fingerprint for %s (%s), using the empty fingerprint instead.", path_to_binary, exc)
             return (family, path, 0, 0, self._empty_fingerprint)
         
     def loadIgnoreList(self, path_to_list):

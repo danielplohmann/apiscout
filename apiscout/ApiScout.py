@@ -27,7 +27,6 @@ import re
 import struct
 import os
 import json
-import operator
 import logging
 
 try:
@@ -39,6 +38,7 @@ except:
 from .ImportTableLoader import ImportTableLoader
 from .ApiVector import ApiVector
 from .PeTools import PeTools
+from .OrdinalHelper import OrdinalHelper
 
 # Only do basicConfig if no handlers have been configured
 if len(logging._handlerList) == 0:
@@ -53,6 +53,7 @@ class ApiScout(object):
 
     def __init__(self, db_filepath=None):
         self.api_maps = {}
+        self._api_map_sources = {}
         self.has_64bit = False
         self.base_address = 0
         self._binary_length = 0
@@ -80,7 +81,7 @@ class ApiScout(object):
             LOG.debug("  building address map for: %s", dll_entry)
             aslr_offset = 0
             if not self.ignore_aslr_offsets:
-                aslr_offset = api_db["dlls"][dll_entry]["aslr_offset"]
+                aslr_offset = api_db["dlls"][dll_entry].get("aslr_offset", 0)
             for export in api_db["dlls"][dll_entry]["exports"]:
                 num_apis_loaded += 1
                 api_name = "%s" % (export["name"])
@@ -101,7 +102,20 @@ class ApiScout(object):
             if self.ignore_aslr_offsets and api_db.get("aslr_offsets", False):
                 hint = " The ASLR offsets of this DB were ignored, so DLLs sharing a file ImageBase overlap."
             LOG.warning("API DB %s: %d of %d exports collide with exports of other DLLs, APIs at these addresses may be resolved to the wrong DLL.%s", db_filepath, num_collisions, num_apis_loaded, hint)
-        self.api_maps[api_db["os_name"]] = api_map
+        self.api_maps[self._getApiMapName(api_db["os_name"], db_filepath)] = api_map
+
+    def _getApiMapName(self, os_name, db_filepath):
+        """ API maps are named by the OS they were built on. Several DBs for the same OS (e.g. one per boot with ASLR) must not replace each other. """
+        db_filepath = os.path.abspath(db_filepath)
+        api_map_name = os_name
+        if self._api_map_sources.get(api_map_name, db_filepath) != db_filepath:
+            api_map_name = "{} ({})".format(os_name, os.path.basename(db_filepath))
+            index = 2
+            while self._api_map_sources.get(api_map_name, db_filepath) != db_filepath:
+                api_map_name = "{} ({}, {})".format(os_name, os.path.basename(db_filepath), index)
+                index += 1
+        self._api_map_sources[api_map_name] = db_filepath
+        return api_map_name
 
     def loadWinApi1024(self, winapi1024_filepath=None):
         if winapi1024_filepath is None:
@@ -126,24 +140,22 @@ class ApiScout(object):
     def setBaseAddress(self, address):
         self.base_address = address
 
+    def setBinaryLength(self, length):
+        """ size of the image starting at the base address, used by filter() to recognize references into the own image """
+        self._binary_length = length
+
     def setLoadOffset(self, offset):
         self.load_offset = offset
 
     def iterateAllDwords(self, binary):
-        for offset, _ in enumerate(binary):
-            try:
-                dword = struct.unpack("I", binary[offset:offset + 4])[0]
-                yield offset, dword
-            except struct.error:
-                break
+        unpack_from = struct.Struct("<I").unpack_from
+        for offset in range(len(binary) - 3):
+            yield offset, unpack_from(binary, offset)[0]
 
     def iterateAllQwords(self, binary):
-        for offset, _ in enumerate(binary):
-            try:
-                dword = struct.unpack("Q", binary[offset:offset + 8])[0]
-                yield offset, dword
-            except struct.error:
-                break
+        unpack_from = struct.Struct("<Q").unpack_from
+        for offset in range(len(binary) - 7):
+            yield offset, unpack_from(binary, offset)[0]
 
     def _parseImportTable(self, binary):
         if self._import_table is None:
@@ -163,16 +175,18 @@ class ApiScout(object):
         return PeTools.getBaseAddressFromPeHeader(binary)
 
     def _updateCodeReferences(self, references, binary, base_address, offset):
-        # treat as 32bit code (absolute offsets)
         addr_block = binary[offset + 2:offset + 2 + 4]
-        function_addr = struct.unpack("I", addr_block)[0] - base_address
+        if len(addr_block) < 4:
+            # opcode bytes at the very end of the buffer, there is no operand left to read
+            return
+        # treat as 32bit code (absolute offsets)
+        function_addr = struct.unpack("<I", addr_block)[0] - base_address
         if 0 < function_addr < len(binary):
             if function_addr not in references[32]:
                 references[32][function_addr] = set()
             references[32][function_addr].add(offset)
         # treat as 64bit code (this means relative offsets for jmps/calls)
-        addr_block = binary[offset + 2:offset + 2 + 4]
-        function_addr = struct.unpack("i", addr_block)[0]
+        function_addr = struct.unpack("<i", addr_block)[0]
         # RIP-relative: target is relative to the end of the 6 byte instruction (ff 25|15 ** ** ** **),
         # offset points to the ff opcode byte, i.e. behind a potential REX prefix (48 ff 25 ** ** ** **).
         if binary[offset:offset + 2] == b"\xFF\x25":
@@ -195,19 +209,38 @@ class ApiScout(object):
             self._updateCodeReferences(references, binary, base_address, match.start())
         return references
 
+    def _parseWithLief(self, binary):
+        """ parse a PE with LIEF, returns None if LIEF is not available or can not handle the buffer """
+        if not lief or not PeTools.checkPe(binary):
+            return None
+        lief_binary = None
+        try:
+            try:
+                lief_binary = lief.parse(binary)
+            except Exception:
+                lief_binary = lief.parse(bytearray(binary))
+        except Exception as exc:
+            LOG.warning("LIEF failed to parse the binary (%s), falling back to our own import table parser.", exc)
+            return None
+        if lief_binary is None or not hasattr(lief_binary, "imports"):
+            return None
+        return lief_binary
+
     def evaluateImportTable(self, binary, is_unmapped=True):
         self._binary_length = len(binary)
         results = {"import_table": []}
-        if lief:
-            try:
-                lief_binary = lief.parse(binary)
-            except:
-                lief_binary = lief.parse(bytearray(binary))
-            bitness = 32 if lief_binary.header.machine == lief.PE.MACHINE_TYPES.I386 else 64
+        lief_binary = self._parseWithLief(binary)
+        if lief_binary is not None:
+            # the machine type is read from the header directly, as its representation differs across LIEF versions
+            bitness = PeTools.getBitness(binary)
             for imported_library in lief_binary.imports:
+                dll_name = str(imported_library.name).lower()
                 for func in imported_library.entries:
-                    if func.name:
-                        results["import_table"].append((func.iat_address + self.load_offset, 0xFFFFFFFF, imported_library.name.lower() + "_0x0", func.name, bitness, True, 1, set()))
+                    api_name = func.name
+                    if func.is_ordinal:
+                        api_name = OrdinalHelper.resolveOrdinal(dll_name, func.ordinal)
+                    if api_name:
+                        results["import_table"].append((func.iat_address + self.load_offset, 0xFFFFFFFF, dll_name + "_0x0", str(api_name), bitness, True, 1, set()))
         else:
             # fallback using the old method and out own import table parser
             mapped_binary = binary
@@ -230,7 +263,6 @@ class ApiScout(object):
         self._binary_length = len(binary)
         self._import_table = None
         self._parseImportTable(binary)
-        self._isImportTableEntry(0)
         references = self._getCodeReferences(binary)
         for api_map_name in self.api_maps:
             recovered_apis = []
@@ -245,21 +277,20 @@ class ApiScout(object):
                     if dll and api and bitness == 64:
                         ref_count = 1 + len(references[64][offset]) if offset in references[64] else 1
                         recovered_apis.append((offset + self.load_offset, api_address, dll, api, bitness, self._isImportTableEntry(offset), ref_count, references[bitness].get(offset, set())))
+            # hits of both bitnesses are reported in the order of their offsets, as filter() and render() work on neighbouring entries
+            recovered_apis.sort(key=lambda entry: (entry[0], entry[4]))
             results[api_map_name] = recovered_apis
         return results
 
     def _getFilteredList(self, distance, list_to_filter):
-        offsets_a = [item[0] for item in list_to_filter]
-        offsets_b = offsets_a[1:] + [0]
-        api_distances = list(map(operator.sub, offsets_b, offsets_a))
-        distance_filtered = []
-        for index, api_distance in enumerate(api_distances[:-1]):
-            if api_distance <= distance:
-                if list_to_filter[index] not in distance_filtered:
-                    distance_filtered.append(list_to_filter[index])
-                if list_to_filter[index + 1] not in distance_filtered:
-                    distance_filtered.append(list_to_filter[index + 1])
-        return distance_filtered
+        # keep all entries that have a neighbour within the given distance, requires the list to be ordered by offset
+        list_to_filter = sorted(list_to_filter, key=lambda item: item[0])
+        keep = [False] * len(list_to_filter)
+        for index in range(len(list_to_filter) - 1):
+            if list_to_filter[index + 1][0] - list_to_filter[index][0] <= distance:
+                keep[index] = True
+                keep[index + 1] = True
+        return [item for index, item in enumerate(list_to_filter) if keep[index]]
 
     def filter(self, result, from_addr, to_addr, distance, own_image=True):
         filtered_result = {}
@@ -290,6 +321,10 @@ class ApiScout(object):
         return self._apivector.matchVectorCollection(vector, collection_path)
 
     def getPrimaryVector(self, api_vectors):
+        if not api_vectors:
+            # no API DB loaded, so there is no result - return an empty vector instead of failing
+            empty_vector = {"vector": self._apivector.compress([0] * len(self._apivector.getWinApi1024())), "num_unique_apis": 0, "in_api_vector": 0, "percentage": 0}
+            return ("", empty_vector)
         return sorted(api_vectors.items(), key=lambda x: x[1]["percentage"])[-1]
 
     def render(self, results):
@@ -346,6 +381,9 @@ class ApiScout(object):
         output = "WinApi1024 Vector vs Collection Results:\n"
         output += "    Vector: {}\n".format(results["vector"])
         output += "    Collection: {} ({} families, {} vectors)\n".format(results["collection_filepath"], results["families_in_collection"], results["vectors_in_collection"])
+        if not results["match_results"]:
+            output += "No vectors found in collection, nothing to match against.\n"
+            return output
         family_width = max([len(entry[0]) for entry in results["match_results"]])
         sample_width = max([len(entry[1]) for entry in results["match_results"]])
         output += "-" * (family_width + sample_width + 5 + 6) + "\n"
@@ -353,7 +391,7 @@ class ApiScout(object):
         num_results = 0
         seen_families = []
         for result in results["match_results"]:
-            if num_results > max_results:
+            if num_results >= max_results:
                 break
             if result[0] not in seen_families:
                 output += "{:{fw}} - {:{sw}} - {:.3f}\n".format(result[0], result[1], result[2], fw=family_width, sw=sample_width)
@@ -363,7 +401,7 @@ class ApiScout(object):
         output += "Top {} individual matches\n".format(max_results)
         num_results = 0
         for result in results["match_results"]:
-            if num_results > max_results:
+            if num_results >= max_results:
                 break
             output += "{:{fw}} - {:{sw}} - {:.3f}\n".format(result[0], result[1], result[2], fw=family_width, sw=sample_width)
             num_results += 1
