@@ -12,18 +12,19 @@
 // Ctrl+A to choose all found APIs for annotation.
 // Headless usage: -postScript GhidraScout.java <path to scout.py> [<path to API DB> ...], annotates all APIs found.
 
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.Reader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -43,9 +44,11 @@ import ghidra.program.model.data.FileDataTypeManager;
 import ghidra.program.model.data.FunctionDefinition;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.symbol.ExternalLocation;
+import ghidra.program.model.data.DWordDataType;
 import ghidra.program.model.data.DataUtilities;
 import ghidra.program.model.data.DataUtilities.ClearDataMode;
 import ghidra.program.model.data.PointerDataType;
+import ghidra.program.model.data.QWordDataType;
 import ghidra.program.model.symbol.RefType;
 import ghidra.program.model.symbol.SourceType;
 import ghidra.program.model.util.CodeUnitInsertionException;
@@ -63,6 +66,7 @@ public class GhidraScout extends GhidraScript {
 	boolean windowsArchiveMissing = false;
 
 	static final String PREFERENCE_SCOUT_PY_PATH = "apiscout.scout.py.path";
+	static final Pattern BITNESS_OF_DLL = Pattern.compile("\\((\\d+) bit\\)$");
 	static final Pattern ORDINAL_ONLY_API = Pattern.compile("None<(\\d+)>");
 
 	public void run() throws Exception {
@@ -76,22 +80,24 @@ public class GhidraScout extends GhidraScript {
 			this.scoutPyPath = args[0];
 			dataBasePaths.addAll(Arrays.asList(args).subList(1, args.length));
 		} else {
+			// cancelling one of the dialogs ends the script
 			this.scoutPyPath = this.initApiScoutPathProperty();
 			String dataBasePath = askUserForDatabaseToUse();
 			if (!dataBasePath.isEmpty()) {
 				dataBasePaths.add(dataBasePath);
 			}
 		}
-		if (this.scoutPyPath == null) {
-			printerr("Path to ApiScout's scout.py is not known, nothing to do.");
-			return;
-		}
 		printf("\nProcessing %s\nImage file: %s\n", currentProgram.getName(), currentProgram.getExecutablePath());
 
-		List<ApiScoutResultEntry> foundApis = new ArrayList<ApiScoutResultEntry>();
+		// several API DBs can resolve the same location, which is listed once
+		Map<String, ApiScoutResultEntry> uniqueApis = new LinkedHashMap<String, ApiScoutResultEntry>();
 		for (MemoryRegion region : getMemoryRegions()) {
-			foundApis.addAll(scoutRegion(region, dataBasePaths));
+			monitor.checkCancelled();
+			for (ApiScoutResultEntry entry : scoutRegion(region, dataBasePaths)) {
+				uniqueApis.putIfAbsent(entry.address + " " + entry.dll + " " + entry.api, entry);
+			}
 		}
+		List<ApiScoutResultEntry> foundApis = new ArrayList<ApiScoutResultEntry>(uniqueApis.values());
 		printf("ApiScout found %d API references\n", foundApis.size());
 
 		if (isRunningHeadless()) {
@@ -115,36 +121,29 @@ public class GhidraScout extends GhidraScript {
 		tableDialog.setMessage("Found apis");
 	}
 
-	private String initApiScoutPathProperty() {
+	private String initApiScoutPathProperty() throws CancelledException {
 		String scoutPyAbsolutePath = Preferences.getProperty(PREFERENCE_SCOUT_PY_PATH);
 		if (scoutPyAbsolutePath != null && new File(scoutPyAbsolutePath).isFile()) {
 			return scoutPyAbsolutePath;
 		}
-		try {
-			scoutPyAbsolutePath = askFile("Path to ApiScout's scout.py script", "Select").getAbsolutePath();
-		} catch (CancelledException e) {
-			return null;
-		}
+		scoutPyAbsolutePath = askFile("Path to ApiScout's scout.py script", "Select").getAbsolutePath();
 		Preferences.setProperty(PREFERENCE_SCOUT_PY_PATH, scoutPyAbsolutePath);
 		Preferences.store();
 		return scoutPyAbsolutePath;
 	}
 
-	private String askUserForDatabaseToUse() {
-		String dataBasePath = "";
+	private String askUserForDatabaseToUse() throws CancelledException {
 		List<String> choices = new ArrayList<String>();
 		choices.add("default");
 		choices.add("other");
-		try {
-			String choice = askChoice("Choose Api scout DB file", "Default is PATH_TO_API_SCOUT/dbs/*.json", choices,
-					"default");
-			if ("other".equals(choice)) {
-				dataBasePath = askFile("Api Scout DB path", "OK").getAbsolutePath();
-				printf("ApiScout DB file(s): %s\n", dataBasePath);
-			}
-		} catch (CancelledException e) {
+		String choice = askChoice("Choose Api scout DB file", "Default is PATH_TO_API_SCOUT/dbs/*.json", choices,
+				"default");
+		if ("other".equals(choice)) {
+			String dataBasePath = askFile("Api Scout DB path", "OK").getAbsolutePath();
+			printf("ApiScout DB file(s): %s\n", dataBasePath);
+			return dataBasePath;
 		}
-		return dataBasePath;
+		return "";
 	}
 
 	// The memory of the program as Ghidra knows it, adjacent initialized blocks merged.
@@ -203,7 +202,8 @@ public class GhidraScout extends GhidraScript {
 		return results;
 	}
 
-	private boolean executeScoutPy(File dumpFile, File jsonFile, Address baseAddress, List<String> dataBasePaths) {
+	private boolean executeScoutPy(File dumpFile, File jsonFile, Address baseAddress, List<String> dataBasePaths)
+			throws IOException, InterruptedException, CancelledException {
 		boolean isWindows = System.getProperty("os.name").toLowerCase().startsWith("windows");
 		String[] interpreters = isWindows ? new String[] { "py.exe", "python.exe" }
 				: new String[] { "python3", "python" };
@@ -218,33 +218,32 @@ public class GhidraScout extends GhidraScript {
 			command.add(jsonFile.getAbsolutePath());
 			command.add(dumpFile.getAbsolutePath());
 			command.addAll(dataBasePaths);
-			ProcessBuilder builder = new ProcessBuilder(command);
-			builder.redirectErrorStream(true);
-			Process process;
+			File outputFile = File.createTempFile("ghidrascout", ".log");
 			try {
-				process = builder.start();
-			} catch (IOException e) {
-				// this interpreter is not installed, try the next one
-				continue;
-			}
-			try {
-				StringBuilder output = new StringBuilder();
-				try (BufferedReader input = new BufferedReader(
-						new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-					String line;
-					while ((line = input.readLine()) != null) {
-						output.append(line).append("\n");
+				ProcessBuilder builder = new ProcessBuilder(command);
+				builder.redirectErrorStream(true);
+				builder.redirectOutput(outputFile);
+				Process process;
+				try {
+					process = builder.start();
+				} catch (IOException e) {
+					// this interpreter is not installed, try the next one
+					continue;
+				}
+				while (!process.waitFor(200, TimeUnit.MILLISECONDS)) {
+					if (monitor.isCancelled()) {
+						process.destroyForcibly();
+						throw new CancelledException();
 					}
 				}
-				int exitCode = process.waitFor();
-				if (exitCode != 0) {
-					printerr("ApiScout subprocess exited with error code " + exitCode + "\n" + output);
+				if (process.exitValue() != 0) {
+					printerr("ApiScout subprocess exited with error code " + process.exitValue() + "\n"
+							+ new String(Files.readAllBytes(outputFile.toPath()), StandardCharsets.UTF_8));
 					return false;
 				}
 				return true;
-			} catch (IOException | InterruptedException e) {
-				printerr("Running ApiScout failed: " + e);
-				return false;
+			} finally {
+				outputFile.delete();
 			}
 		}
 		printerr("No python interpreter found to run ApiScout.");
@@ -264,10 +263,17 @@ public class GhidraScout extends GhidraScript {
 				// an API address within an instruction, which is left as it is
 				return true;
 			}
+			boolean isPointerSized = getBitness(entry) == currentProgram.getDefaultPointerSize() * 8;
+			DataType dataType = isPointerSized ? PointerDataType.dataType
+					: getBitness(entry) == 64 ? QWordDataType.dataType : DWordDataType.dataType;
 			try {
-				DataUtilities.createData(currentProgram, entry.address, PointerDataType.dataType, -1,
+				DataUtilities.createData(currentProgram, entry.address, dataType, -1,
 						ClearDataMode.CLEAR_ALL_UNDEFINED_CONFLICT_DATA);
 			} catch (CodeUnitInsertionException e) {
+				return true;
+			}
+			if (!isPointerSized) {
+				// e.g. a 32bit API address in a 64bit program, which is no pointer the program can follow
 				return true;
 			}
 			String library = getLibraryName(entry);
@@ -325,6 +331,11 @@ public class GhidraScout extends GhidraScript {
 			this.windowsArchive.close();
 			this.windowsArchive = null;
 		}
+	}
+
+	private int getBitness(ApiScoutResultEntry entry) {
+		Matcher bitness = BITNESS_OF_DLL.matcher(entry.dll == null ? "" : entry.dll);
+		return bitness.find() ? Integer.parseInt(bitness.group(1)) : currentProgram.getDefaultPointerSize() * 8;
 	}
 
 	private String getDllName(ApiScoutResultEntry entry) {
