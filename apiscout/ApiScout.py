@@ -239,17 +239,20 @@ class ApiScout:
     def evaluateImportTable(self, binary, is_unmapped=True):
         self._binary_length = len(binary)
         results = {"import_table": []}
-        lief_binary = self._parseWithLief(binary)
+        # LIEF expects the layout of a file, images that are mapped already are left to our own parser
+        lief_binary = self._parseWithLief(binary) if is_unmapped else None
         if lief_binary is not None:
             # the machine type is read from the header directly, as its representation differs across LIEF versions
             bitness = PeTools.getBitness(binary)
+            references = self._getCodeReferences(PeTools.mapBinary(binary))
             for imported_library in lief_binary.imports:
                 dll_name = str(imported_library.name).lower()
                 for func in imported_library.entries:
                     api_name = func.name
                     if func.is_ordinal:
-                        api_name = OrdinalHelper.resolveOrdinal(dll_name, func.ordinal)
+                        api_name = OrdinalHelper.resolveOrdinal(dll_name, func.ordinal, bitness)
                     if api_name:
+                        api_references = references[bitness].get(func.iat_address, set())
                         results["import_table"].append(
                             (
                                 func.iat_address + self.load_offset,
@@ -258,8 +261,8 @@ class ApiScout:
                                 str(api_name),
                                 bitness,
                                 True,
-                                1,
-                                set(),
+                                1 + len(api_references),
+                                api_references,
                             )
                         )
         else:
@@ -335,7 +338,8 @@ class ApiScout:
             results[api_map_name] = recovered_apis
         return results
 
-    def _getFilteredList(self, distance, list_to_filter):
+    @staticmethod
+    def _getFilteredList(distance, list_to_filter):
         # keep all entries that have a neighbour within the given distance, requires the list to be ordered by offset
         list_to_filter = sorted(list_to_filter, key=lambda item: item[0])
         keep = [False] * len(list_to_filter)
@@ -394,12 +398,12 @@ class ApiScout:
                 output += "{:3}: {:10}; {:18}; {:3}; {:4};{:40}; {:60}\n".format(
                     "idx", "offset", "VA", "IT?", "#ref", "DLL", "API"
                 )
-                prev_offset = 0
+                prev_offset = None
                 dlls = set()
                 apis = set()
                 num_references = 0
                 for index, entry in enumerate(result):
-                    if prev_offset and entry[0] > prev_offset + 16:
+                    if prev_offset is not None and entry[0] > prev_offset + 16:
                         output += "-" * 129 + "\n"
                     dll_name = f"{entry[2]} ({entry[4]}bit)"
                     is_in_import_table = "err" if entry[5] is None else "yes" if entry[5] else "no"

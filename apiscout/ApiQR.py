@@ -60,7 +60,7 @@ class ApiQR:
                 new_index: entry[0]
                 for new_index, entry in enumerate(
                     sorted(
-                        enumerate(infile.readlines()),
+                        enumerate(line for line in infile.readlines() if line.strip()),
                         key=lambda entry: int(entry[1].split(";")[3].strip()),
                         reverse=True,
                     )
@@ -163,7 +163,7 @@ class ApiQR:
         this_path = os.path.abspath(os.path.join(os.path.dirname(__file__)))
         with open(os.sep.join([this_path, "data", "html_frame.html"])) as f_html:
             # the vector is kept in the order of the (rank sorted) WinApi1024 definition, which is also the order of its compressed form
-            compressed_vector = self._apivector.compress(self.vector)
+            compressed_vector = self._apivector.compress([1 if value else 0 for value in self.vector])
             result = f_html.read().format(vector=compressed_vector, body=result, head=self.getHtmlHeader())
         with open(output_path, "w") as f_out:
             f_out.write(result)

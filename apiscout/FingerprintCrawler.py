@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import tempfile
 
 from apiscout.ApiScout import ApiScout
 
@@ -49,7 +50,8 @@ class FingerprintCrawler:
             path = os.sep.join(path_parts[1:])
         else:
             path = path_parts[0]
-        return family, path
+        # the fields of a fingerprint are separated by semicolons
+        return family.replace(";", "_"), path.replace(";", "_")
 
     def getEmptyFingerprint(self):
         results = self._scout.crawl(b"\x00" * 0x100)
@@ -116,9 +118,18 @@ class FingerprintCrawler:
         return kept + list(fingerprint_list)
 
     def persistFingerprintsToFile(self, fingerprint_list, dest_path):
-        # written to a temporary file first, so a failure does not destroy an existing file
-        temp_path = dest_path + ".tmp"
-        with open(temp_path, "w") as f_destination:
-            for entry in fingerprint_list:
-                f_destination.write("{};{};{};{};{}\n".format(*entry))
-        os.replace(temp_path, dest_path)
+        lines = ["{};{};{};{};{}\n".format(*entry) for entry in fingerprint_list]
+        if os.path.exists(dest_path) and not os.path.isfile(dest_path):
+            with open(dest_path, "w") as f_destination:
+                f_destination.writelines(lines)
+            return
+        # an existing file is only replaced once all fingerprints are written, links are followed
+        dest_path = os.path.realpath(dest_path)
+        file_descriptor, temp_path = tempfile.mkstemp(dir=os.path.dirname(dest_path), suffix=".tmp")
+        try:
+            with os.fdopen(file_descriptor, "w") as f_destination:
+                f_destination.writelines(lines)
+            os.replace(temp_path, dest_path)
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)

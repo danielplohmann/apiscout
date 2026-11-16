@@ -53,21 +53,25 @@ def get_system_info():
 
 def normalize_dll_path(path):
     """DLL file name with its folder in lower case (system32/kernel32.dll), which identifies a DLL regardless of where a copy of the system is mounted"""
-    return "/".join(path.strip().lower().replace("\\", "/").split("/")[-2:])
+    parts = [part for part in path.strip().strip('"').lower().replace("\\", "/").split("/") if part]
+    return "/".join(parts[-2:])
 
 
 def read_load_addresses(filepath):
     """read lines of "<load address> <path of DLL>", as taken from the module list of a process on the target system"""
     load_addresses = []
-    with open(filepath) as f_in:
-        for line in f_in:
-            fields = line.strip().split(None, 1)
-            if len(fields) != 2 or fields[0].startswith("#"):
-                continue
-            try:
-                load_addresses.append((normalize_dll_path(fields[1]), int(fields[0], 16)))
-            except ValueError:
-                LOG.warning("Skipping line without a load address: %s", line.strip())
+    with open(filepath, "rb") as f_in:
+        content = f_in.read()
+    # module lists are often written by PowerShell, which uses UTF-16 with a byte order mark
+    encoding = "utf-16" if content[:2] in (b"\xff\xfe", b"\xfe\xff") else "utf-8-sig"
+    for line in content.decode(encoding, errors="replace").splitlines():
+        fields = line.strip().split(None, 1)
+        if len(fields) != 2 or fields[0].startswith("#"):
+            continue
+        try:
+            load_addresses.append((normalize_dll_path(fields[1]), int(fields[0], 16)))
+        except ValueError:
+            LOG.warning("Skipping line without a load address: %s", line.strip())
     return load_addresses
 
 
@@ -120,6 +124,9 @@ def check_aslr():
 
 
 class DatabaseBuilder:
+    def __init__(self):
+        self._duplicate_paths = {}
+
     def _extractPeExports(self, filepath):
         try:
             pe = pefile.PE(filepath)
@@ -190,6 +197,8 @@ class DatabaseBuilder:
                             LOG.info("APIs: %d", len(dll_summary["exports"]))
                         else:
                             duplicate_count += 1
+                            # the same DLL in another folder, which may be the one that is known by its load address
+                            self._duplicate_paths.setdefault(dll_key, []).append(dll_summary["filepath"])
         LOG.info("PEs examined: %d (%d duplicates, %d skipped)", pe_count, duplicate_count, skipped_count)
         LOG.info("Successfully evaluated %d DLLs with %d APIs", num_hit_dlls, api_count)
         if os_name and os_version:
@@ -223,11 +232,13 @@ class DatabaseBuilder:
         """derive ASLR offsets from known load addresses of the DLLs, given as (normalized path, address)"""
         num_offsets = 0
         known_addresses = dict(load_addresses)
-        for dll in api_db["dlls"].values():
-            load_address = known_addresses.get(normalize_dll_path(dll["filepath"]))
-            if load_address is not None:
-                dll["aslr_offset"] = dll["base_address"] - load_address
-                num_offsets += 1
+        for dll_key, dll in api_db["dlls"].items():
+            for filepath in [dll["filepath"]] + self._duplicate_paths.get(dll_key, []):
+                load_address = known_addresses.get(normalize_dll_path(filepath))
+                if load_address is not None:
+                    dll["aslr_offset"] = dll["base_address"] - load_address
+                    num_offsets += 1
+                    break
         LOG.info("Applied load addresses to %d of %d DLLs.", num_offsets, len(api_db["dlls"]))
         api_db["aslr_offsets"] = num_offsets > 0
         return api_db
@@ -247,6 +258,12 @@ class DatabaseBuilder:
                 aslr_offset = dll_entry["base_address"] - load_address
             else:
                 LOG.warning("Could not get a load address for %s, ASLR offset left as 0.", dll_entry["filepath"])
+        else:
+            LOG.warning(
+                "DllBaseChecker failed for %s (%s), ASLR offset left as 0.",
+                dll_entry["filepath"],
+                result["std_err"] or result["std_out"] or "no output",
+            )
         return aslr_offset
 
     def persistApiDb(self, api_db, filepath=None):
@@ -309,18 +326,21 @@ def main():
     args = parser.parse_args()
     builder = DatabaseBuilder()
     offline = bool(args.os_name and args.os_version)
-    if not is_windows() and not offline and not args.aslr_check:
+    if not is_windows() and (not offline or args.aslr_check):
         parser.error(
-            "on systems other than Windows, --os_name and --os_version of the system the DLLs were taken from are required."
+            "on systems other than Windows, --os_name and --os_version of the system the DLLs were taken from are required, and --aslr_check is not available."
         )
+    load_addresses = read_load_addresses(args.load_addresses) if args.load_addresses else None
     if args.aslr_check:
         print(f"OS has ASLR offsets: {check_aslr()}")
     elif args.auto or args.paths:
         paths = None if args.auto else args.paths
         filter_dlls = True if args.auto else args.filter_dlls
         api_db = builder.extractRecursively(paths, filter_dlls, args.os_name, args.os_version)
-        if args.load_addresses:
-            api_db = builder.applyLoadAddresses(api_db, read_load_addresses(args.load_addresses))
+        if not api_db["dlls"]:
+            parser.error("no DLLs found in {}.".format(", ".join(api_db["crawled_paths"])))
+        if load_addresses is not None:
+            api_db = builder.applyLoadAddresses(api_db, load_addresses)
         elif not args.ignore_aslr and not offline:
             api_db = builder.extractAslrOffsets(api_db)
         builder.persistApiDb(api_db, args.output_file)

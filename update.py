@@ -8,7 +8,7 @@ try:
     import config
 except ImportError:
     print("create a config.py based on template.config.py and set your Malpedia API token!")
-    sys.exit()
+    sys.exit(1)
 
 
 REQUEST_TIMEOUT = 60

@@ -1,2 +1,1 @@
-graft tests
-global-exclude __pycache__ *.py[cod]
+prune tests

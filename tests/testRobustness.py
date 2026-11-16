@@ -429,5 +429,98 @@ class HostileInputTestSuite(unittest.TestCase):
         self.assertEqual(["famA;a_dump;1;1;A171", "famB;b_dump;2;2;A171", "famC;c_dump;3;3;A171"], lines)
 
 
+class SecondAuditTestSuite(unittest.TestCase):
+    def testOrdinalTables(self):
+        # wsock32.dll numbers some APIs differently than ws2_32.dll, oleaut32.dll differs between 32 and 64bit
+        self.assertEqual("inet_addr", OrdinalHelper.resolveOrdinal("wsock32.dll", 10))
+        self.assertEqual("htons", OrdinalHelper.resolveOrdinal("ws2_32.dll", 9, 64))
+        self.assertEqual("DllCanUnloadNow", OrdinalHelper.resolveOrdinal("oleaut32.dll", 144))
+        self.assertEqual("BSTR_UserFree64", OrdinalHelper.resolveOrdinal("oleaut32.dll", 144, 64))
+        self.assertEqual("", OrdinalHelper.resolveOrdinal("ws2_32.dll", 24))
+
+    def testImportTableReferences(self):
+        pe = bytearray(build_pe32())
+        # call dword ptr [0x4010A0] in the headers' slack space references the IAT slot of CreateFileW
+        pe[0x180:0x186] = b"\xff\x15" + struct.pack("<I", 0x4010A0)
+        for lief in (ApiScoutModule.lief, None):
+            original = ApiScoutModule.lief
+            ApiScoutModule.lief = lief
+            try:
+                entries = {entry[3]: entry for entry in ApiScout().evaluateImportTable(bytes(pe))["import_table"]}
+            finally:
+                ApiScoutModule.lief = original
+            self.assertEqual((2, {0x180}), entries["CreateFileW"][6:8])
+            self.assertEqual((1, set()), entries["send"][6:8])
+
+    def testImportTableOfMappedImage(self):
+        mapped = PeTools.mapBinary(build_pe32())
+        imports = set(
+            (entry[0], entry[2], entry[3]) for entry in ApiScout().evaluateImportTable(mapped, False)["import_table"]
+        )
+        self.assertEqual(EXPECTED_IMPORTS, imports)
+
+    def testApiQrHtmlAfterArithmetic(self):
+        apiqr = ApiQR(WINAPI1024_PATH)
+        apiqr.setVector(ApiVector(WINAPI1024_PATH).compress([1, 0, 0, 1] * 256))
+        with tempfile.TemporaryDirectory() as directory:
+            for index, combined in enumerate((apiqr + apiqr, apiqr / 2)):
+                path = os.path.join(directory, f"{index}.html")
+                combined.exportHtml(path, full=True)
+                self.assertGreater(os.path.getsize(path), 0)
+
+    def testRenderSeparatesBlockAtOffsetZero(self):
+        scout = ApiScout()
+        entries = [(offset, 0x1000, "a.dll_0x0", "Api", 32, False, 1, set()) for offset in (0, 0x100)]
+        self.assertEqual(1, scout.render({"test": entries}).count("-" * 129))
+
+    def testFingerprintPersistence(self):
+        from apiscout.FingerprintCrawler import FingerprintCrawler
+
+        crawler = FingerprintCrawler([], WINAPI1024_PATH, "/root")
+        self.assertEqual(("fam", "a_b_dump"), crawler._getFamilyAndPath("/root/fam/a;b_dump"))
+        with tempfile.TemporaryDirectory() as directory:
+            target = os.path.join(directory, "real.csv")
+            link = os.path.join(directory, "link.csv")
+            with open(target, "w") as f_target:
+                f_target.write("old\n")
+            os.symlink(target, link)
+            crawler.persistFingerprintsToFile([("fam", "sample", 1, 1, "A171")], link)
+            self.assertTrue(os.path.islink(link))
+            with open(target) as f_target:
+                self.assertEqual("fam;sample;1;1;A171\n", f_target.read())
+            self.assertEqual(["link.csv", "real.csv"], sorted(os.listdir(directory)))
+
+    def testLoadAddressFiles(self):
+        import DatabaseBuilder
+
+        content = (
+            '0x7ffb11110000 "C:\\Windows\\System32\\kernel32.dll"\r\n75990000 C:\\Windows\\SysWOW64\\kernel32.dll\r\n'
+        )
+        expected = [("system32/kernel32.dll", 0x7FFB11110000), ("syswow64/kernel32.dll", 0x75990000)]
+        with tempfile.TemporaryDirectory() as directory:
+            for encoding in ("utf-8", "utf-8-sig", "utf-16"):
+                path = os.path.join(directory, encoding)
+                with open(path, "w", encoding=encoding, newline="") as f_addresses:
+                    f_addresses.write(content)
+                self.assertEqual(expected, DatabaseBuilder.read_load_addresses(path))
+        self.assertEqual(
+            "system32/kernel32.dll", DatabaseBuilder.normalize_dll_path("/mnt/Windows/System32//kernel32.dll")
+        )
+        builder = DatabaseBuilder.DatabaseBuilder()
+        # the copy in WinSxS was found first, the copy in System32 is the one the load address is known for
+        builder._duplicate_paths["key"] = ["/mnt/Windows/System32/kernel32.dll"]
+        api_db = {
+            "dlls": {
+                "key": {
+                    "filepath": "/mnt/Windows/WinSxS/amd64_x/kernel32.dll",
+                    "base_address": 0x180000000,
+                    "aslr_offset": 0,
+                }
+            }
+        }
+        builder.applyLoadAddresses(api_db, expected)
+        self.assertEqual(0x180000000 - 0x7FFB11110000, api_db["dlls"]["key"]["aslr_offset"])
+
+
 if __name__ == "__main__":
     unittest.main()

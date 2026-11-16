@@ -46,7 +46,7 @@ class ImportDescriptor:
             is_ordinal_import = import_offset & 0x80000000
         if is_ordinal_import:
             ordinal = get_word(buf, offset)
-            name_by_ordinal = OrdinalHelper.resolveOrdinal(self.lib_name, ordinal)
+            name_by_ordinal = OrdinalHelper.resolveOrdinal(self.lib_name, ordinal, 64 if self._is_64bit else 32)
             return {"ordinal": ordinal, "name": name_by_ordinal, "dll_name": self.lib_name}
         return {
             "ordinal": get_word(buf, import_offset),
