@@ -41,8 +41,26 @@ class IdaProxy:
     def isLoaded(self, ea):
         return ida_segment.getseg(ea) is not None
 
-    def hasBytes(self, ea):
-        return ida_bytes.is_loaded(ea)
+    def getLoadedRanges(self, ea, size):
+        """the parts of a range that have a value in the database as list of (address, bytes)"""
+        result = ida_bytes.get_bytes_and_mask(ea, size)
+        if not result:
+            return []
+        content, mask = result
+        if mask.count(b"\xff") >= size // 8 and all(
+            (mask[index >> 3] >> (index & 7)) & 1 for index in range(size & ~7, size)
+        ):
+            return [(ea, content)]
+        ranges = []
+        start = None
+        for index in range(size + 1):
+            is_loaded = index < size and (mask[index >> 3] >> (index & 7)) & 1
+            if is_loaded and start is None:
+                start = index
+            elif not is_loaded and start is not None:
+                ranges.append((ea + start, content[start:index]))
+                start = None
+        return ranges
 
     def getNumReferences(self, ea):
         return sum(1 for _ in idautils.XrefsTo(ea))
@@ -89,9 +107,12 @@ class IdaProxy:
         flags = ida_bytes.get_full_flags(ea)
         return ida_bytes.is_head(flags) and ida_bytes.is_data(flags) and ida_bytes.get_item_size(ea) == size
 
-    def hasIndexRegister(self, operand):
-        """x86: a memory operand with SIB byte whose index field names a register"""
-        return bool(operand.specflag1) and ((operand.specflag2 >> 3) & 7) != 4
+    def hasIndexRegister(self, instruction, operand):
+        """x86: a memory operand with SIB byte whose index field (extended by REX.X) names a register"""
+        index = (operand.specflag2 >> 3) & 7
+        if (instruction.insnpref & 0x42) == 0x42:
+            index |= 8
+        return bool(operand.specflag1) and index != 4
 
     def MakeDWord(self, ea):
         return ida_bytes.create_data(ea, ida_bytes.FF_DWORD, 4, ida_idaapi.BADADDR)

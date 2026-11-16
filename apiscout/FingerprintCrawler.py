@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import shutil
 import tempfile
 
 from apiscout.ApiScout import ApiScout
@@ -63,7 +64,7 @@ class FingerprintCrawler:
     def getFingerprint(self, path_to_binary):
         family, path = self._getFamilyAndPath(path_to_binary)
         if self._isIgnorableBinary(family, path):
-            return self._ignore_files[family + "_" + path]
+            return self._ignore_files[(family, path)]
         # scout the binary
         try:
             with open(path_to_binary, "rb") as f_binary:
@@ -95,7 +96,7 @@ class FingerprintCrawler:
                         if line.strip():
                             LOG.warning("Skipping malformed fingerprint line: %s", line.strip())
                         continue
-                    self._ignore_files[fields[0] + "_" + fields[1]] = fields
+                    self._ignore_files[(fields[0], fields[1])] = fields
 
     def getNumberOfCrawlableFiles(self, file_list):
         return len(file_list) - self.getNumberOfIgnorableFiles(file_list)
@@ -109,11 +110,11 @@ class FingerprintCrawler:
         return num_ignorable
 
     def _isIgnorableBinary(self, family, path):
-        return family + "_" + path in self._ignore_files
+        return (family, path) in self._ignore_files
 
     def mergeWithIgnoreList(self, fingerprint_list):
         """fingerprints of the loaded list that were not part of this crawl, followed by the given fingerprints"""
-        crawled = {entry[0] + "_" + entry[1] for entry in fingerprint_list}
+        crawled = {(entry[0], entry[1]) for entry in fingerprint_list}
         kept = [entry for key, entry in self._ignore_files.items() if key not in crawled]
         return kept + list(fingerprint_list)
 
@@ -129,6 +130,13 @@ class FingerprintCrawler:
         try:
             with os.fdopen(file_descriptor, "w") as f_destination:
                 f_destination.writelines(lines)
+            # the temporary file is private, the result gets the mode of the file it replaces or of a new file
+            if os.path.exists(dest_path):
+                shutil.copymode(dest_path, temp_path)
+            else:
+                umask = os.umask(0)
+                os.umask(umask)
+                os.chmod(temp_path, 0o666 & ~umask)
             os.replace(temp_path, dest_path)
         finally:
             if os.path.exists(temp_path):

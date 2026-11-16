@@ -50,12 +50,22 @@ class PeTools:
             if section_info["raw_size"] and section_info["raw_offset"]:
                 header_size = min(header_size, section_info["raw_offset"])
             header_size = min(header_size, section_info["virt_offset"])
-        if max_virt_section_offset > min(PeTools.MAX_MAPPED_SIZE, PeTools.MAX_MAPPED_RATIO * max(len(binary), 0x1000)):
+        if max_virt_section_offset > PeTools.MAX_MAPPED_SIZE:
             LOG.warning(
                 "Section table describes an image of 0x%x bytes, which is treated as corrupt - not mapping this binary.",
                 max_virt_section_offset,
             )
             return bytes(mapped_binary)
+        if max_virt_section_offset > PeTools.MAX_MAPPED_RATIO * max(len(binary), 0x1000):
+            # mostly uninitialized memory (or a corrupt size), which is cut off behind the data the file provides
+            max_virt_section_offset = max(
+                min(
+                    section_info["virt_offset"]
+                    + max(0, min(section_info["raw_size"], len(binary) - section_info["raw_offset"])),
+                    PeTools.MAX_MAPPED_SIZE,
+                )
+                for section_info in section_infos
+            )
         if max_virt_section_offset:
             mapped_binary = bytearray(max_virt_section_offset)
             mapped_binary[0:header_size] = binary[0:header_size]
@@ -64,6 +74,7 @@ class PeTools:
                 section_data = binary[
                     section_info["raw_offset"] : section_info["raw_offset"] + section_info["raw_size"]
                 ]
+                section_data = section_data[: max(0, len(mapped_binary) - section_info["virt_offset"])]
                 mapped_binary[section_info["virt_offset"] : section_info["virt_offset"] + len(section_data)] = (
                     section_data
                 )

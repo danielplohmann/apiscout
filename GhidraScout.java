@@ -2,7 +2,7 @@
 //@author @mari-mari
 //@category ApiScoutForGhidra
 //@keybinding
-//@menupath
+//@menupath Tools.ApiScout
 //@toolbar
 // Put the script in the Ghidra plugins directory (ghidra_scripts).
 // Requires working version of ApiScout (not bundled with this plugin, available here:
@@ -42,6 +42,7 @@ import ghidra.program.model.data.DataType;
 import ghidra.program.model.data.DataTypeManager;
 import ghidra.program.model.data.FileDataTypeManager;
 import ghidra.program.model.data.FunctionDefinition;
+import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.symbol.ExternalLocation;
 import ghidra.program.model.data.DWordDataType;
@@ -277,11 +278,14 @@ public class GhidraScout extends GhidraScript {
 			boolean isPointerSized = getBitness(entry) == currentProgram.getDefaultPointerSize() * 8;
 			DataType dataType = isPointerSized ? PointerDataType.dataType
 					: getBitness(entry) == 64 ? QWordDataType.dataType : DWordDataType.dataType;
-			try {
-				DataUtilities.createData(currentProgram, entry.address, dataType, -1,
-						ClearDataMode.CLEAR_ALL_UNDEFINED_CONFLICT_DATA);
-			} catch (CodeUnitInsertionException e) {
-				return true;
+			Data existing = getDataAt(entry.address);
+			if (existing == null || !existing.isPointer() || !isPointerSized) {
+				try {
+					DataUtilities.createData(currentProgram, entry.address, dataType, -1,
+							ClearDataMode.CLEAR_ALL_UNDEFINED_CONFLICT_DATA);
+				} catch (CodeUnitInsertionException e) {
+					return true;
+				}
 			}
 			if (!isPointerSized) {
 				// e.g. a 32bit API address in a 64bit program, which is no pointer the program can follow

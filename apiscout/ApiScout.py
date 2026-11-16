@@ -23,6 +23,7 @@
 #
 ########################################################################
 
+import itertools
 import json
 import logging
 import os
@@ -275,6 +276,9 @@ class ApiScout:
             self._import_table = ImportTableLoader(mapped_binary).get_import_table()
             references = self._getCodeReferences(mapped_binary)
             for offset, import_entry in sorted(self._import_table.items()):
+                if not import_entry["name"]:
+                    # import by an ordinal without known name, left out as with LIEF
+                    continue
                 ref_count = 1
                 if bitness:
                     ref_count = 1 + len(references[bitness][offset]) if offset in references[bitness] else 1
@@ -340,14 +344,14 @@ class ApiScout:
 
     @staticmethod
     def _getFilteredList(distance, list_to_filter):
-        # keep all entries that have a neighbour within the given distance, requires the list to be ordered by offset
+        # keep all entries that have a neighbour at another offset within the given distance
         list_to_filter = sorted(list_to_filter, key=lambda item: item[0])
-        keep = [False] * len(list_to_filter)
-        for index in range(len(list_to_filter) - 1):
-            if list_to_filter[index + 1][0] - list_to_filter[index][0] <= distance:
-                keep[index] = True
-                keep[index + 1] = True
-        return [item for index, item in enumerate(list_to_filter) if keep[index]]
+        offsets = sorted({item[0] for item in list_to_filter})
+        keep = set()
+        for offset, next_offset in itertools.pairwise(offsets):
+            if next_offset - offset <= distance:
+                keep.update((offset, next_offset))
+        return [item for item in list_to_filter if item[0] in keep]
 
     def filter(self, result, from_addr, to_addr, distance, own_image=True):
         filtered_result = {}

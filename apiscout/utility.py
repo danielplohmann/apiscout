@@ -1,5 +1,7 @@
 import struct
 
+MAX_STRING_LENGTH = 512
+
 _UNSIGNED_UNPACK_FORMATS = {2: "<H", 4: "<I", 8: "<Q"}
 
 
@@ -24,7 +26,6 @@ def _get_binary_data(buf, start, length):
 def get_string(buf, start_offset):
     if start_offset < 0 or start_offset >= len(buf):
         raise IndexError("string offset out of range")
-    end_offset = buf.find(b"\x00", start_offset)
-    if end_offset < 0:
-        end_offset = len(buf)
-    return "".join(chr(byte) for byte in bytearray(buf[start_offset:end_offset]))
+    # names of DLLs and APIs are short, garbage is cut off instead of being copied over and over
+    candidate = bytes(buf[start_offset : start_offset + MAX_STRING_LENGTH])
+    return candidate.split(b"\x00", 1)[0].decode("latin-1")

@@ -1,7 +1,7 @@
 class OrdinalHelper:
     """
     Names for APIs of DLLs which are frequently imported by ordinal only.
-    The tables hold the ordinals that carry the same name in all API DBs shipped in dbs/ (Windows XP, 7 and 10),
+    The tables hold the ordinals that carry the same name in all API DBs shipped in dbs/,
     ole32.dll and mfc42.dll are candidates for extension.
     """
 
@@ -890,19 +890,7 @@ class OrdinalHelper:
         115: "WSAStartup",
         116: "WSACleanup",
         151: "__WSAFDIsSet",
-        167: "WahOpenCurrentThread",
-        168: "WahOpenHandleHelper",
-        169: "WahOpenNotificationHandleHelper",
-        170: "WahQueueUserApc",
-        171: "WahReferenceContextByHandle",
-        172: "WahRemoveHandleContext",
-        173: "WahWaitForNotification",
-        174: "WahWriteLSPEvent",
-        175: "freeaddrinfo",
-        176: "getaddrinfo",
-        177: "getnameinfo",
-        178: "inet_ntop",
-        179: "inet_pton",
+        180: "inet_pton",
         500: "WEP",
     }
 
@@ -959,19 +947,7 @@ class OrdinalHelper:
         115: "WSAStartup",
         116: "WSACleanup",
         151: "__WSAFDIsSet",
-        182: "WahOpenCurrentThread",
-        183: "WahOpenHandleHelper",
-        184: "WahOpenNotificationHandleHelper",
-        185: "WahQueueUserApc",
-        186: "WahReferenceContextByHandle",
-        187: "WahRemoveHandleContext",
-        188: "WahWaitForNotification",
-        189: "WahWriteLSPEvent",
-        190: "freeaddrinfo",
-        191: "getaddrinfo",
-        192: "getnameinfo",
-        193: "inet_ntop",
-        194: "inet_pton",
+        195: "inet_pton",
         500: "WEP",
     }
 

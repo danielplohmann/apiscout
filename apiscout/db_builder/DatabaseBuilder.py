@@ -325,6 +325,8 @@ def main():
 
     args = parser.parse_args()
     builder = DatabaseBuilder()
+    if bool(args.os_name) != bool(args.os_version):
+        parser.error("--os_name and --os_version have to be given together.")
     offline = bool(args.os_name and args.os_version)
     if not is_windows() and (not offline or args.aslr_check):
         parser.error(

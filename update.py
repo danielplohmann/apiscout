@@ -22,7 +22,7 @@ def get_db_dir():
 def delete_existing_dbs(keep):
     """delete old apivector db files"""
     for filename in os.listdir(get_db_dir()):
-        if filename != keep and re.search(r"\d{4}-\d\d-\d\d-apivectors-v\d+\.csv", filename):
+        if filename != keep and re.fullmatch(r"\d{4}-\d\d-\d\d-apivectors-v\d+\.csv", filename):
             os.remove(get_db_dir() + os.sep + filename)
 
 
@@ -30,7 +30,7 @@ def get_newest_db_version():
     """find ApiVector DB files and return newest version number found"""
     max_version = 0
     for filename in os.listdir(get_db_dir()):
-        version = re.search(r"\d{4}-\d\d-\d\d-apivectors-v(?P<version_number>\d+)\.csv", filename)
+        version = re.fullmatch(r"\d{4}-\d\d-\d\d-apivectors-v(?P<version_number>\d+)\.csv", filename)
         if version:
             max_version = max(max_version, int(version.group("version_number")))
     return max_version

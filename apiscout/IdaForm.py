@@ -164,17 +164,17 @@ class ApiResultsChooser(Choose):
 
     def OnRefresh(self, selection):
         """the native refresh of the view scans the database again"""
-        if not self._keep_rows:
+        if self._keep_rows:
+            self._keep_rows = False
+        else:
             self.all_rows = self.rescan()
             self._applyFilter()
         return [Choose.ALL_CHANGED]
 
     def _redraw(self):
+        # the refresh is carried out later by IDA, OnRefresh() takes the flag back
         self._keep_rows = True
-        try:
-            self.Refresh()
-        finally:
-            self._keep_rows = False
+        self.Refresh()
 
     def OnSelectLine(self, selection):
         if selection:

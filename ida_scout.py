@@ -83,7 +83,7 @@ def registerActions(chooser):
         ),
         (
             chooser.ACTION_ANNOTATE_ALL,
-            "Annotate all listed APIs",
+            "Annotate all APIs of the view",
             "Shift-A",
             "annotated",
             lambda view, _: view.annotate(range(len(view.rows))),

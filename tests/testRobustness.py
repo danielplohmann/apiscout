@@ -522,5 +522,57 @@ class SecondAuditTestSuite(unittest.TestCase):
         self.assertEqual(0x180000000 - 0x7FFB11110000, api_db["dlls"]["key"]["aslr_offset"])
 
 
+class ThirdAuditTestSuite(unittest.TestCase):
+    def testLongStringsAreCutOff(self):
+        self.assertEqual(512, len(get_string(b"A" * 100000, 0)))
+        self.assertEqual("name", get_string(b"name\x00" + b"A" * 100, 0))
+
+    def testFingerprintKeysDoNotCollide(self):
+        from apiscout.FingerprintCrawler import FingerprintCrawler
+
+        crawler = FingerprintCrawler([], WINAPI1024_PATH, "/x")
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "list.csv")
+            with open(path, "w") as f_list:
+                f_list.write("a_b;c_dump;0;0;A171\na;b_c_dump;1;1;A171\n")
+            os.chmod(path, 0o644)
+            crawler.loadIgnoreList(path)
+            self.assertEqual(("a_b", "c_dump", "0", "0", "A171"), crawler.getFingerprint("/x/a_b/c_dump"))
+            self.assertEqual(2, len(crawler.mergeWithIgnoreList([])))
+            crawler.persistFingerprintsToFile(crawler.mergeWithIgnoreList([]), path)
+            self.assertEqual(0o644, os.stat(path).st_mode & 0o777)
+
+    def testEntriesAtOneOffsetAreNoNeighbours(self):
+        entries = [(64, 0x401356, "a.dll", "A", 32), (64, 0x401356, "a.dll", "A", 64), (0x200, 1, "b.dll", "B", 32)]
+        self.assertEqual([], ApiScout._getFilteredList(32, entries))
+        self.assertEqual(
+            3,
+            len(ApiScout._getFilteredList(32, entries + [(72, 2, "c.dll", "C", 32), (0x204, 3, "d.dll", "D", 32)])) - 2,
+        )
+
+    def testOrdinalsThatChangedInNewerWindowsVersions(self):
+        self.assertEqual("", OrdinalHelper.resolveOrdinal("ws2_32.dll", 168))
+        self.assertEqual("recv", OrdinalHelper.resolveOrdinal("ws2_32.dll", 16, 64))
+
+    def testUnnamedOrdinalImportsAreLeftOutByBothParsers(self):
+        pe = bytearray(build_pe32())
+        struct.pack_into("<I", pe, 0x200 + 0xC0, 0x80000BB8)
+        for lief in (ApiScoutModule.lief, None):
+            original = ApiScoutModule.lief
+            ApiScoutModule.lief = lief
+            try:
+                names = sorted(entry[3] for entry in ApiScout().evaluateImportTable(bytes(pe))["import_table"])
+            finally:
+                ApiScoutModule.lief = original
+            self.assertEqual(["CreateFileW", "send"], names)
+
+    def testImageWithLargeUninitializedSection(self):
+        pe = bytearray(build_pe32())
+        struct.pack_into("<I", pe, 0x58 + 0xE0 + 8, 0x800000)
+        mapped = PeTools.mapBinary(bytes(pe))
+        self.assertEqual(0x1200, len(mapped))
+        self.assertEqual(3, len(ImportTableLoader(mapped).get_import_table()))
+
+
 if __name__ == "__main__":
     unittest.main()

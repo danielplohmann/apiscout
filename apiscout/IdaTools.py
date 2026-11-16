@@ -49,23 +49,19 @@ class IdaTools:
         self.ida_proxy = IdaProxy()
 
     def getAllMemoryFromIda(self):
-        """returns the content of all segments, with adjacent segments merged into one buffer: {start address: bytes}"""
+        """returns the bytes that have a value in the database, adjacent parts merged into one buffer: {start address: bytes}"""
         result = {}
         block_start = None
         block_end = None
         for seg_start in idautils.Segments():
             seg_end = self.ida_proxy.getSegEnd(seg_start)
-            if not self.ida_proxy.hasBytes(seg_start):
-                # e.g. the uninitialized part of an image, there is nothing to scan
-                block_start = None
-                continue
-            content = self.ida_proxy.getBytes(seg_start, seg_end - seg_start) or b""
-            if block_start is not None and seg_start == block_end:
-                result[block_start] += content
-            else:
-                block_start = seg_start
-                result[block_start] = content
-            block_end = seg_end
+            for range_start, content in self.ida_proxy.getLoadedRanges(seg_start, seg_end - seg_start):
+                if block_start is not None and range_start == block_end:
+                    result[block_start] += content
+                else:
+                    block_start = range_start
+                    result[block_start] = content
+                block_end = range_start + len(content)
         return result
 
     def hasSegments(self):
@@ -92,6 +88,8 @@ class IdaTools:
         blocking_item = self.ida_proxy.getBlockingItem(api[0], size, in_table)
         if blocking_item:
             return "part of " + blocking_item
+        if self.ida_proxy.getSegEnd(api[0]) < api[0] + size:
+            return "at the end of its segment"
         self.ida_proxy.undefine(api[0], size)
         created = self.ida_proxy.MakeDWord(api[0]) if bitness == 32 else self.ida_proxy.MakeQWord(api[0])
         return None if created else "no data item can be created here"
@@ -135,7 +133,7 @@ class IdaTools:
         if not ida_ua.decode_insn(instruction, address) or not ida_idp.is_call_insn(instruction):
             return False
         operand = instruction.ops[0]
-        if operand.type != ida_ua.o_mem or self.ida_proxy.hasIndexRegister(operand):
+        if operand.type != ida_ua.o_mem or self.ida_proxy.hasIndexRegister(instruction, operand):
             # e.g. call table[reg*4], which only uses the location as start of a table
             return False
         ida_typeinf.apply_callee_tinfo(address, tinfo)
@@ -182,10 +180,17 @@ class IdaTools:
 
         prev_offset = 0
         locations = {api[0] for api in api_results}
+        annotated_locations = {}
         for api in sorted(api_results):
             if api[0] > prev_offset + 16:
                 print(f"Annotating API Block @0x{api[0]:x}.")
             prev_offset = api[0]
+            if api[0] in annotated_locations:
+                # several API DBs can resolve one location differently, the first one listed is applied
+                num_skipped += 1
+                print(f"Skipping 0x{api[0]:x}: location is annotated as {annotated_locations[api[0]]} already.")
+                continue
+            annotated_locations[api[0]] = self.getApiName(api)
             size = self.getBitness(api) // 8
             in_table = bool(size) and (api[0] - size in locations or api[0] + size in locations)
             reason = self.makeDQWord(api, in_table)
@@ -228,9 +233,10 @@ class IdaTools:
         form.Compile()
         ok = form.Execute()
         if ok == 1:
-            api_dbs = form.chosenValues
-            if not api_dbs and os.path.isfile(form.iFileOpen.value):
-                api_dbs = [form.iFileOpen.value]
+            api_dbs = list(form.chosenValues)
+            other_db = form.iFileOpen.value
+            if other_db and os.path.isfile(other_db) and os.path.abspath(other_db) not in map(os.path.abspath, api_dbs):
+                api_dbs.append(other_db)
             if api_dbs:
                 parameters["api_dbs"] = api_dbs
                 parameters["ignore_aslr_offset"] = form.rAslr.checked
