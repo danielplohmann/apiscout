@@ -116,6 +116,28 @@ class ApiScoutTestSuite(unittest.TestCase):
         expected_no_result = "No results for API map: test_2\n"
         self.assertEqual(expected_no_result, scout.render({"test_2": []}))
 
+    def testJsonOutputDllName(self):
+        import json
+        import tempfile
+        import scout as scout_script
+        results = {"db": [
+            (0x10, 0x71ab1000, "ws2_32.dll_0x71ab0000", "connect", 32, None, 1, set([4, 2])),
+            (0x18, 0x7ffa55931000, "kernel32.dll_0x180000000", "CreateFileW", 64, None, 1, set()),
+            (0x20, 0xFFFFFFFF, "msvcp120_clr0400.dll_0x0", "_Cnd_wait", 64, True, 1, set()),
+        ]}
+        file_handle, json_path = tempfile.mkstemp(suffix=".json")
+        os.close(file_handle)
+        try:
+            scout_script.write_results_to_json(json_path, results)
+            with open(json_path, "r") as f_json:
+                json_results = json.loads(f_json.read())
+        finally:
+            os.remove(json_path)
+        self.assertEqual(["ws2_32.dll(32 bit)", "kernel32.dll(64 bit)", "msvcp120_clr0400.dll(64 bit)"], [entry["dll"] for entry in json_results])
+        self.assertEqual([2, 4], json_results[0]["references"])
+        # DLL names from old DBs without base address suffix are kept as they are
+        self.assertEqual("ws2_32.dll", scout_script.get_dll_name("ws2_32.dll"))
+
     def testCompleteCoverage(self):
         scout = ApiScout()
         scout.setBaseAddress(0x1000)

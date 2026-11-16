@@ -55,6 +55,11 @@ def get_base_addr(args):
         return int(baddr_match.group("base_addr"), 16)
     return 0
 
+def get_dll_name(dll_entry):
+    # DLL names are stored as "<filename>_<base address>", the filename itself may contain underscores (ws2_32.dll)
+    return re.sub(r"_0x[0-9a-fA-F]+$", "", dll_entry)
+
+
 def write_results_to_json(output_file, filtered_results):
     json_results = []
     for api_map_name in filtered_results:
@@ -62,7 +67,7 @@ def write_results_to_json(output_file, filtered_results):
             json_results.append({
                     "offset": api[0],
                     "apiAddress": api[1],
-                    "dll": api[2].split('_')[0]+f"({api[4]} bit)",
+                    "dll": get_dll_name(api[2]) + "({} bit)".format(api[4]),
                     "api": api[3],
                     "references": sorted(api[7])
                     })
