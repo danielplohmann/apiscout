@@ -1,107 +1,136 @@
 //ApiScout plugin for Ghidra
 //@author @mari-mari
 //@category ApiScoutForGhidra
-//@keybinding 
-//@menupath 
-//@toolbar 
+//@keybinding
+//@menupath
+//@toolbar
 // Put the script in the Ghidra plugins directory (ghidra_scripts).
 // Requires working version of ApiScout (not bundled with this plugin, available here:
 // https://github.com/danielplohmann/apiscout)
 // When run for the first time, the script will ask for the path to the scout.py (ApiScout root directory).
 // Ctrl+A to choose all found APIs for annotation.
+// Headless usage: -postScript GhidraScout.java <path to scout.py> [<path to API DB> ...], annotates all APIs found.
 
 import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileNotFoundException;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
-import java.io.FileReader;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.Reader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.Paths;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 import java.util.Properties;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import ghidra.app.script.GhidraScript;
 import ghidra.app.tablechooser.AddressableRowObject;
 import ghidra.app.tablechooser.StringColumnDisplay;
 import ghidra.app.tablechooser.TableChooserDialog;
 import ghidra.app.tablechooser.TableChooserExecutor;
-import ghidra.util.Msg;
+import ghidra.program.model.address.Address;
+import ghidra.program.model.data.PointerDataType;
+import ghidra.program.model.listing.Data;
+import ghidra.program.model.mem.MemoryBlock;
+import ghidra.program.model.symbol.SymbolUtilities;
 import ghidra.util.exception.CancelledException;
-import ghidra.program.model.address.*;
 
-import com.google.gson.*;
+import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 
 public class GhidraScout extends GhidraScript {
 	TableChooserDialog tableDialog;
-	Address imageBase = null;
 	String scoutPyPath = null;
 
 	static String configFile = "ghidrascout.config";
 	static String configPropertyName = "apiscout.scout.py.path";
+	static final Pattern ORDINAL_ONLY_API = Pattern.compile("None<(\\d+)>");
 
 	public void run() throws Exception {
-		this.imageBase = currentProgram.getImageBase();
-		this.scoutPyPath = this.initApiScoutPathProperty();
-		String tempApiScoutOutputFilename = "scout.json";
-
-		if (this.imageBase.equals(this.toAddr(0))) {
-			this.imageBase = currentProgram.getMinAddress();
+		List<String> dataBasePaths = new ArrayList<String>();
+		if (isRunningHeadless()) {
+			String[] args = getScriptArgs();
+			if (args.length == 0) {
+				printerr("Usage: GhidraScout.java <path to scout.py> [<path to API DB> ...]");
+				return;
+			}
+			this.scoutPyPath = args[0];
+			dataBasePaths.addAll(Arrays.asList(args).subList(1, args.length));
+		} else {
+			this.scoutPyPath = this.initApiScoutPathProperty();
+			String dataBasePath = askUserForDatabaseToUse();
+			if (!dataBasePath.isEmpty()) {
+				dataBasePaths.add(dataBasePath);
+			}
 		}
-		printf("\nProcessing %s\nImage file: %s\nBase addresss: %x\n", currentProgram.getName(),
-				currentProgram.getExecutablePath(), this.imageBase.getOffset());
+		if (this.scoutPyPath == null) {
+			printerr("Path to ApiScout's scout.py is not known, nothing to do.");
+			return;
+		}
+		printf("\nProcessing %s\nImage file: %s\n", currentProgram.getName(), currentProgram.getExecutablePath());
 
-		executeScoutPy(tempApiScoutOutputFilename, askUserForDatabaseToUse());
-		Map<Long, ApiScoutResultEntry> foundApis = readJsonFile(tempApiScoutOutputFilename);
-		TableChooserExecutor executor = createTableExecutor();
-		tableDialog = createTableChooserDialog("ApiScout results:", executor);
+		List<ApiScoutResultEntry> foundApis = new ArrayList<ApiScoutResultEntry>();
+		for (MemoryRegion region : getMemoryRegions()) {
+			foundApis.addAll(scoutRegion(region, dataBasePaths));
+		}
+		printf("ApiScout found %d API references\n", foundApis.size());
+
+		if (isRunningHeadless()) {
+			int annotated = 0;
+			for (ApiScoutResultEntry entry : foundApis) {
+				if (annotate(entry)) {
+					annotated++;
+				}
+			}
+			printf("Annotated %d API references\n", annotated);
+			return;
+		}
+		tableDialog = createTableChooserDialog("ApiScout results:", createTableExecutor());
 		configureTableColumns(tableDialog);
-		addApiRows(tableDialog, foundApis);
+		for (ApiScoutResultEntry entry : foundApis) {
+			tableDialog.add(new ApiRow(entry));
+		}
 		tableDialog.show();
 		tableDialog.setMessage("Found apis");
-		removeTempFile(tempApiScoutOutputFilename);
 	}
 
 	private String initApiScoutPathProperty() {
 		Properties prop = new Properties();
 		String scoutPyAbsolutePath = null;
-		String configAbsolutePath = String.join(System.getProperty("file.separator"),
-				getSourceFile().getParentFile().toString(), configFile);
-		try {
-			prop.load(new BufferedReader(new FileReader(new File(configAbsolutePath))));
-			scoutPyAbsolutePath = prop.getProperty(configPropertyName);
-			if (prop.isEmpty() || scoutPyAbsolutePath == null) {
-				scoutPyAbsolutePath = createAndReadNewProperty(configAbsolutePath);
+		File config = new File(getSourceFile().getParentFile().getAbsolutePath(), configFile);
+		if (config.isFile()) {
+			try (InputStream input = new FileInputStream(config)) {
+				prop.load(input);
+				scoutPyAbsolutePath = prop.getProperty(configPropertyName);
+			} catch (IOException e) {
+				printerr("Could not read " + config + ": " + e.getMessage());
 			}
-		} catch (FileNotFoundException e1) {
-
-			scoutPyAbsolutePath = createAndReadNewProperty(configAbsolutePath);
-		} catch (IOException e1) {
-			Msg.error(GhidraScout.class, e1);
+		}
+		if (scoutPyAbsolutePath == null || !new File(scoutPyAbsolutePath).isFile()) {
+			scoutPyAbsolutePath = createAndReadNewProperty(config);
 		}
 		return scoutPyAbsolutePath;
 	}
 
-	private String createAndReadNewProperty(String configAbsolutePath) {
+	private String createAndReadNewProperty(File config) {
 		String scoutPyAbsolutePath = null;
 		try {
 			scoutPyAbsolutePath = askFile("Path to ApiScout's scout.py script", "Select").getAbsolutePath();
 		} catch (CancelledException e) {
-			e.printStackTrace();
+			return null;
 		}
-		try (OutputStream output = new FileOutputStream(configAbsolutePath)) {
+		try (OutputStream output = new FileOutputStream(config)) {
 			Properties props = new Properties();
 			props.setProperty(configPropertyName, scoutPyAbsolutePath);
 			props.store(output, null);
-		} catch (IOException io) {
-			io.printStackTrace();
+		} catch (IOException e) {
+			printerr("Could not store " + config + ": " + e.getMessage());
 		}
 		return scoutPyAbsolutePath;
 	}
@@ -111,68 +140,149 @@ public class GhidraScout extends GhidraScript {
 		List<String> choices = new ArrayList<String>();
 		choices.add("default");
 		choices.add("other");
-		String choice = null;
 		try {
-			choice = askChoice("Choose Api scout DB file", "Default is PATH_TO_API_SCOUT/dbs/*.db", choices, "default");
-		} catch (CancelledException e) {
-			e.printStackTrace();
-		}
-		if (choice == "other") {
-			try {
-				dataBasePath += askFile("Api Scout DB path", "OK");
-			} catch (CancelledException e) {
-				e.printStackTrace();
+			String choice = askChoice("Choose Api scout DB file", "Default is PATH_TO_API_SCOUT/dbs/*.json", choices,
+					"default");
+			if ("other".equals(choice)) {
+				dataBasePath = askFile("Api Scout DB path", "OK").getAbsolutePath();
+				printf("ApiScout DB file(s): %s\n", dataBasePath);
 			}
-			printf("ApiScout DB file(s): %s\n", dataBasePath);
+		} catch (CancelledException e) {
+			// keep the default
 		}
 		return dataBasePath;
 	}
 
-	private void executeScoutPy(String tempScoutOutputFile, String dataBasePath) {
-		ProcessBuilder builder = new ProcessBuilder();
-		String executablePath = currentProgram.getExecutablePath();
-		String apiScoutOptions = "-s -o";
-		String shellCommandToRun = String.join(" ", this.scoutPyPath, apiScoutOptions, tempScoutOutputFile,
-				executablePath, dataBasePath);
+	// The memory of the program as Ghidra knows it, adjacent initialized blocks merged.
+	// Scanning the memory instead of the imported file keeps the offsets right for every loader.
+	private List<MemoryRegion> getMemoryRegions() {
+		List<MemoryRegion> regions = new ArrayList<MemoryRegion>();
+		MemoryRegion current = null;
+		for (MemoryBlock block : currentProgram.getMemory().getBlocks()) {
+			if (!block.isInitialized() || !block.getStart().getAddressSpace().isLoadedMemorySpace()) {
+				current = null;
+				continue;
+			}
+			if (current != null && current.blocks.get(current.blocks.size() - 1).getEnd().isSuccessor(block.getStart())) {
+				current.blocks.add(block);
+			} else {
+				current = new MemoryRegion(block);
+				regions.add(current);
+			}
+		}
+		return regions;
+	}
+
+	private List<ApiScoutResultEntry> scoutRegion(MemoryRegion region, List<String> dataBasePaths) throws Exception {
+		List<ApiScoutResultEntry> results = new ArrayList<ApiScoutResultEntry>();
+		File dumpFile = File.createTempFile("ghidrascout", ".bin");
+		File jsonFile = File.createTempFile("ghidrascout", ".json");
+		try {
+			try (OutputStream output = new FileOutputStream(dumpFile)) {
+				for (MemoryBlock block : region.blocks) {
+					byte[] content = new byte[(int) block.getSize()];
+					block.getBytes(block.getStart(), content);
+					output.write(content);
+				}
+			}
+			if (!executeScoutPy(dumpFile, jsonFile, region.start, dataBasePaths)) {
+				return results;
+			}
+			try (Reader reader = Files.newBufferedReader(jsonFile.toPath(), StandardCharsets.UTF_8)) {
+				List<ApiScoutResultEntry> entries = new Gson().fromJson(reader,
+						new TypeToken<List<ApiScoutResultEntry>>() {
+						}.getType());
+				if (entries != null) {
+					for (ApiScoutResultEntry entry : entries) {
+						entry.address = region.start.add(entry.offset);
+						results.add(entry);
+					}
+				}
+			}
+		} finally {
+			dumpFile.delete();
+			jsonFile.delete();
+		}
+		return results;
+	}
+
+	private boolean executeScoutPy(File dumpFile, File jsonFile, Address baseAddress, List<String> dataBasePaths) {
 		boolean isWindows = System.getProperty("os.name").toLowerCase().startsWith("windows");
-		if (isWindows) {
-			builder.command("cmd.exe", "/c", "py.exe " + shellCommandToRun);
-		} else {
-			builder.command("sh", "-c", "python " + shellCommandToRun);
+		String[] interpreters = isWindows ? new String[] { "py.exe", "python.exe" }
+				: new String[] { "python3", "python" };
+		for (String interpreter : interpreters) {
+			List<String> command = new ArrayList<String>();
+			command.add(interpreter);
+			command.add(this.scoutPyPath);
+			command.add("-s");
+			command.add("-b");
+			command.add("0x" + Long.toHexString(baseAddress.getOffset()));
+			command.add("-o");
+			command.add(jsonFile.getAbsolutePath());
+			command.add(dumpFile.getAbsolutePath());
+			command.addAll(dataBasePaths);
+			ProcessBuilder builder = new ProcessBuilder(command);
+			builder.redirectErrorStream(true);
+			Process process;
+			try {
+				process = builder.start();
+			} catch (IOException e) {
+				// this interpreter is not installed, try the next one
+				continue;
+			}
+			try {
+				StringBuilder output = new StringBuilder();
+				try (BufferedReader input = new BufferedReader(
+						new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+					String line;
+					while ((line = input.readLine()) != null) {
+						output.append(line).append("\n");
+					}
+				}
+				int exitCode = process.waitFor();
+				if (exitCode != 0) {
+					printerr("ApiScout subprocess exited with error code " + exitCode + "\n" + output);
+					return false;
+				}
+				return true;
+			} catch (IOException | InterruptedException e) {
+				printerr("Running ApiScout failed: " + e);
+				return false;
+			}
+		}
+		printerr("No python interpreter found to run ApiScout.");
+		return false;
+	}
+
+	private boolean annotate(ApiScoutResultEntry entry) {
+		if (entry.api == null || entry.api.isEmpty()) {
+			return false;
 		}
 		try {
-			Process process = builder.start();
-			BufferedReader input = new BufferedReader(new InputStreamReader(process.getInputStream()));
-			while (input.readLine() != null) {
-			} // for some reason, input should be consumed
-			int exitCode = process.waitFor();
-			printf("ApiScout subprocess exited with error code %d\n", exitCode);
-
+			Data data = getDataAt(entry.address);
+			if (data == null || !data.isDefined()) {
+				try {
+					createData(entry.address, PointerDataType.dataType);
+				} catch (Exception e) {
+					// something else is defined here already, the label is still of use
+				}
+			}
+			createLabel(entry.address, SymbolUtilities.replaceInvalidChars(getLabelName(entry), true), true);
+			return true;
 		} catch (Exception e) {
-			print(e.toString());
-			e.printStackTrace();
+			printerr("Could not annotate " + entry.address + " with " + entry.api + ": " + e.getMessage());
+			return false;
 		}
-
 	}
 
-	private void removeTempFile(String tempFileName) {
-		File file = new File(tempFileName);
-		file.delete();
-	}
-
-	private Map<Long, GhidraScout.ApiScoutResultEntry> readJsonFile(String filename) {
-		Map<Long, ApiScoutResultEntry> results = new HashMap<Long, ApiScoutResultEntry>();
-		try {
-			Reader reader = Files.newBufferedReader(Paths.get(filename));
-			List<ApiScoutResultEntry> map = new Gson().fromJson(reader, new TypeToken<List<ApiScoutResultEntry>>() {
-			}.getType());
-			map.forEach((value -> results.put(value.apiAddress, value)));
-			return results;
-		} catch (IOException e) {
-			e.printStackTrace();
+	private String getLabelName(ApiScoutResultEntry entry) {
+		Matcher ordinalOnly = ORDINAL_ONLY_API.matcher(entry.api);
+		if (ordinalOnly.matches()) {
+			// exported by ordinal only, so the API DB has no name for it
+			String dllName = entry.dll == null ? "unknown" : entry.dll.replaceAll("\\(\\d+ bit\\)$", "");
+			return dllName + "_ordinal_" + ordinalOnly.group(1);
 		}
-		return null;
-
+		return entry.api;
 	}
 
 	private void configureTableColumns(TableChooserDialog tableChooserDialog) {
@@ -184,29 +294,8 @@ public class GhidraScout extends GhidraScript {
 
 			@Override
 			public String getColumnValue(AddressableRowObject rowObject) {
-				ApiRow entry = (ApiRow) rowObject;
-				String val = entry.entry.api;
-				if (val == null) {
-					return "";
-				}
-				return val;
-			}
-		};
-
-		StringColumnDisplay offsetColumn = new StringColumnDisplay() {
-			@Override
-			public String getColumnName() {
-				return "Offset";
-			}
-
-			@Override
-			public String getColumnValue(AddressableRowObject rowObject) {
-				ApiRow entry = (ApiRow) rowObject;
-				String val = Long.toHexString(entry.entry.offset + GhidraScout.this.imageBase.getOffset());
-				if (val == null) {
-					return "";
-				}
-				return val;
+				String val = ((ApiRow) rowObject).entry.api;
+				return val == null ? "" : val;
 			}
 		};
 
@@ -218,13 +307,8 @@ public class GhidraScout extends GhidraScript {
 
 			@Override
 			public String getColumnValue(AddressableRowObject rowObject) {
-				ApiRow entry = (ApiRow) rowObject;
-				String val = entry.entry.dll;
-				if (val == null) {
-
-					return "";
-				}
-				return val;
+				String val = ((ApiRow) rowObject).entry.dll;
+				return val == null ? "" : val;
 			}
 		};
 
@@ -236,26 +320,12 @@ public class GhidraScout extends GhidraScript {
 
 			@Override
 			public String getColumnValue(AddressableRowObject rowObject) {
-				ApiRow entry = (ApiRow) rowObject;
-				String val = Long.toHexString(entry.entry.apiAddress);
-				if (val == null) {
-					return "";
-				}
-				return val;
+				return Long.toHexString(((ApiRow) rowObject).entry.apiAddress);
 			}
 		};
-		tableChooserDialog.addCustomColumn(offsetColumn);
 		tableChooserDialog.addCustomColumn(apiColumn);
 		tableChooserDialog.addCustomColumn(addressColumn);
 		tableChooserDialog.addCustomColumn(dllColumn);
-	}
-
-	private void addApiRows(TableChooserDialog tableChooserDialog, Map<Long, ApiScoutResultEntry> map) {
-		Integer i = 0;
-		for (ApiScoutResultEntry entry : map.values()) {
-			tableChooserDialog.add(new ApiRow(i, entry));
-			i++;
-		}
 	}
 
 	private TableChooserExecutor createTableExecutor() {
@@ -268,55 +338,45 @@ public class GhidraScout extends GhidraScript {
 
 			@Override
 			public boolean execute(AddressableRowObject rowObject) {
-				ApiRow apiRow = (ApiRow) rowObject;
-				Address labelAddress = GhidraScout.this.imageBase.add(apiRow.entry.offset);
-				try {
-					GhidraScout.this.createLabel(labelAddress, apiRow.entry.api, false);
-				} catch (Exception e) {
-					e.printStackTrace();
-				}
+				GhidraScout.this.annotate(((ApiRow) rowObject).entry);
 				return false; // don't remove row from display table
 			}
 		};
 		return executor;
 	}
 
+	class MemoryRegion {
+		Address start;
+		List<MemoryBlock> blocks = new ArrayList<MemoryBlock>();
+
+		public MemoryRegion(MemoryBlock block) {
+			this.start = block.getStart();
+			this.blocks.add(block);
+		}
+	}
+
 	class ApiScoutResultEntry {
 		String api;
 		String dll;
-		Long apiAddress;
-		Integer offset;
-
-		public ApiScoutResultEntry() {
-		}
-
-		public ApiScoutResultEntry(String api, String dll, Long apiAddress, Integer offset) {
-			this.api = api;
-			this.dll = dll;
-			this.apiAddress = apiAddress;
-			this.offset = offset;
-		}
+		long apiAddress;
+		long offset;
+		transient Address address;
 
 		public String toString() {
-			return String.join(" ", this.api, this.apiAddress.toString(), this.dll, this.offset.toString());
+			return String.join(" ", this.api, Long.toHexString(this.apiAddress), this.dll, Long.toHexString(this.offset));
 		}
 	}
 
 	class ApiRow implements AddressableRowObject {
 		ApiScoutResultEntry entry;
-		Integer id;
 
-		public ApiRow() {
-		}
-
-		public ApiRow(Integer key, ApiScoutResultEntry entry) {
+		public ApiRow(ApiScoutResultEntry entry) {
 			this.entry = entry;
-			this.id = key;
 		}
 
 		@Override
 		public Address getAddress() {
-			return GhidraScout.this.toAddr(this.id);
+			return this.entry.address;
 		}
 	}
 }
