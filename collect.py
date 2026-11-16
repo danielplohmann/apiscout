@@ -142,7 +142,7 @@ def main():
             empty_fingerprint = crawler.getEmptyFingerprint()
             fingerprints = [fp for fp in fingerprints if fp[-1] != empty_fingerprint]
         if args.update_path:
-            crawler.persistFingerprintsToFile(fingerprints, args.update_path)
+            crawler.persistFingerprintsToFile(crawler.mergeWithIgnoreList(fingerprints), args.update_path)
         if args.output_path:
             crawler.persistFingerprintsToFile(fingerprints, args.output_path)
         elif not args.update_path:

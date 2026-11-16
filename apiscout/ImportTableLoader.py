@@ -17,7 +17,7 @@ class ImportDescriptor:
         self.lib_name = lib_name
         self._is_64bit = is_64bit
 
-    def parse(self, buf):
+    def parse(self, buf, max_imports=None):
         self.imports = {}
         imp_offset = 0
         # some linkers and most packers leave the import name table (OriginalFirstThunk) empty.
@@ -28,7 +28,7 @@ class ImportDescriptor:
         else:
             imp = get_dword(buf, name_table_offset + imp_offset)
         # there is no length indicated for the array of imports, so we simply continue parsing until we hit zero.
-        while imp != 0:
+        while imp != 0 and (max_imports is None or len(self.imports) < max_imports):
             thunk = self.load_table_offset + imp_offset
             self.imports[thunk] = self._parse_import(buf, name_table_offset + imp_offset)
             imp_offset += 8 if self._is_64bit else 4
@@ -99,14 +99,19 @@ class ImportTableLoader:
             return import_address_table
         pe_offset = PeTools.getPeOffset(self._buffer)
         import_dd_offset = pe_offset + directory_offset + self._get_64bit_bonus_offset()
+        if len(self._buffer) < import_dd_offset + 4:
+            return import_address_table
         it_rva = get_dword(self._buffer, import_dd_offset)
         if it_rva:
             it_offset = 0
+            # a buffer can not hold more thunks than pointers, crafted tables referencing each other are cut off here
+            thunks_left = len(self._buffer) // (8 if self._is_64bit else 4)
             try:
                 # the number of descriptors is not indicated, so we continue parsing until we hit zero.
                 descriptor = self._parse_descriptor(it_rva + it_offset, descriptor_size)
-                while descriptor.load_table_offset:
-                    descriptor.parse(self._buffer)
+                while descriptor.load_table_offset and thunks_left > 0:
+                    descriptor.parse(self._buffer, thunks_left)
+                    thunks_left -= len(descriptor.imports) + 1
                     import_address_table.update(descriptor.imports)
                     it_offset += descriptor_size
                     descriptor = self._parse_descriptor(it_rva + it_offset, descriptor_size)

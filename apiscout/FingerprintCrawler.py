@@ -88,11 +88,12 @@ class FingerprintCrawler:
         if os.path.isfile(path_to_list):
             with open(path_to_list) as infile:
                 for line in infile.readlines():
-                    line = line.strip()
-                    if line:
-                        family = line.split(";")[0]
-                        binary_path = line.split(";")[1]
-                        self._ignore_files[family + "_" + binary_path] = tuple(line.split(";"))
+                    fields = tuple(line.strip().split(";"))
+                    if len(fields) != 5:
+                        if line.strip():
+                            LOG.warning("Skipping malformed fingerprint line: %s", line.strip())
+                        continue
+                    self._ignore_files[fields[0] + "_" + fields[1]] = fields
 
     def getNumberOfCrawlableFiles(self, file_list):
         return len(file_list) - self.getNumberOfIgnorableFiles(file_list)
@@ -108,7 +109,16 @@ class FingerprintCrawler:
     def _isIgnorableBinary(self, family, path):
         return family + "_" + path in self._ignore_files
 
+    def mergeWithIgnoreList(self, fingerprint_list):
+        """fingerprints of the loaded list that were not part of this crawl, followed by the given fingerprints"""
+        crawled = {entry[0] + "_" + entry[1] for entry in fingerprint_list}
+        kept = [entry for key, entry in self._ignore_files.items() if key not in crawled]
+        return kept + list(fingerprint_list)
+
     def persistFingerprintsToFile(self, fingerprint_list, dest_path):
-        with open(dest_path, "w") as f_destination:
+        # written to a temporary file first, so a failure does not destroy an existing file
+        temp_path = dest_path + ".tmp"
+        with open(temp_path, "w") as f_destination:
             for entry in fingerprint_list:
                 f_destination.write("{};{};{};{};{}\n".format(*entry))
+        os.replace(temp_path, dest_path)

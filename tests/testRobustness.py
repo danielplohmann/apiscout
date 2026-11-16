@@ -9,7 +9,7 @@ import apiscout.ApiScout as ApiScoutModule
 from apiscout.ApiQR import ApiQR
 from apiscout.ApiScout import ApiScout
 from apiscout.ApiVector import ApiVector
-from apiscout.ImportTableLoader import ImportTableLoader
+from apiscout.ImportTableLoader import ImportDescriptor, ImportTableLoader
 from apiscout.OrdinalHelper import OrdinalHelper
 from apiscout.PeTools import PeTools
 from apiscout.utility import get_string
@@ -313,6 +313,120 @@ class DatabaseBuilderTestSuite(unittest.TestCase):
         self.assertEqual(0x180000000 - 0x7FFB11110000, api_db["dlls"]["64_kernel32.dll"]["aslr_offset"])
         self.assertEqual(0x68900000 - 0x75990000, api_db["dlls"]["32_kernel32.dll"]["aslr_offset"])
         self.assertEqual(0, api_db["dlls"]["64_ntdll.dll"]["aslr_offset"])
+
+
+class HostileInputTestSuite(unittest.TestCase):
+    def testTruncatedPeHeader(self):
+        binary = bytearray(0x50)
+        binary[0:2] = b"MZ"
+        struct.pack_into("<I", binary, 0x3C, 0x40)
+        binary[0x40:0x46] = b"PE\x00\x00\x4c\x01"
+        self.assertEqual({}, ImportTableLoader(bytes(binary)).get_import_table())
+        self.assertEqual({}, ApiScout().crawl(bytes(binary)))
+
+    def testImportDescriptorsSharingOneThunkList(self):
+        pe = bytearray(build_pe32()) + bytearray(0x8000)
+        struct.pack_into("<IIII", pe, 0x58 + 0xE0 + 8, 0x8200, 0x1000, 0x8200, 0x200)
+        num_thunks = 0x400
+        for index in range(num_thunks):
+            struct.pack_into("<I", pe, 0x200 + 0x4000 + 4 * index, 0x1120)
+        num_descriptors = 0x300
+        for index in range(num_descriptors):
+            struct.pack_into("<IIIII", pe, 0x200 + 0x200 + 20 * index, 0x5000, 0, 0, 0x1100, 0x5000)
+        struct.pack_into("<II", pe, 0x58 + 104, 0x1200, 20 * num_descriptors)
+        mapped = PeTools.mapBinary(bytes(pe))
+        loader = ImportTableLoader(mapped)
+        parsed = []
+        original_parse = ImportDescriptor.parse
+
+        def counting_parse(self, buf, max_imports=None):
+            original_parse(self, buf, max_imports)
+            parsed.append(len(self.imports))
+
+        ImportDescriptor.parse = counting_parse
+        try:
+            loader.get_import_table()
+        finally:
+            ImportDescriptor.parse = original_parse
+        self.assertLessEqual(sum(parsed), len(mapped) // 4)
+
+    def testInvalidCompressedVectors(self):
+        apivector = ApiVector(WINAPI1024_PATH)
+        for vector in ("A300000000", "AAAA", "A170!", "", "9A171", "A172"):
+            self.assertRaises(ValueError, apivector.decompress, vector)
+            self.assertRaises(ValueError, apivector.matchVectors, "A171", vector)
+        with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as f_collection:
+            f_collection.write("bad;sample;1;1;A300000000\ngood;sample;1;1;A171\n")
+        try:
+            results = apivector.matchVectorCollection("A171", f_collection.name)
+            self.assertEqual([("good", "sample", 0.0)], results["match_results"])
+        finally:
+            os.remove(f_collection.name)
+
+    def testSameAddressInBothBitnesses(self):
+        db = {
+            "os_name": "test",
+            "dlls": {
+                "32_1.0_a.dll_0x400000": {
+                    "base_address": 0x400000,
+                    "bitness": 32,
+                    "exports": [{"address": 0x1000, "name": "A32", "ordinal": 1}],
+                },
+                "64_1.0_a.dll_0x400000": {
+                    "base_address": 0x400000,
+                    "bitness": 64,
+                    "exports": [{"address": 0x1000, "name": "A64", "ordinal": 1}],
+                },
+            },
+        }
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f_db:
+            json.dump(db, f_db)
+        try:
+            scout = ApiScout(f_db.name)
+        finally:
+            os.remove(f_db.name)
+        results = scout.crawl(
+            b"\x00" * 16 + struct.pack("<I", 0x401000) + b"\x00" * 16 + struct.pack("<Q", 0x401000) + b"\x00" * 8
+        )["test"]
+        self.assertEqual(
+            [(16, "A32", 32), (16, "A64", 64), (36, "A32", 32), (36, "A64", 64)],
+            [(entry[0], entry[3], entry[4]) for entry in results],
+        )
+
+    def testOwnImageFilterBounds(self):
+        scout = ApiScout()
+        scout.setBaseAddress(0x400000)
+        scout.setBinaryLength(0x1000)
+        entries = [(0, 0x3FFFFF), (4, 0x400000), (8, 0x400FFF), (12, 0x401000)]
+        self.assertEqual([(0, 0x3FFFFF), (12, 0x401000)], scout.filter({"test": entries}, 0, 0, 0)["test"])
+
+    def testPrimaryVectorPrefersMoreApis(self):
+        vectors = {
+            "good": {"vector": "", "num_unique_apis": 100, "in_api_vector": 60, "percentage": 60.0},
+            "spurious": {"vector": "", "num_unique_apis": 2, "in_api_vector": 2, "percentage": 100.0},
+        }
+        self.assertEqual("good", ApiScout().getPrimaryVector(vectors)[0])
+
+    def testOversizedImageIsNotMapped(self):
+        pe = bytearray(build_pe32())
+        struct.pack_into("<I", pe, 0x58 + 0xE0 + 8, 0x20000000)
+        self.assertEqual(b"", PeTools.mapBinary(bytes(pe)))
+
+    def testUpdatingFingerprintsKeepsOtherEntries(self):
+        from apiscout.FingerprintCrawler import FingerprintCrawler
+
+        crawler = FingerprintCrawler([], WINAPI1024_PATH, "/nonexistent")
+        with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as f_list:
+            f_list.write("famA;a_dump;1;1;A171\nfamB;b_dump;1;1;A171\nbroken;line\n\n")
+        try:
+            crawler.loadIgnoreList(f_list.name)
+            merged = crawler.mergeWithIgnoreList([("famB", "b_dump", 2, 2, "A171"), ("famC", "c_dump", 3, 3, "A171")])
+            crawler.persistFingerprintsToFile(merged, f_list.name)
+            with open(f_list.name) as f_in:
+                lines = f_in.read().splitlines()
+        finally:
+            os.remove(f_list.name)
+        self.assertEqual(["famA;a_dump;1;1;A171", "famB;b_dump;2;2;A171", "famC;c_dump;3;3;A171"], lines)
 
 
 if __name__ == "__main__":

@@ -197,18 +197,27 @@ class ApiVector:
         return compressed_b64
 
     def decompress(self, compressed_vector):
+        as_binary = [int(bit) for bit in self._getBitString(compressed_vector)]
         if NUMPY_AVAILABLE:
-            return self.n_decompress(compressed_vector)
-        decompressed_b64 = "".join(self._decompress_get(compressed_vector))
-        vectorized = "".join(self._base642bin[c] for c in decompressed_b64)
-        as_binary = [int(i) for i in vectorized[: self._getVectorLength()]]
+            return np.array(as_binary, dtype=int)
         return as_binary
 
     def n_decompress(self, compressed_vector):
-        decompressed_b64 = "".join(self._decompress_get(compressed_vector))
-        vectorized = "".join(self._base642bin[c] for c in decompressed_b64)
-        as_binary = np.fromiter(vectorized[: self._getVectorLength()], int)
-        return as_binary
+        return np.array([int(bit) for bit in self._getBitString(compressed_vector)], dtype=int)
+
+    def _getBitString(self, compressed_vector):
+        """decompressed vector as string of bits, raises ValueError if this is not a valid compressed vector"""
+        num_chars = -(-self._getVectorLength() // 6)
+        if not isinstance(compressed_vector, str) or not re.fullmatch(r"(\D\d*)*", compressed_vector, re.DOTALL):
+            raise ValueError(f"Not a valid ApiVector: {compressed_vector!r:.64}")
+        decompressed_b64 = ""
+        for char, count in self._decompress_get(compressed_vector):
+            if char not in self._base642bin or len(decompressed_b64) + count > num_chars:
+                raise ValueError(f"Not a valid ApiVector: {compressed_vector[:64]}")
+            decompressed_b64 += char * count
+        if len(decompressed_b64) != num_chars:
+            raise ValueError(f"Not a valid ApiVector: {compressed_vector[:64]}")
+        return "".join(self._base642bin[c] for c in decompressed_b64)[: self._getVectorLength()]
 
     def _getVectorLength(self):
         return len(self._winapi1024) if self._winapi1024 else 1024
@@ -255,9 +264,12 @@ class ApiVector:
             decompressed_vector = self.decompress(vector)
         for family, samples in collection_data.items():
             for sample, sample_vector in samples.items():
-                vector_collection_results.append(
-                    (family, sample, self.matchVectors(decompressed_vector, sample_vector))
-                )
+                try:
+                    score = self.matchVectors(decompressed_vector, sample_vector)
+                except ValueError:
+                    LOG.warning("Skipping invalid ApiVector of %s / %s in collection.", family, sample)
+                    continue
+                vector_collection_results.append((family, sample, score))
         results["match_results"] = sorted(vector_collection_results, key=lambda tup: tup[2], reverse=True)
         return results
 
@@ -272,11 +284,8 @@ class ApiVector:
         return f"{char}{size:d}"
 
     def _decompress_get(self, data):
-        for match in re.finditer(r"(?P<char>.)((?P<count>\d+))?", data):
-            if not match.group("count"):
-                yield match.group("char")
-            else:
-                yield match.group("char") * int(match.group("count"))
+        for match in re.finditer(r"(?P<char>\D)(?P<count>\d*)", data, re.DOTALL):
+            yield match.group("char"), int(match.group("count") or 1)
 
     def _vectorize(self, results):
         unique_results = self._get_uniquified_results(results)

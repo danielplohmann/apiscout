@@ -52,6 +52,7 @@ class ApiScout:
     def __init__(self, db_filepath=None):
         self.api_maps = {}
         self._api_map_sources = {}
+        self._other_bitness_maps = {}
         self.has_64bit = False
         self.base_address = 0
         self._binary_length = 0
@@ -75,6 +76,7 @@ class ApiScout:
         num_apis_loaded = 0
         num_collisions = 0
         api_map = {}
+        other_bitness_map = {}
         for dll_entry in api_db["dlls"]:
             LOG.debug("  building address map for: %s", dll_entry)
             aslr_offset = 0
@@ -90,8 +92,12 @@ class ApiScout:
                 self.has_64bit |= bitness == 64
                 base_address = api_db["dlls"][dll_entry]["base_address"]
                 virtual_address = base_address + export["address"] - aslr_offset
-                if virtual_address in api_map and (api_map[virtual_address][0].lower() != dll_name.lower()):
-                    num_collisions += 1
+                if virtual_address in api_map:
+                    if api_map[virtual_address][0].lower() != dll_name.lower():
+                        num_collisions += 1
+                    if api_map[virtual_address][2] != bitness:
+                        # a 32bit and a 64bit DLL can share an address, both stay resolvable for their pointer size
+                        other_bitness_map[virtual_address] = api_map[virtual_address]
                 api_map[virtual_address] = (dll_name, api_name, bitness)
             LOG.debug("loaded %d exports", num_apis_loaded)
         LOG.debug(
@@ -112,7 +118,9 @@ class ApiScout:
                 num_apis_loaded,
                 hint,
             )
-        self.api_maps[self._getApiMapName(api_db["os_name"], db_filepath)] = api_map
+        api_map_name = self._getApiMapName(api_db["os_name"], db_filepath)
+        self.api_maps[api_map_name] = api_map
+        self._other_bitness_maps[api_map_name] = other_bitness_map
 
     def _getApiMapName(self, os_name, db_filepath):
         """API maps are named by the OS they were built on. Several DBs for the same OS (e.g. one per boot with ASLR) must not replace each other."""
@@ -133,12 +141,10 @@ class ApiScout:
             winapi1024_filepath = this_dir + os.sep + "data" + os.sep + "winapi1024v1.txt"
         self._apivector = ApiVector(winapi1024_filepath)
 
-    def _resolveApiByAddress(self, api_map_name, absolute_addr):
-        api_entry = ("", "", "")
-        api_map = self.api_maps[api_map_name]
-        check_address = absolute_addr
-        if check_address in api_map:
-            api_entry = api_map[check_address]
+    def _resolveApiByAddress(self, api_map_name, absolute_addr, bitness=None):
+        api_entry = self.api_maps[api_map_name].get(absolute_addr, ("", "", ""))
+        if bitness is not None and api_entry[2] != bitness:
+            api_entry = self._other_bitness_maps.get(api_map_name, {}).get(absolute_addr, api_entry)
         return api_entry
 
     def getNumApisLoaded(self):
@@ -292,7 +298,7 @@ class ApiScout:
         for api_map_name in self.api_maps:
             recovered_apis = []
             for offset, api_address in self.iterateAllDwords(binary):
-                dll, api, bitness = self._resolveApiByAddress(api_map_name, api_address)
+                dll, api, bitness = self._resolveApiByAddress(api_map_name, api_address, 32)
                 if dll and api and bitness == 32:
                     ref_count = 1 + len(references[32][offset]) if offset in references[32] else 1
                     recovered_apis.append(
@@ -309,7 +315,7 @@ class ApiScout:
                     )
             if self.has_64bit:
                 for offset, api_address in self.iterateAllQwords(binary):
-                    dll, api, bitness = self._resolveApiByAddress(api_map_name, api_address)
+                    dll, api, bitness = self._resolveApiByAddress(api_map_name, api_address, 64)
                     if dll and api and bitness == 64:
                         ref_count = 1 + len(references[64][offset]) if offset in references[64] else 1
                         recovered_apis.append(
@@ -348,7 +354,7 @@ class ApiScout:
                 filtered_list = [
                     item
                     for item in filtered_list
-                    if (self.base_address > item[1] or (self.base_address + self._binary_length) < item[1])
+                    if (self.base_address > item[1] or (self.base_address + self._binary_length) <= item[1])
                 ]
             if from_addr:
                 filtered_list = [item for item in filtered_list if self.base_address + item[0] >= from_addr]
@@ -377,7 +383,7 @@ class ApiScout:
                 "percentage": 0,
             }
             return ("", empty_vector)
-        return sorted(api_vectors.items(), key=lambda x: x[1]["percentage"])[-1]
+        return sorted(api_vectors.items(), key=lambda x: (x[1]["in_api_vector"], x[1]["percentage"]))[-1]
 
     def render(self, results):
         output = ""

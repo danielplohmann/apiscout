@@ -8,8 +8,9 @@ LOG = logging.getLogger(__name__)
 
 class PeTools:
     BITNESS_MAP = {0x14C: 32, 0x8664: 64}
-    # images beyond this size are not mapped, as their section table is most likely corrupt
-    MAX_MAPPED_SIZE = 0x40000000
+    # images beyond this size, or this multiple of the file size, are not mapped as their section table is most likely corrupt
+    MAX_MAPPED_SIZE = 0x10000000
+    MAX_MAPPED_RATIO = 256
 
     @staticmethod
     def mapBinary(binary):
@@ -49,7 +50,7 @@ class PeTools:
             if section_info["raw_size"] and section_info["raw_offset"]:
                 header_size = min(header_size, section_info["raw_offset"])
             header_size = min(header_size, section_info["virt_offset"])
-        if max_virt_section_offset > PeTools.MAX_MAPPED_SIZE:
+        if max_virt_section_offset > min(PeTools.MAX_MAPPED_SIZE, PeTools.MAX_MAPPED_RATIO * max(len(binary), 0x1000)):
             LOG.warning(
                 "Section table describes an image of 0x%x bytes, which is treated as corrupt - not mapping this binary.",
                 max_virt_section_offset,
@@ -113,7 +114,6 @@ class PeTools:
     @staticmethod
     def checkPe(binary):
         pe_offset = PeTools.getPeOffset(binary)
-        if pe_offset and len(binary) >= pe_offset + 6:
-            bitness = get_word(binary, pe_offset + 4)
-            return bitness in PeTools.BITNESS_MAP
+        if binary[:2] == b"MZ" and pe_offset and binary[pe_offset : pe_offset + 4] == b"PE\x00\x00":
+            return PeTools.getBitness(binary) != 0
         return False
