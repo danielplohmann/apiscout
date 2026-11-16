@@ -41,17 +41,35 @@ LOG = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)-15s %(message)s")
 
 
+def is_windows():
+    return platform.system() == "Windows"
+
+
 def get_system_info():
     platform_info = platform.uname()
     version_info = sys.getwindowsversion()
-    if sys.version > '3':
-    	os_name = "%s %s %s (%s)" % (platform_info.system, platform_info.release, version_info.service_pack, platform_info.machine)
-    	os_version = platform_info.version
-    else:
-    	os_name = "%s %s %s (%s)" % (platform_info[0], platform_info[2], version_info[4], platform_info[4])
-    	os_version = platform_info[3]
+    os_name = "%s %s %s (%s)" % (platform_info.system, platform_info.release, version_info.service_pack, platform_info.machine)
+    return os_name, platform_info.version
 
-    return os_name, os_version
+
+def normalize_dll_path(path):
+    """ DLL file name with its folder in lower case (system32/kernel32.dll), which identifies a DLL regardless of where a copy of the system is mounted """
+    return "/".join(path.strip().lower().replace("\\", "/").split("/")[-2:])
+
+
+def read_load_addresses(filepath):
+    """ read lines of "<load address> <path of DLL>", as taken from the module list of a process on the target system """
+    load_addresses = []
+    with open(filepath, "r") as f_in:
+        for line in f_in:
+            fields = line.strip().split(None, 1)
+            if len(fields) != 2 or fields[0].startswith("#"):
+                continue
+            try:
+                load_addresses.append((normalize_dll_path(fields[1]), int(fields[0], 16)))
+            except ValueError:
+                LOG.warning("Skipping line without a load address: %s", line.strip())
+    return load_addresses
 
 
 # courtesy of http://stackoverflow.com/a/16076661
@@ -114,23 +132,19 @@ class DatabaseBuilder(object):
                 dll_entry["filepath"] = filepath
                 dll_entry["aslr_offset"] = 0
                 dll_entry["exports"] = []
-                min_addr = sys.maxsize   
-                max_addr = 0
                 for exp in sorted(pe.DIRECTORY_ENTRY_EXPORT.symbols, key=attrgetter("address")):
                     export_info = {}
-                    min_addr = min(pe.OPTIONAL_HEADER.ImageBase + exp.address, min_addr)
-                    max_addr = max(pe.OPTIONAL_HEADER.ImageBase + exp.address, max_addr)
-
                     export_info["address"] = exp.address
-                    if exp.name == None:
+                    if exp.name is None:
                         export_info["name"] = "None"
                     else:
-                        export_info["name"] = exp.name.decode("utf-8")
+                        export_info["name"] = exp.name.decode("utf-8", errors="replace")
                     export_info["ordinal"] = exp.ordinal
                     dll_entry["exports"].append(export_info)
 
                 return dll_entry
         except Exception as exc:
+            LOG.warning("Could not extract exports of %s: %s", filepath, exc)
             return None
 
     def _buildDllKey(self, dll_info):
@@ -144,7 +158,7 @@ class DatabaseBuilder(object):
                 return True
         return False
 
-    def extractRecursively(self, paths, filter_dlls=False):
+    def extractRecursively(self, paths, filter_dlls=False, os_name=None, os_version=None):
         api_count = 0
         pe_count = 0
         duplicate_count = 0
@@ -155,7 +169,7 @@ class DatabaseBuilder(object):
             paths = config.DEFAULT_FOLDERS
         for base in paths:
             if not os.path.isdir(base):
-                LOG.warn("%s is not a directory, skipping...", base)
+                LOG.warning("%s is not a directory, skipping...", base)
                 continue
             for root, _, files in os.walk(base):
                 for fn in files:
@@ -178,7 +192,10 @@ class DatabaseBuilder(object):
                             duplicate_count += 1
         LOG.info("PEs examined: %d (%d duplicates, %d skipped)", pe_count, duplicate_count, skipped_count)
         LOG.info("Successfully evaluated %d DLLs with %d APIs", num_hit_dlls, api_count)
-        api_db["os_name"], api_db["os_version"] = get_system_info()
+        if os_name and os_version:
+            api_db["os_name"], api_db["os_version"] = os_name, os_version
+        else:
+            api_db["os_name"], api_db["os_version"] = get_system_info()
         api_db["aslr_offsets"] = False
         api_db["num_dlls"] = num_hit_dlls
         api_db["num_apis"] = api_count
@@ -200,6 +217,19 @@ class DatabaseBuilder(object):
                         num_offsets[dll["bitness"]] += 1
             LOG.info("Found %d 32bit and %d 64bit ASLR offsets.", num_offsets[32], num_offsets[64])
             api_db["aslr_offsets"] = True
+        return api_db
+
+    def applyLoadAddresses(self, api_db, load_addresses):
+        """ derive ASLR offsets from known load addresses of the DLLs, given as (normalized path, address) """
+        num_offsets = 0
+        known_addresses = dict(load_addresses)
+        for dll in api_db["dlls"].values():
+            load_address = known_addresses.get(normalize_dll_path(dll["filepath"]))
+            if load_address is not None:
+                dll["aslr_offset"] = dll["base_address"] - load_address
+                num_offsets += 1
+        LOG.info("Applied load addresses to %d of %d DLLs.", num_offsets, len(api_db["dlls"]))
+        api_db["aslr_offsets"] = num_offsets > 0
         return api_db
 
     def getAslrOffsetForDll(self, dll_entry):
@@ -244,17 +274,27 @@ def main():
     parser.add_argument('--aslr_check', dest='aslr_check', action='store_true',
                         help='Only show ASLR offset.')
 
+    parser.add_argument('--os_name', type=str, default=None,
+                        help='Name of the OS the DLLs belong to. Together with --os_version, this allows to build an API DB from a copy of the DLLs on any system (without ASLR offsets, unless --load_addresses is given).')
+    parser.add_argument('--os_version', type=str, default=None,
+                        help='Version of the OS the DLLs belong to, e.g. 10.0.19045.')
+    parser.add_argument('--load_addresses', type=str, default=None,
+                        help='File with lines of "<hex load address> <DLL path>" (e.g. the module list of a process), used to derive the ASLR offsets instead of loading the DLLs.')
+
     args = parser.parse_args()
     builder = DatabaseBuilder()
+    offline = bool(args.os_name and args.os_version)
+    if not is_windows() and not offline and not args.aslr_check:
+        parser.error("on systems other than Windows, --os_name and --os_version of the system the DLLs were taken from are required.")
     if args.aslr_check:
         print("OS has ASLR offsets: {}".format(check_aslr()))
-    elif args.auto:
-        api_db = builder.extractRecursively(None, True)
-        api_db = builder.extractAslrOffsets(api_db)
-        builder.persistApiDb(api_db, args.output_file)
-    elif args.paths:
-        api_db = builder.extractRecursively(args.paths, args.filter_dlls)
-        if not args.ignore_aslr:
+    elif args.auto or args.paths:
+        paths = None if args.auto else args.paths
+        filter_dlls = True if args.auto else args.filter_dlls
+        api_db = builder.extractRecursively(paths, filter_dlls, args.os_name, args.os_version)
+        if args.load_addresses:
+            api_db = builder.applyLoadAddresses(api_db, read_load_addresses(args.load_addresses))
+        elif not args.ignore_aslr and not offline:
             api_db = builder.extractAslrOffsets(api_db)
         builder.persistApiDb(api_db, args.output_file)
     else:
