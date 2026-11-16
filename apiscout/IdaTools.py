@@ -32,7 +32,8 @@ import ida_typeinf
 import ida_ua
 import idautils
 
-from apiscout.IdaForm import IdaApiScoutOptionsForm, IdaApiScoutResultsForm
+from apiscout.ApiScout import ApiScout
+from apiscout.IdaForm import IdaApiScoutOptionsForm
 from apiscout.IdaProxy import IdaProxy
 
 LOG = logging.getLogger(__name__)
@@ -54,6 +55,10 @@ class IdaTools:
         block_end = None
         for seg_start in idautils.Segments():
             seg_end = self.ida_proxy.getSegEnd(seg_start)
+            if not self.ida_proxy.hasBytes(seg_start):
+                # e.g. the uninitialized part of an image, there is nothing to scan
+                block_start = None
+                continue
             content = self.ida_proxy.getBytes(seg_start, seg_end - seg_start) or b""
             if block_start is not None and seg_start == block_end:
                 result[block_start] += content
@@ -62,6 +67,9 @@ class IdaTools:
                 result[block_start] = content
             block_end = seg_end
         return result
+
+    def hasSegments(self):
+        return any(True for _ in idautils.Segments())
 
     def getBaseAddress(self):
         return [ea for ea in idautils.Segments()][0]
@@ -73,21 +81,20 @@ class IdaTools:
         match = re.search(r"\((?P<bitness>\d+)bit\)", api[2])
         return int(match.group("bitness")) if match else 0
 
-    def makeDQWord(self, api):
-        """turn the location of an API reference into a pointer sized data item, returns False if this is not possible"""
+    def makeDQWord(self, api, in_table=False):
+        """turn the location of an API reference into a pointer sized data item, returns the reason if this is not possible"""
         bitness = self.getBitness(api)
         if bitness not in (32, 64):
-            return False
+            return "unknown pointer size"
         size = bitness // 8
         if self.ida_proxy.isData(api[0], size):
-            return True
-        if self.ida_proxy.isPartOfFunctionCode(api[0], size):
-            # an API address within an instruction (e.g. an immediate operand), which must not be destroyed
-            return False
+            return None
+        blocking_item = self.ida_proxy.getBlockingItem(api[0], size, in_table)
+        if blocking_item:
+            return "part of " + blocking_item
         self.ida_proxy.undefine(api[0], size)
-        if bitness == 32:
-            return self.ida_proxy.MakeDWord(api[0])
-        return self.ida_proxy.MakeQWord(api[0])
+        created = self.ida_proxy.MakeDWord(api[0]) if bitness == 32 else self.ida_proxy.MakeQWord(api[0])
+        return None if created else "no data item can be created here"
 
     def getApiName(self, api):
         match = re.match(r"None<(?P<ordinal>\d+)>$", str(api[3]))
@@ -97,11 +104,8 @@ class IdaTools:
             return "{}_ordinal_{}".format(dll_name, match.group("ordinal"))
         return str(api[3])
 
-    def makeNameAndStructure(self, api, suffix=None):
-        name = self.getApiName(api)
-        if suffix is not None:
-            name += f"_{suffix}"
-        return self.ida_proxy.MakeName(api[0], name)
+    def makeNameAndStructure(self, api):
+        return self.ida_proxy.MakeName(api[0], self.getApiName(api))
 
     def importTypeLibraries(self):
         """load the type libraries matching the bitness of the database, returns True if all of them are available"""
@@ -130,6 +134,10 @@ class IdaTools:
         instruction = ida_ua.insn_t()
         if not ida_ua.decode_insn(instruction, address) or not ida_idp.is_call_insn(instruction):
             return False
+        operand = instruction.ops[0]
+        if operand.type != ida_ua.o_mem or self.ida_proxy.hasIndexRegister(operand):
+            # e.g. call table[reg*4], which only uses the location as start of a table
+            return False
         ida_typeinf.apply_callee_tinfo(address, tinfo)
         # the operand type makes the decompiler use the prototype for this indirect call
         return bool(ida_nalt.set_op_tinfo(address, 0, tinfo))
@@ -141,37 +149,64 @@ class IdaTools:
             return False
         return bool(ida_typeinf.apply_tinfo(address, pointer_tinfo, ida_typeinf.TINFO_DEFINITE))
 
-    def applyApiNames(self, api_results):
+    def getResultRows(self, results):
+        """
+        unique API references over the results of all API DBs as rows [address, API address, DLL, API, references],
+        without pointers into the database itself
+        """
+        base_address = self.getBaseAddress()
+        rows = {}
+        for entries in results.values():
+            for entry in entries:
+                if self.ida_proxy.isLoaded(entry[1]):
+                    continue
+                key = (base_address + entry[0], entry[1], f"{entry[2]} ({entry[4]}bit)", entry[3])
+                rows[key] = max(rows.get(key, 0), entry[6] - 1)
+        # the references known to IDA include those from other segments
+        return [
+            list(key) + [max(references, self.ida_proxy.getNumReferences(key[0]))]
+            for key, references in sorted(rows.items())
+        ]
+
+    def filterByDistance(self, rows, distance):
+        return ApiScout._getFilteredList(distance, rows)
+
+    def applyApiNames(self, api_results, status=None):
+        """annotate the given rows, a description of the outcome per address is stored in the optional dict status"""
+        if status is None:
+            status = {}
         num_renamed = 0
         num_skipped = 0
         num_xrefs_adapted = 0
         unresolved_types = set()
 
         prev_offset = 0
+        locations = {api[0] for api in api_results}
         for api in sorted(api_results):
             if api[0] > prev_offset + 16:
                 print(f"Annotating API Block @0x{api[0]:x}.")
             prev_offset = api[0]
-            if not self.makeDQWord(api):
+            size = self.getBitness(api) // 8
+            in_table = bool(size) and (api[0] - size in locations or api[0] + size in locations)
+            reason = self.makeDQWord(api, in_table)
+            if reason:
                 num_skipped += 1
-                print(f"Skipping 0x{api[0]:x}: location of {self.getApiName(api)} is part of an instruction.")
+                status[api[0]] = "skipped: " + reason
+                print(f"Skipping 0x{api[0]:x}: location of {self.getApiName(api)} is {reason}.")
                 continue
-            named = self.makeNameAndStructure(api)
-            if not named:
-                # the same API may be referenced from several locations
-                for suffix in range(10):
-                    named = self.makeNameAndStructure(api, suffix)
-                    if named:
-                        break
-            if not named:
+            if not self.makeNameAndStructure(api):
                 num_skipped += 1
+                status[api[0]] = "skipped: name could not be set"
                 print(f"Skipping 0x{api[0]:x}: could not set name {self.getApiName(api)}.")
                 continue
             num_renamed += 1
+            self.ida_proxy.grantUnknownPermissions(api[0])
             tinfo, success = self.helper_getTinfoOfFuncName(str(api[3]))
             if not success:
+                status[api[0]] = "annotated (no type information)"
                 unresolved_types.add(str(api[3]))
                 continue
+            status[api[0]] = "annotated"
             self.setPointerType(tinfo, api[0])
             for xref in idautils.XrefsTo(api[0]):
                 if self._applyCalleeType(tinfo, xref.frm):
@@ -203,13 +238,3 @@ class IdaTools:
                 print("No API DB selected, nothing to do.")
         form.Free()
         return parameters
-
-    def formSelectResults(self, results):
-        selected_apis = []
-        form = IdaApiScoutResultsForm(results, self.getBaseAddress(), self.getLastAddress())
-        form.Compile()
-        ok = form.Execute()
-        if ok == 1 and form.chosenApis:
-            selected_apis = form.chosenApis
-        form.Free()
-        return selected_apis
