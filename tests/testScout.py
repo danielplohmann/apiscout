@@ -153,8 +153,10 @@ class ApiScoutTestSuite(unittest.TestCase):
             with open(db_path, "w", encoding="utf-8") as f_db:
                 json.dump(db, f_db)
             scout = ApiScout()
-            with self.assertLogs("apiscout.ApiScout", logging.WARNING):
+            # both DLLs are at their own ASLR offset, which is only a note
+            with self.assertLogs("apiscout.ApiScout", logging.INFO) as logs:
                 scout.loadDbFile(db_path)
+            self.assertEqual([], [record for record in logs.records if record.levelno >= logging.WARNING])
             self.assertEqual(
                 {0x1000: b_entry, 0x1010: a_entries[1], 0x1020: a_entries[3]}, scout.api_maps["Test Windows"]
             )
@@ -166,7 +168,8 @@ class ApiScoutTestSuite(unittest.TestCase):
             self.assertTrue(scout.has_64bit)
             scout = ApiScout()
             scout.ignoreAslrOffsets(True)
-            scout.loadDbFile(db_path)
+            with self.assertLogs("apiscout.ApiScout", logging.WARNING):
+                scout.loadDbFile(db_path)
             self.assertEqual(
                 {0x1010: b_entry, 0x1020: a_entries[1], 0x1030: a_entries[3]}, scout.api_maps["Test Windows"]
             )

@@ -33,7 +33,8 @@ LOG = logging.getLogger(__name__)
 
 
 class ApiScout:
-    # share of exports overwriting another DLL's address above which loading an API DB issues a warning
+    # share of exports overwriting the address of another DLL above which loading an API DB issues a warning, not
+    # counting DLLs that both have the address of their own ASLR offset in the DB (see _loadDbFile)
     COLLISION_WARNING_RATIO = 0.01
     # DLL keys of API DBs end in the address they were loaded at: 32_6.1.7601.17514_kernel32.dll_0x76d10000
     DLL_ADDRESS_SUFFIX = re.compile(r"_0x[0-9a-fA-F]+$")
@@ -93,6 +94,10 @@ class ApiScout:
         placements = place(api_db) if place else {}
         num_apis_loaded = 0
         num_collisions = 0
+        num_placed_collisions = 0
+        # DLLs at the address that the ASLR offset of the DB gives them. One that a module list of the scan places is
+        # not one of them: it is where the dump has it, and an overlap with another DLL is a real one.
+        placed_dlls = set()
         api_map = {}
         other_bitness_map = {}
         export_entries = []
@@ -111,6 +116,9 @@ class ApiScout:
             bitness = dll["bitness"]
             self.has_64bit |= bitness == 64
             load_offset = placements[dll_entry] if dll_entry in placements else dll["base_address"] - aslr_offset
+            is_placed = bool(aslr_offset) and dll_entry not in placements
+            if is_placed:
+                placed_dlls.add(dll_name.lower())
             entries = list(zip(repeat(dll_name), self._getApiNames(exports), repeat(bitness), strict=False))
             addresses = [load_offset + export["address"] for export in exports]
             if not api_map.keys().isdisjoint(addresses):
@@ -118,7 +126,10 @@ class ApiScout:
                 for virtual_address in dict.fromkeys(filter(api_map.__contains__, addresses)):
                     other = api_map[virtual_address]
                     if other[0].lower() != dll_name.lower():
-                        num_collisions += 1
+                        if is_placed and other[0].lower() in placed_dlls:
+                            num_placed_collisions += 1
+                        else:
+                            num_collisions += 1
                     if other[2] != bitness:
                         # a 32bit and a 64bit DLL can share an address, both stay resolvable for their pointer size
                         other_bitness_map[virtual_address] = other
@@ -131,8 +142,19 @@ class ApiScout:
             num_apis_loaded,
             len(api_db["dlls"]),
             api_db["os_name"],
-            num_collisions,
+            num_collisions + num_placed_collisions,
         )
+        if num_placed_collisions:
+            # The DB builder loads every DLL in a process of its own to get its ASLR offset, and Windows hands out
+            # the same free addresses to the DLLs of different processes: up to 23 DLLs of the example DBs share one
+            # load address, which no process has them at together. The overlap is how such a DB is made, not damage.
+            LOG.info(
+                "API DB %s: %d of %d exports have the address of another DLL that has its own ASLR offset in the DB, "
+                "a scan resolves them to one of these DLLs unless a module list places the DLLs.",
+                db_filepath,
+                num_placed_collisions,
+                num_apis_loaded,
+            )
         if num_apis_loaded and num_collisions > self.COLLISION_WARNING_RATIO * num_apis_loaded:
             hint = ""
             if self.ignore_aslr_offsets and api_db.get("aslr_offsets", False):

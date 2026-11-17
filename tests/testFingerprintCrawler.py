@@ -149,6 +149,74 @@ class FingerprintCrawlerTestSuite(unittest.TestCase):
         self.assertEqual(1, len(warnings))
         self.assertTrue("collide" in warnings[0].getMessage())
 
+    def testDllsAtTheirOwnAslrOffsetsSharingAnAddressAreNoted(self):
+        # DllBaseChecker loads every DLL in a process of its own, so DLLs of different processes get the same address
+        # (the example DBs: 3 to 6 % of the exports), which is only logged as a note and not as a warning
+        db = {
+            "aslr_offsets": True,
+            "dlls": {
+                f"32_1.0_dll{index}.dll_0x10000000": _buildDll(
+                    32, 0x10000000, 0x10000000 - 0x74000000, [(0x1000 + 0x10 * i, f"Api{index}_{i}") for i in range(10)]
+                )
+                for index in range(3)
+            },
+            "os_name": "Test Windows 10",
+            "os_version": "10.0.17134",
+        }
+        db_path = os.path.join(self._tmp_dir, "shared_address_db.json")
+        with open(db_path, "w") as f_out:
+            f_out.write(json.dumps(db))
+        with self.assertLogs("apiscout.ApiScout", logging.INFO) as logs:
+            scout = ApiScout()
+            scout.loadDbFile(db_path)
+        self.assertEqual(10, len(scout.api_maps["Test Windows 10"]))
+        self.assertEqual([logging.INFO], sorted({record.levelno for record in logs.records} - {logging.DEBUG}))
+        self.assertTrue(any("20 of 30 exports" in record.getMessage() for record in logs.records))
+
+    def testOverlapWithADllPlacedByAModuleListWarns(self):
+        # A is where the module list of the scan puts it, which is where the stale offset of B (another boot) puts
+        # B: this is a real overlap, not the sharing of addresses by DLLs that were loaded in separate processes
+        exports = [(0x1000 + 0x10 * i, f"Api{i}") for i in range(10)]
+        db = {
+            "aslr_offsets": True,
+            "dlls": {
+                "32_1.0_a.dll_0x10000000": _buildDll(32, 0x10000000, 0x10000000 - 0x74000000, exports),
+                "32_1.0_b.dll_0x10000000": _buildDll(32, 0x10000000, 0x10000000 - 0x75000000, exports),
+            },
+            "os_name": "Test Windows 10",
+            "os_version": "10.0.17134",
+        }
+        db_path = os.path.join(self._tmp_dir, "placed_db.json")
+        with open(db_path, "w") as f_out:
+            f_out.write(json.dumps(db))
+        with self.assertNoLogs("apiscout.ApiScout", logging.WARNING):
+            ApiScout().loadDbFile(db_path)
+        with self.assertLogs("apiscout.ApiScout", logging.WARNING) as logs:
+            ApiScout().loadDbFile(db_path, lambda api_db: {"32_1.0_a.dll_0x10000000": 0x75000000})
+        self.assertIn("10 of 20 exports collide", logs.records[0].getMessage())
+
+    def testCollisionsOfDllsWithoutAslrOffsetWarn(self):
+        # a DLL that was not given an offset stays at its ImageBase: this is a real collision, with or without
+        # the offsets of the other DLLs
+        db = json.loads(json.dumps(ASLR_DB))
+        db["dlls"]["64_10.0.17134.1_unplaced.dll_0x180000000"] = _buildDll(
+            64, 0x180000000, 0, [(0x1000, "Unplaced1"), (0x2000, "Unplaced2")]
+        )
+        db["dlls"]["64_10.0.17134.1_unplaced2.dll_0x180000000"] = _buildDll(
+            64, 0x180000000, 0, [(0x1000, "Other1"), (0x2000, "Other2")]
+        )
+        db_path = os.path.join(self._tmp_dir, "partial_db.json")
+        with open(db_path, "w") as f_out:
+            f_out.write(json.dumps(db))
+        scout, warnings = self._loadWithRecordedLog(db_path, False)
+        self.assertEqual(1, len(warnings))
+        self.assertIn("2 of 8 exports collide", warnings[0].getMessage())
+
+    def testExampleDbsLoadWithoutWarnings(self):
+        for db_name in ("win10_prof_1803_example.json", "win7_prof-n_sp1_example.json"):
+            scout, warnings = self._loadWithRecordedLog(os.sep.join([PROJECT_ROOT, "dbs", db_name]), False)
+            self.assertEqual([], warnings, db_name)
+
     def testAppliedAslrOffsetsDoNotCollide(self):
         scout, warnings = self._loadWithRecordedLog(self._aslr_db_path, False)
         expected = {
