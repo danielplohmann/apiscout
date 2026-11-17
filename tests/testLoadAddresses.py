@@ -1,5 +1,6 @@
 import copy
 import json
+import logging
 import os
 import random
 import struct
@@ -188,6 +189,70 @@ class MatchingTestSuite(unittest.TestCase):
                 self.assertEqual(expected, read_load_addresses(path))
                 self.assertEqual(expected, DatabaseBuilder.read_load_addresses(path))
         self.assertEqual("system32/kernel32.dll", normalize_dll_path("/mnt/Windows/System32//kernel32.dll"))
+
+    def testWarnsAboutThe32bitListOfASystem32OnlyCopy(self):
+        """without SysWOW64, the list of a 32bit process is applied to the 64bit DLLs: warn, both in the DB builder
+        and at scan time. 64bit ntdll, kernel32 and user32 are loaded below 4 GB by Windows 7, which is no reason."""
+        import DatabaseBuilder
+
+        def dlls(*names):
+            return {
+                name: {
+                    "filepath": f"C:\\Windows\\System32\\{name}",
+                    "base_address": 0x180000000,
+                    "bitness": 64,
+                    "aslr_offset": 0,
+                }
+                for name in names
+            }
+
+        def warnings_of(dlls, addresses, lists=1):
+            records = []
+            with self.assertLogs(level="DEBUG") as logs:
+                # something to be logged, assertLogs fails without a record
+                logging.getLogger().debug("start")
+                builder_offsets = self._builderOffsets(dlls, addresses)
+                self.assertEqual(builder_offsets, match_load_addresses(dlls, addresses))
+                placer = DllPlacer()
+                for number in range(lists):
+                    placer.addModuleList(f"list {number}", addresses)
+                self.assertEqual(builder_offsets, placer({"dlls": dlls}))
+            for record in logs.records:
+                if record.levelno >= logging.WARNING and "got a load address below 4 GB" in record.getMessage():
+                    records.append((record.name, record.getMessage()))
+            return records
+
+        names = ("ntdll.dll", "kernel32.dll", "user32.dll", "advapi32.dll", "rpcrt4.dll", "sechost.dll", "msvcrt.dll")
+        list_of_32bit_process = [
+            ("system32/" + name, 0x77000000 + 0x100000 * index) for index, name in enumerate(names)
+        ]
+        found = warnings_of(dlls(*names), list_of_32bit_process)
+        self.assertEqual(["DatabaseBuilder", "apiscout.LoadAddresses"], sorted(name for name, _ in found))
+        # several module lists for one DB are one warning of the scan, the placements are what it is about
+        found = warnings_of(dlls(*names), list_of_32bit_process, lists=3)
+        self.assertEqual(["DatabaseBuilder", "apiscout.LoadAddresses"], sorted(name for name, _ in found))
+        for _, message in found:
+            self.assertIn("4 64bit DLLs got a load address below 4 GB", message)
+            self.assertIn("advapi32.dll 0x77300000, msvcrt.dll 0x77600000, rpcrt4.dll 0x77400000, ...", message)
+            self.assertNotIn("ntdll", message)
+        # a 64bit process on Windows 7: three DLLs below 4 GB, the others high
+        list_of_64bit_process = [
+            ("system32/" + name, 0x77000000 + 0x100000 * index) for index, name in enumerate(names[:3])
+        ]
+        list_of_64bit_process += [
+            ("system32/" + name, 0x7FEFD000000 + 0x100000 * index) for index, name in enumerate(names[3:])
+        ]
+        self.assertEqual([], warnings_of(dlls(*names), list_of_64bit_process))
+        # with SysWOW64 in the DB the list of a 32bit process is applied to the 32bit DLLs, nothing to warn about
+        both = dlls(*names)
+        both["wow"] = {
+            "filepath": "C:\\Windows\\SysWOW64\\advapi32.dll",
+            "base_address": 0x10000000,
+            "bitness": 32,
+            "aslr_offset": 0,
+        }
+        self.assertEqual([], warnings_of(both, list_of_32bit_process))
+        del DatabaseBuilder
 
     def testFileNameOfDll(self):
         self.assertEqual("midimap.dll", dll_file_name("32_10.0.26100.1882_midimap.dll_0x6b700000", {}))

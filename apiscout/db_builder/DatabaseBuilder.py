@@ -131,6 +131,8 @@ EXPORT_NAMES = re.compile(rb"[A-Za-z0-9_?@$()<>\0]*")
 # pefile gives up on a resource directory with more entries, and on an export table with more symbols
 MAX_DIRECTORY_ENTRIES = 4096
 MAX_EXPORTS = 0x2000
+# 64bit DLLs that Windows 7 loads below 4 GB (in every process); any other 64bit DLL there is the 32bit copy of a DLL
+LOW_64BIT_DLLS = ("ntdll.dll", "kernel32.dll", "user32.dll")
 
 
 class PlainPe:
@@ -633,6 +635,7 @@ class DatabaseBuilder:
         for dll_path in sorted(ambiguous_paths):
             LOG.warning("Load address of %s fits DLLs of both bitnesses, it is not applied.", dll_path)
         num_offsets = 0
+        applied = []
         used_paths = set(ambiguous_paths)
         unmatched_dlls = {}
         for dll_key, dll in api_db["dlls"].items():
@@ -641,6 +644,7 @@ class DatabaseBuilder:
                 if load_address is not None:
                     dll["aslr_offset"] = dll["base_address"] - load_address
                     num_offsets += 1
+                    applied.append((dll, load_address))
                     used_paths.add(dll_path)
                     break
             else:
@@ -662,10 +666,33 @@ class DatabaseBuilder:
             if len(candidates) == 1:
                 candidates[0]["aslr_offset"] = candidates[0]["base_address"] - load_address
                 num_offsets += 1
+                applied.append((candidates[0], load_address))
+        if not has_wow64_dlls:
+            self._warnAboutLow64bitDlls(applied)
         log = LOG.warning if load_addresses and not num_offsets else LOG.info
         log("Applied load addresses to %d of %d DLLs.", num_offsets, len(api_db["dlls"]))
         api_db["aslr_offsets"] = num_offsets > 0
         return api_db
+
+    @staticmethod
+    def _warnAboutLow64bitDlls(applied):
+        """The module list of a 32bit process names the 32bit copies in SysWOW64 by their System32 path. Without a
+        SysWOW64 folder in the DB, such a list fits the 64bit DLLs of System32 by name, and every offset of them is
+        wrong. An address below 4 GB is no proof, as Windows 7 loads 64bit ntdll, kernel32 and user32 there, so this
+        only warns. The same as in apiscout/LoadAddresses.py."""
+        low = sorted(
+            (normalize_dll_path(dll["filepath"]).rsplit("/", 1)[-1], load_address)
+            for dll, load_address in applied
+            if dll.get("bitness") == 64 and load_address < 0x100000000
+        )
+        low = [(name, load_address) for name, load_address in low if name not in LOW_64BIT_DLLS]
+        if low:
+            LOG.warning(
+                "%d 64bit DLLs got a load address below 4 GB (%s): the DB has no SysWOW64 folder, so if the list is "
+                "the one of a 32bit process, these offsets are those of the 32bit copies and wrong.",
+                len(low),
+                ", ".join(f"{name} 0x{address:x}" for name, address in low[:3]) + (", ..." if len(low) > 3 else ""),
+            )
 
     def getAslrOffsetForDll(self, dll_entry):
         this_file = str(os.path.abspath(__file__))
