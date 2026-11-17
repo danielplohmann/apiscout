@@ -130,16 +130,17 @@ class IdaProxy:
         relative to that base, so its calls do not reference the API pointers. The base is set to 0 as for
         a flat image, returns the affected segments. What an analysis under the base left behind is repaired.
         """
-        ida_auto.auto_wait()
         changed = []
         old_bases = set()
-        # all bases first, the analysis of one segment follows references into the others
+        # All bases first, the analysis of one segment follows references into the others. For a database that
+        # was just created, this is before its first analysis, which is then made for the flat image.
         for start in self.getSegmentsWithBase():
             segment = ida_segment.getseg(start)
             old_base = ida_segment.get_segm_base(segment)
             if ida_segment.set_selector(segment.sel, 0):
                 changed.append(start)
                 old_bases.add(old_base)
+        ida_auto.auto_wait()
         for start in changed:
             end = self.getSegEnd(start)
             # calls that led to no code under the base made their functions end early
