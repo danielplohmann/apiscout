@@ -50,6 +50,15 @@ def is_windows():
     return platform.system() == "Windows"
 
 
+# characters that Windows does not allow in a file name, and so no DB that is shared is named with them on any OS
+INVALID_FILE_NAME_CHARACTERS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def default_file_stem(os_version):
+    """the start of the name of the DB file that is written without --outfile: the first two numbers of the version"""
+    return ".".join(os_version.split(".")[:2])
+
+
 def get_system_info():
     platform_info = platform.uname()
     version_info = sys.getwindowsversion()
@@ -747,7 +756,7 @@ class DatabaseBuilder:
     def persistApiDb(self, api_db, filepath=None):
         if filepath is None:
             filtered = "_filtered" if api_db["filtered"] else ""
-            filepath = "." + os.sep + ".".join(api_db["os_version"].split(".")[:2]) + filtered + ".json"
+            filepath = "." + os.sep + default_file_stem(api_db["os_version"]) + filtered + ".json"
         if not filepath.endswith(".json"):
             filepath += ".json"
         # the same bytes on every OS, as the DBs are shared and checked against SHA256SUMS
@@ -819,6 +828,17 @@ def main():
     if bool(args.os_name) != bool(args.os_version):
         parser.error("--os_name and --os_version have to be given together.")
     offline = bool(args.os_name and args.os_version)
+    if (
+        offline
+        and not args.output_file
+        and (args.auto or args.paths)
+        and INVALID_FILE_NAME_CHARACTERS.search(default_file_stem(args.os_version))
+    ):
+        # the version names the file that is written without --outfile, which would fail after all DLLs were read
+        parser.error(
+            f'--os_version {args.os_version!r} can not be part of a file name (not / \\ < > : " | ? * or a control '
+            "character), give --outfile."
+        )
     if not is_windows() and (not offline or args.aslr_check):
         parser.error(
             "on systems other than Windows, --os_name and --os_version of the system the DLLs were taken from are required, and --aslr_check is not available."

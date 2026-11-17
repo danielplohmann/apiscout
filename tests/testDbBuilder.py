@@ -1,4 +1,5 @@
 import contextlib
+import io
 import json
 import logging
 import os
@@ -290,6 +291,52 @@ class DatabaseBuilderTests(unittest.TestCase):
             [0x1000, 0x1000, 0x1000, 0, 0],
             sorted((dll["aslr_offset"] for dll in api_db["dlls"].values()), reverse=True),
         )
+
+    def run_main(self, *arguments):
+        """DatabaseBuilder.main with the arguments, in the temporary folder: (exit code, standard error)"""
+        stderr = io.StringIO()
+        previous = os.getcwd()
+        os.chdir(self.directory.name)
+        self.addCleanup(os.chdir, previous)
+        try:
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(unittest.mock.patch.object(sys, "argv", ["DatabaseBuilder.py", *arguments]))
+                stack.enter_context(contextlib.redirect_stderr(stderr))
+                try:
+                    DatabaseBuilder.main()
+                    code = 0
+                except SystemExit as exit_request:
+                    code = exit_request.code
+        finally:
+            os.chdir(previous)
+        return code, stderr.getvalue()
+
+    def testOsVersionThatNamesTheDefaultFileIsCheckedBeforeTheCrawl(self):
+        dll_dir = os.path.join(self.directory.name, "dlls")
+        os.mkdir(dll_dir)
+        with open(os.path.join(dll_dir, "a.dll"), "wb") as f_dll:
+            f_dll.write(build_dll([0x1000], [(b"A", 0)]))
+        offline = ["--paths", dll_dir, "--os_name", "Test"]
+
+        def crawl(*unused):
+            raise AssertionError("the DLLs are read before the version is checked")
+
+        invalid = ("10.0/1", "10/0.1", "1\\2.0", "10.0\\1.2", "10.0:1", "1<0.0", '10."0', "10|0.0", "10.0?", "1*.0")
+        for version in invalid + ("10.0\x01", "10\x1f.0", "10.0\x00"):
+            with self.subTest(version):
+                with unittest.mock.patch.object(DatabaseBuilder.DatabaseBuilder, "extractRecursively", crawl):
+                    code, errors = self.run_main(*offline, "--os_version", version)
+                self.assertEqual(2, code)
+                self.assertIn("can not be part of a file name (not", errors)
+                self.assertFalse(any(name.endswith(".json") for name in os.listdir(self.directory.name)))
+        # only the first two numbers name the file, and --outfile names it otherwise
+        self.assertEqual("10.0", DatabaseBuilder.default_file_stem("10.0.19041/1"))
+        self.assertEqual((0, ""), self.run_main(*offline, "--os_version", "10.0.19041/1:*"))
+        self.assertTrue(os.path.isfile(os.path.join(self.directory.name, "10.0.json")))
+        outfile = os.path.join(self.directory.name, "out.json")
+        self.assertEqual((0, ""), self.run_main(*offline, "--os_version", "10.0/1", "--outfile", outfile))
+        with open(outfile, encoding="utf-8") as f_db:
+            self.assertEqual("10.0/1", json.load(f_db)["os_version"])
 
     def testNoResourcesAndNoExports(self):
         summary = self.assertSameAsPefile(build_dll([0x1000], [(b"A", 0)], with_resources=False), plain=True)
