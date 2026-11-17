@@ -80,17 +80,19 @@ class ApiScout:
         self._apivector = ApiVector()
         self.loadWinApi1024()
 
-    def loadDbFile(self, db_filepath, place=None):
+    def loadDbFile(self, db_filepath, place=None, api_db=None):
         """load an API DB. place(api_db) can return {DLL key: load address} to put DLLs at the addresses they are really
-        loaded at (see LoadAddresses.DllPlacer), the other DLLs keep the addresses of the DB."""
+        loaded at (see LoadAddresses.DllPlacer), the other DLLs keep the addresses of the DB. A caller that has parsed
+        the file already (FingerprintCrawler.readApiDb) passes its content as api_db, which is not read again."""
         with paused_garbage_collection():
-            self._loadDbFile(db_filepath, place)
+            self._loadDbFile(db_filepath, place, api_db)
 
-    def _loadDbFile(self, db_filepath, place):
-        if not os.path.isfile(db_filepath):
-            LOG.error("Not a file: %s!", db_filepath)
-            raise ValueError
-        api_db = read_json(db_filepath)
+    def _loadDbFile(self, db_filepath, place, api_db):
+        if api_db is None:
+            if not os.path.isfile(db_filepath):
+                LOG.error("Not a file: %s!", db_filepath)
+                raise ValueError
+            api_db = read_json(db_filepath)
         placements = place(api_db) if place else {}
         num_apis_loaded = 0
         num_collisions = 0

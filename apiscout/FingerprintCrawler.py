@@ -11,33 +11,43 @@ LOG = logging.getLogger(__name__)
 
 
 class FingerprintCrawler:
-    def __init__(self, db_paths, winapi1024_path, root_path, filter_size=0, ignore_aslr_offsets=True):
+    def __init__(self, db_paths, winapi1024_path, root_path, filter_size=0, ignore_aslr_offsets=True, api_dbs=None):
+        # api_dbs: {path: content} of API DBs that the caller has read already (readApiDb), so they are not parsed again
         # ignore_aslr_offsets=True (default, previous behaviour) addresses all DLLs at their file ImageBase,
         # which is only meaningful for dumps from systems without ASLR and ambiguous for DBs in which
         # many DLLs share one ImageBase (e.g. 64bit Windows 10: 0x180000000).
         self._ignore_aslr_offsets = ignore_aslr_offsets
-        self._scout = self._initScout(db_paths, winapi1024_path)
+        self._scout = self._initScout(db_paths, winapi1024_path, api_dbs or {})
         self._filter_size = filter_size
         self._root_path = root_path
         self._ignore_files = {}
         self._empty_fingerprint = self.getEmptyFingerprint()
 
-    def _initScout(self, db_paths, winapi1024_path):
+    def _initScout(self, db_paths, winapi1024_path, api_dbs):
         scout = ApiScout()
         # optionally override potential ASLR offsets that are stored in the API DB files.
         scout.ignoreAslrOffsets(self._ignore_aslr_offsets)
         # load DB file
         for db_path in db_paths:
-            scout.loadDbFile(db_path)
+            scout.loadDbFile(db_path, api_db=api_dbs.get(db_path))
         # load WinApi1024 vector
         scout.loadWinApi1024(winapi1024_path)
         return scout
 
     @staticmethod
-    def dbHasAslrOffsets(db_path):
-        """check if an API DB carries per-module ASLR offsets, i.e. is bound to the boot it was built in"""
+    def readApiDb(db_path):
+        """the content of an API DB file, for apiDbHasAslrOffsets() and the api_dbs of the constructor"""
         with paused_garbage_collection():
-            api_db = read_json(db_path)
+            return read_json(db_path)
+
+    @staticmethod
+    def dbHasAslrOffsets(db_path):
+        """check if an API DB file carries per-module ASLR offsets, i.e. is bound to the boot it was built in"""
+        return FingerprintCrawler.apiDbHasAslrOffsets(FingerprintCrawler.readApiDb(db_path))
+
+    @staticmethod
+    def apiDbHasAslrOffsets(api_db):
+        """dbHasAslrOffsets() for the content of an API DB"""
         if api_db.get("aslr_offsets", False):
             return True
         return any(dll.get("aslr_offset", 0) for dll in api_db.get("dlls", {}).values())

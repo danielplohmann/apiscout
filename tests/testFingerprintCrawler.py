@@ -124,6 +124,52 @@ class FingerprintCrawlerTestSuite(unittest.TestCase):
                 self.assertEqual(0, cli.main(arguments + extra))
             self.assertEqual(is_skipped, "Skipping API DB with ASLR offsets" in messages.getvalue())
 
+    def testCollectParsesEachDbOnceInTheMainProcess(self):
+        import contextlib
+        import io
+        from unittest import mock
+
+        from apiscout import ApiScout as api_scout_module
+        from apiscout import FingerprintCrawler as crawler_module
+        from apiscout import cli
+
+        minimal_db_path = os.path.join(THIS_DIR, "minimal_db.json")
+        target = os.path.join(self._tmp_dir, "collection.csv")
+        arguments = ["collect", self._root_path, "--db", self._aslr_db_path, "--db", minimal_db_path, "-o", target]
+        parsed = []
+
+        def counting_read_json(path):
+            parsed.append(path)
+            with open(path, encoding="utf-8") as f_db:
+                return json.load(f_db)
+
+        # the workers are forked after the DBs were loaded and count in their own copy of this list
+        with (
+            mock.patch.object(api_scout_module, "read_json", counting_read_json),
+            mock.patch.object(crawler_module, "read_json", counting_read_json),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            self.assertEqual(0, cli.main(arguments + ["--use-aslr-dbs"]))
+            self.assertEqual(sorted([self._aslr_db_path, minimal_db_path]), sorted(parsed))
+            # a skipped DB is read for the check and not loaded
+            del parsed[:]
+            self.assertEqual(0, cli.main(arguments))
+            self.assertEqual(sorted([self._aslr_db_path, minimal_db_path]), sorted(parsed))
+
+    def testCrawlerTakesParsedApiDbs(self):
+        crawler = FingerprintCrawler(
+            [self._aslr_db_path],
+            WINAPI1024_PATH,
+            self._root_path,
+            0,
+            ignore_aslr_offsets=False,
+            api_dbs={self._aslr_db_path: FingerprintCrawler.readApiDb(self._aslr_db_path)},
+        )
+        # the file is gone, the crawler has not read it
+        os.remove(self._aslr_db_path)
+        self.assertEqual((4, 4), crawler.getFingerprint(self._dump_path)[2:4])
+        self.assertTrue(FingerprintCrawler.apiDbHasAslrOffsets(ASLR_DB))
+
     def testCrawlerAppliesAslrOffsetsOnRequest(self):
         crawler = FingerprintCrawler(
             [self._aslr_db_path], WINAPI1024_PATH, self._root_path, 0, ignore_aslr_offsets=False
