@@ -260,16 +260,12 @@ class GhidraScout:
         from ghidra.program.model.util import CodeUnitInsertionException
 
         try:
+            if self.script.getInstructionContaining(hit.address) is not None:
+                # an API address within an instruction is a chance hit in code, which is left as it is
+                self.script.println(f"Skipping {hit.address}: location of {hit.api} is part of an instruction.")
+                return False
             name = SymbolUtilities.replaceInvalidChars(get_label_name(hit.api, hit.dll), True)
             is_pointer_sized = hit.bitness == self.pointer_bits
-            # of several hits at one location, the one of the program's pointer size keeps the primary label
-            primary = self.script.getSymbolAt(hit.address)
-            self.script.createLabel(
-                hit.address, name, is_pointer_sized or primary is None or primary.getSource() == SourceType.DEFAULT
-            )
-            if self.script.getInstructionContaining(hit.address) is not None:
-                # an API address within an instruction, which is left as it is
-                return True
             # new instances: in Python, PointerDataType.dataType is the property of getDataType(), not the static field
             data_type = (
                 PointerDataType() if is_pointer_sized else QWordDataType() if hit.bitness == 64 else DWordDataType()
@@ -284,8 +280,14 @@ class GhidraScout:
                         -1,
                         DataUtilities.ClearDataMode.CLEAR_ALL_UNDEFINED_CONFLICT_DATA,
                     )
-                except CodeUnitInsertionException:
-                    return True
+                except CodeUnitInsertionException as exc:
+                    self.script.println(f"Skipping {hit.address}: {hit.api} overlaps other data ({exc.getMessage()}).")
+                    return False
+            # of several hits at one location, the one of the program's pointer size keeps the primary label
+            primary = self.script.getSymbolAt(hit.address)
+            self.script.createLabel(
+                hit.address, name, is_pointer_sized or primary is None or primary.getSource() == SourceType.DEFAULT
+            )
             if not is_pointer_sized:
                 # e.g. a 32bit API address in a 64bit program, which is no pointer the program can follow
                 return True
