@@ -54,4 +54,4 @@ known-first-party = ["apiscout", "config", "pefile", "ThreadedCommand", "Databas
 exclude = ["apiscout/db_builder"]
 
 [tool.ty.analysis]
-allowed-unresolved-imports = ["idaapi", "idc", "idautils", "ida_*", "config", "DatabaseBuilder", "ghidra.**", "java.**", "jpype"]
+allowed-unresolved-imports = ["idaapi", "idc", "idautils", "ida_*", "binaryninja", "binaryninja.*", "config", "DatabaseBuilder", "ghidra.**", "java.**", "jpype"]
