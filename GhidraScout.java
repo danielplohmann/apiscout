@@ -83,7 +83,9 @@ public class GhidraScout extends GhidraScript {
 				printerr("Usage: GhidraScout.java <path to API DB> [<path to API DB> ...]");
 				return;
 			}
-			dataBasePaths.addAll(Arrays.asList(args));
+			for (String arg : args) {
+				dataBasePaths.add(new File(arg).getAbsolutePath());
+			}
 		} else {
 			// cancelling one of the dialogs ends the script
 			this.dbFolder = this.initDbFolderProperty();
@@ -238,6 +240,8 @@ public class GhidraScout extends GhidraScript {
 			File outputFile = File.createTempFile("ghidrascout", ".log");
 			try {
 				ProcessBuilder builder = new ProcessBuilder(command);
+				// not in the working directory of Ghidra, where a folder named apiscout would be taken for the package
+				builder.directory(dumpFile.getParentFile());
 				builder.redirectErrorStream(true);
 				builder.redirectOutput(outputFile);
 				Process process;
@@ -255,7 +259,7 @@ public class GhidraScout extends GhidraScript {
 					}
 				}
 				String output = new String(Files.readAllBytes(outputFile.toPath()), StandardCharsets.UTF_8);
-				if (process.exitValue() != 0 && output.contains("No module named apiscout")) {
+				if (process.exitValue() != 0 && output.trim().endsWith("No module named apiscout")) {
 					// ApiScout is not installed for this interpreter, try the next one
 					continue;
 				}

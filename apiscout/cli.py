@@ -371,6 +371,8 @@ def cmd_export(args):
         raise CliError("only one of --png and --html can go to standard output.")
     if args.png == "-" and sys.stdout.isatty():
         raise CliError("a PNG image is not written to the terminal. Redirect standard output or give a file.")
+    if args.png and args.html and os.path.realpath(args.png) == os.path.realpath(args.html):
+        raise CliError("--png and --html name the same file.")
     for path in (args.html, args.png):
         check_output(path)
     apiqr = ApiQR(os.path.join(os.path.dirname(__file__), "data", "winapi1024v1.txt"))
@@ -413,14 +415,11 @@ def cmd_collect(args):
     if not db_paths:
         raise CliError("all API DBs carry ASLR offsets. Pass --use-aslr-dbs or --ignore-aslr to use them.")
     winapi1024_path = os.path.join(os.path.dirname(__file__), "data", "winapi1024v1.txt")
+    crawler_arguments = (db_paths, winapi1024_path, args.folder, args.filter, args.ignore_aslr, args.update)
     try:
-        crawler = FingerprintCrawler(
-            db_paths, winapi1024_path, args.folder, args.filter, ignore_aslr_offsets=args.ignore_aslr
-        )
+        crawler = create_crawler(*crawler_arguments)
     except (ValueError, KeyError, TypeError, AttributeError):
         raise CliError("one of the API DBs can not be loaded, `apiscout dbs` shows which are usable.") from None
-    if args.update and os.path.isfile(args.update):
-        crawler.loadIgnoreList(args.update)
     file_list = []
     for root, _, files in os.walk(args.folder):
         file_list.extend(os.path.join(root, name) for name in files if args.require in name)
@@ -428,9 +427,9 @@ def cmd_collect(args):
     report(args, f"Fingerprinting {num_crawlable} of {len(file_list)} files with {cpu_count()} processes...")
     fingerprints = []
     show_progress = not args.quiet and sys.stderr.isatty()
-    # Ctrl-C is handled by this process, which then ends its workers
-    with Pool(cpu_count(), initializer=signal.signal, initargs=(signal.SIGINT, signal.SIG_IGN)) as pool:
-        for fingerprint in pool.imap(crawler.getFingerprint, file_list, chunksize=4):
+    # every worker builds its own crawler once, tasks then only carry a path
+    with Pool(cpu_count(), initializer=init_worker, initargs=crawler_arguments) as pool:
+        for fingerprint in pool.imap(get_fingerprint, file_list, chunksize=4):
             fingerprints.append(fingerprint)
             if show_progress:
                 print(f"\r{len(fingerprints)} / {len(file_list)}", end="", file=sys.stderr, flush=True)
@@ -450,6 +449,28 @@ def cmd_collect(args):
         if destination != "-":
             report(args, f"Wrote {len(fingerprints)} fingerprints to {destination}")
     return EXIT_OK
+
+
+WORKER_CRAWLER = None
+
+
+def create_crawler(db_paths, winapi1024_path, folder, filter_size, ignore_aslr, known_collection):
+    crawler = FingerprintCrawler(db_paths, winapi1024_path, folder, filter_size, ignore_aslr_offsets=ignore_aslr)
+    if known_collection and os.path.isfile(known_collection):
+        crawler.loadIgnoreList(known_collection)
+    return crawler
+
+
+def init_worker(*crawler_arguments):
+    global WORKER_CRAWLER
+    # Ctrl-C is handled by the main process, which then ends its workers
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    WORKER_CRAWLER = create_crawler(*crawler_arguments)
+
+
+def get_fingerprint(path):
+    assert WORKER_CRAWLER is not None
+    return WORKER_CRAWLER.getFingerprint(path)
 
 
 def get_token_path():
@@ -771,8 +792,10 @@ def main(argv=None):
             parser.error(f"argument command: invalid choice: '{args.topic}'")
         (commands.choices[args.topic] if args.topic else parser).print_help()
         return EXIT_OK
-    level = logging.INFO if args.verbose else logging.ERROR if args.quiet else logging.WARNING
-    logging.basicConfig(level=level, format="%(message)s")
+    logging.basicConfig(level=logging.ERROR if args.quiet else logging.WARNING, format="%(message)s")
+    if args.verbose:
+        # the messages of this package only, not those of the libraries it uses
+        logging.getLogger("apiscout").setLevel(logging.DEBUG)
     try:
         return args.run(args)
     except CliError as exc:

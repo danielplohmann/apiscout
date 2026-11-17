@@ -256,6 +256,24 @@ class CliTestSuite(unittest.TestCase):
                     continue
                 self.assertEqual(0, run(*arguments)[0], command)
 
+    def testVerbosePrintsWhatTheLibraryLogs(self):
+        import logging
+
+        try:
+            with self.assertLogs("apiscout", level="DEBUG") as logged:
+                self.assertEqual(0, run("scan", DUMP_PATH, "--db", DB_PATH, "--verbose")[0])
+            self.assertTrue(any("building address map" in message for message in logged.output))
+        finally:
+            logging.getLogger("apiscout").setLevel(logging.NOTSET)
+
+    def testExportToOneFileOnly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = os.path.join(directory, "vector")
+            code, _, errors = run("export", VECTOR, "--png", target, "--html", target)
+            self.assertEqual(1, code)
+            self.assertIn("same file", errors)
+            self.assertFalse(os.path.exists(target))
+
     def testQuietBeforeAndAfterTheCommand(self):
         for arguments in (["-q", "scan", DUMP_PATH, "--db", DB_PATH], ["scan", "-q", DUMP_PATH, "--db", DB_PATH]):
             code, _, errors = run(*arguments)
