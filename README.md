@@ -233,20 +233,32 @@ idat -A -TBinary -b<dump address / 16, hex> -pmetapc -S"ida_scout.py <API DB> [<
 
 ## Ghidra
 
-1. Install ApiScout for the Python on the `PATH` (`python3`; on Windows `py` or `python`): `pip install apiscout`
-2. Copy `GhidraScout.java` from the repository into a script directory of Ghidra.
-3. Run it from the Script Manager. Ticking its "In Tool" checkbox adds it as Tools > ApiScout.
+`ghidra_scout.py` from the repository is a Python 3 script for Ghidra. It runs in PyGhidra, the CPython 3 support that comes with Ghidra, and calls the apiscout library directly.
 
-The script asks once for the folder with the API DBs, for example `dbs` of the repository, and scans the memory of the current program. The references you select in its table are annotated like imports: a pointer with an external reference to the function of its library, with the prototype of Ghidra's Windows data type archive. Tested with Ghidra 12.2.
+1. Start Ghidra with `support/pyghidraRun` (`pyghidraRun.bat` on Windows) instead of `ghidraRun`. On the first start, it installs PyGhidra, by default into a virtual environment in the user settings folder of Ghidra, and prints the environment it uses, e.g. `Switching to Ghidra virtual environment: ~/.config/ghidra/ghidra_12.2_PUBLIC/venv`.
+2. Install ApiScout into that environment, with its Python (3.10 or newer):
+
+   ```bash
+   ~/.config/ghidra/ghidra_12.2_PUBLIC/venv/bin/python3 -m pip install apiscout
+   ```
+
+   The folder is `%APPDATA%\ghidra\ghidra_<version>_PUBLIC\venv` on Windows (with `Scripts\python.exe`) and `~/Library/ghidra/ghidra_<version>_PUBLIC/venv` on macOS. When `pyghidraRun` is started in an activated virtual environment, it uses that one instead.
+3. Copy `ghidra_scout.py` into a script directory of Ghidra, such as `~/ghidra_scripts`. Instead of steps 2 and 3, the folder of a clone of the repository can be added as script directory in the Bundle Manager of the Script Manager: the script then imports the `apiscout` package next to it.
+4. Run it from the Script Manager (category ApiScoutForGhidra). Ticking its "In Tool" checkbox adds it as Tools > ApiScout.
+
+The script asks once for the folder with the API DBs, for example `dbs` of the repository, and scans the memory of the current program. The references you select in its table (<kbd>Ctrl</kbd>+<kbd>A</kbd> selects all) are annotated like imports: a pointer with an external reference to the function of its library, with the prototype of Ghidra's Windows data type archive. Tested with Ghidra 12.2.
 
 ![Ghidra listing with API pointers annotated as external functions](https://raw.githubusercontent.com/danielplohmann/apiscout/master/docs/images/ghidra.png)
 
 <details>
 <summary>Headless</summary>
 
+All references are annotated. `analyzeHeadless` can not run Python scripts, `pyghidraRun -H` takes the same arguments:
+
 ```bash
-analyzeHeadless <project> <name> -import <dump> -loader BinaryLoader -loader-baseAddr <address> \
-    -processor x86:LE:64:default -postScript GhidraScout.java <API DB> [<API DB> ...]
+pyghidraRun -H <project folder> <project name> -import <dump> -loader BinaryLoader -loader-baseAddr <address> \
+    -processor x86:LE:64:default -scriptPath <folder of ghidra_scout.py> \
+    -postScript ghidra_scout.py <API DB> [<API DB> ...]
 ```
 
 A 32bit dump needs `-processor x86:LE:32:default`.
