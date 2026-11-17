@@ -19,16 +19,15 @@
     "Windows"
   ],
   "installinstructions": {
-    "Darwin": "Install ApiScout for the Python of Binary Ninja: pip install 'apiscout>=3.0.0'",
-    "Linux": "Install ApiScout for the Python of Binary Ninja: pip install 'apiscout>=3.0.0'",
-    "Windows": "Install ApiScout for the Python of Binary Ninja: pip install 'apiscout>=3.0.0'"
+    "Darwin": "The extension manager installs the repository and numpy. To install by hand, see the README.",
+    "Linux": "The extension manager installs the repository and numpy. To install by hand, see the README.",
+    "Windows": "The extension manager installs the repository and numpy. To install by hand, see the README."
   },
   "dependencies": {
     "pip": [
-      "apiscout>=3.0.0"
+      "numpy"
     ]
   },
-  "subdir": "binja_scout",
   "version": "3.0.0",
   "author": "Daniel Plohmann",
   "projectUrl": "https://github.com/danielplohmann/apiscout",

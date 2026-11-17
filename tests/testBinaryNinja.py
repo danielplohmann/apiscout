@@ -491,9 +491,12 @@ class BinaryNinjaImportTest(unittest.TestCase):
             metadata = json.load(f_json)
         with open(os.path.join(REPO_DIR, "pyproject.toml")) as f_project:
             self.assertIn(f'version = "{metadata["version"]}"', f_project.read())
-        self.assertTrue(os.path.isfile(os.path.join(REPO_DIR, metadata["subdir"], "__init__.py")))
+        # Binary Ninja 6.0 ignores subdir: it installs the whole repository and imports its root
+        self.assertNotIn("subdir", metadata)
+        self.assertTrue(os.path.isfile(os.path.join(REPO_DIR, "__init__.py")))
         self.assertEqual(["python3"], metadata["api"])
-        self.assertEqual(["apiscout>=3.0.0"], metadata["dependencies"]["pip"])
+        # the package comes with the repository, only its dependencies are installed
+        self.assertEqual(["numpy"], metadata["dependencies"]["pip"])
 
 
 class MemoryTest(unittest.TestCase):
