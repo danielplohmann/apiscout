@@ -63,7 +63,7 @@ class ApiDbChooser(Choose):
                         str(int(db_data["num_apis"])),
                     ]
                 )
-            except (ValueError, KeyError, TypeError):
+            except (OSError, ValueError, KeyError, TypeError):
                 continue
         return api_dbs
 
