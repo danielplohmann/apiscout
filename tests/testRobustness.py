@@ -713,6 +713,14 @@ class SixthAuditTestSuite(unittest.TestCase):
             struct.pack_into("<IIII", pe, offset, 0x200, 0x1000 * (index + 1), 0x200, 0x200)
         mapped = PeTools.mapBinary(bytes(pe))
         self.assertLessEqual(sum(1 for byte in mapped if byte), 2 * len(pe))
+        # where shared data is not mapped again, a section still gets the data that only it refers to
+        pe = bytearray(build_pe32()) + b"A" * 0x1C00
+        struct.pack_into("<H", pe, 0x46, 4)
+        for index in range(3):
+            struct.pack_into("<IIII", pe, section_table + 0x28 * index + 8, 0xA00, 0x1000 * (index + 1), 0xA00, 0x400)
+        struct.pack_into("<IIII", pe, section_table + 0x78 + 8, 0x1001, 0x4000, 0x1001, 0xDFF)
+        mapped = PeTools.mapBinary(bytes(pe))
+        self.assertEqual(0x1001, mapped[0x4000:0x5001].count(b"A"))
 
     def testAmbiguousLoadAddressOfA32bitProcess(self):
         import DatabaseBuilder
@@ -742,6 +750,13 @@ class SixthAuditTestSuite(unittest.TestCase):
         DatabaseBuilder.DatabaseBuilder().applyLoadAddresses(api_db, addresses)
         self.assertFalse(api_db["dlls"]["t32"].get("aslr_offset"))
         self.assertFalse(api_db["dlls"]["t64"].get("aslr_offset"))
+        # a 32bit process loads no 64bit DLL, also not one found by its file name only
+        api_db = build_db()
+        api_db["dlls"]["o64"] = {"filepath": "C:/Tools/x64/other.dll", "base_address": 0x180000000, "bitness": 64}
+        addresses = [("system32/kernel32.dll", 0x75990000), ("app/other.dll", 0x6E000000)]
+        DatabaseBuilder.DatabaseBuilder().applyLoadAddresses(api_db, addresses)
+        self.assertFalse(api_db["dlls"]["o64"].get("aslr_offset"))
+        self.assertFalse(api_db["dlls"]["k64"].get("aslr_offset"))
 
 
 if __name__ == "__main__":

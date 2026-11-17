@@ -260,6 +260,8 @@ class DatabaseBuilder:
             known_addresses[dll_path] = load_address
 
         def matching_address(dll, dll_path):
+            if is_list_of_32bit_process and dll.get("bitness") == 64:
+                return None
             if has_wow64_dlls and dll_path.startswith({32: "system32/", 64: "syswow64/"}.get(dll.get("bitness"), "-")):
                 # a copy of the DLL for the other bitness
                 return None
@@ -276,23 +278,14 @@ class DatabaseBuilder:
                 if matching_address(dll, dll_path) is not None:
                     bitness_of_path.setdefault(dll_path, set()).add(dll.get("bitness"))
         ambiguous_paths = {dll_path for dll_path, bitness in bitness_of_path.items() if len(bitness) > 1}
-        if is_list_of_32bit_process:
-            # only the 32bit DLL can be meant
-            def is_excluded(dll, dll_path):
-                return dll_path in ambiguous_paths and dll.get("bitness") != 32
-        else:
-            for dll_path in sorted(ambiguous_paths):
-                LOG.warning("Load address of %s fits DLLs of both bitnesses, it is not applied.", dll_path)
-
-            def is_excluded(dll, dll_path):
-                return dll_path in ambiguous_paths
-
+        for dll_path in sorted(ambiguous_paths):
+            LOG.warning("Load address of %s fits DLLs of both bitnesses, it is not applied.", dll_path)
         num_offsets = 0
         used_paths = set(ambiguous_paths)
         unmatched_dlls = {}
         for dll_key, dll in api_db["dlls"].items():
             for dll_path in all_paths(dll_key, dll):
-                load_address = None if is_excluded(dll, dll_path) else matching_address(dll, dll_path)
+                load_address = None if dll_path in ambiguous_paths else matching_address(dll, dll_path)
                 if load_address is not None:
                     dll["aslr_offset"] = dll["base_address"] - load_address
                     num_offsets += 1
@@ -300,7 +293,8 @@ class DatabaseBuilder:
                     break
             else:
                 folder, _, filename = normalize_dll_path(dll["filepath"]).rpartition("/")
-                if folder not in ("system32", "syswow64"):
+                is_loadable = not (is_list_of_32bit_process and dll.get("bitness") == 64)
+                if folder not in ("system32", "syswow64") and is_loadable:
                     unmatched_dlls.setdefault(filename, []).append(dll)
         # DLLs copied to a folder of another name are identified by their file name, as far as this is unique
         unused_addresses = {}

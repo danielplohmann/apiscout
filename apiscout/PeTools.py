@@ -66,25 +66,36 @@ class PeTools:
         if max_virt_section_offset:
             mapped_binary = bytearray(max_virt_section_offset)
             mapped_binary[0:header_size] = binary[0:header_size]
-            # sections sharing their raw data would multiply the content of a crafted file,
-            # so data that was mapped by an earlier section already is only mapped again up to the size of the file
+            # Sections sharing their raw data would multiply the content of a crafted file: data that an earlier
+            # section mapped already is only mapped again up to the size of the file, and the work spent on
+            # sections is limited as well. Files whose sections do not overlap are not affected.
+            covered = bytearray(len(binary))
             repeated_bytes_left = len(binary)
-            mapped_ranges = []
+            work_left = 16 * len(binary)
+            is_reported = False
             for section_info in section_infos:
                 # the file may be truncated, so only map what is actually there
-                raw_start = section_info["raw_offset"]
-                section_data = binary[raw_start : raw_start + section_info["raw_size"]]
-                section_data = section_data[: max(0, len(mapped_binary) - section_info["virt_offset"])]
-                raw_end = raw_start + len(section_data)
-                repeated = sum(max(0, min(raw_end, end) - max(raw_start, start)) for start, end in mapped_ranges)
-                if repeated > repeated_bytes_left:
-                    section_data = b""
-                elif section_data:
+                raw_start = min(section_info["raw_offset"], len(binary))
+                space = max(0, len(mapped_binary) - section_info["virt_offset"])
+                raw_end = min(raw_start + section_info["raw_size"], len(binary), raw_start + space)
+                if raw_end <= raw_start:
+                    continue
+                if raw_end - raw_start > work_left:
+                    if not is_reported:
+                        LOG.warning("Sections share their data excessively, not all of them are mapped.")
+                    is_reported = True
+                    continue
+                work_left -= raw_end - raw_start
+                repeated = covered.count(1, raw_start, raw_end)
+                if repeated <= repeated_bytes_left:
                     repeated_bytes_left -= repeated
-                    mapped_ranges.append((raw_start, raw_end))
-                mapped_binary[section_info["virt_offset"] : section_info["virt_offset"] + len(section_data)] = (
-                    section_data
-                )
+                    parts = [(raw_start, raw_end)]
+                else:
+                    parts = PeTools._getUncoveredParts(covered, raw_start, raw_end)
+                for start, end in parts:
+                    target = section_info["virt_offset"] + start - raw_start
+                    mapped_binary[target : target + end - start] = binary[start:end]
+                    covered[start:end] = b"\x01" * (end - start)
                 LOG.debug(
                     "Mapping %d: raw 0x%x (0x%x bytes) -> virtual 0x%x (0x%x bytes)",
                     section_info["section_index"],
@@ -100,6 +111,19 @@ class PeTools:
             len(mapped_binary),
         )
         return bytes(mapped_binary)
+
+    @staticmethod
+    def _getUncoveredParts(covered, start, end):
+        parts = []
+        while start < end:
+            start = covered.find(0, start, end)
+            if start < 0:
+                break
+            part_end = covered.find(1, start, end)
+            part_end = end if part_end < 0 else part_end
+            parts.append((start, part_end))
+            start = part_end
+        return parts
 
     @staticmethod
     def getBitness(binary):
