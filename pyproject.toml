@@ -23,6 +23,9 @@ dependencies = ["numpy", "Pillow"]
 [project.optional-dependencies]
 update = ["requests"]
 
+[project.scripts]
+apiscout = "apiscout.cli:main"
+
 [project.urls]
 Repository = "https://github.com/danielplohmann/apiscout"
 
