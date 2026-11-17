@@ -140,32 +140,65 @@ class ImportTableLoader:
                 return import_address_table
         return import_address_table
 
-    def exceedsThunkBudget(self, max_thunks, directory_offset=0x80, descriptor_size=20):
+    @staticmethod
+    def fileExceedsThunkBudget(binary, max_thunks):
         """
-        counts the thunks of all import descriptors without parsing them and regardless of unreadable entries,
-        to recognize crafted tables whose descriptors share thunk lists before another parser expands them
+        counts the thunks of the import descriptors of a PE file the way a parser of the file layout may read them:
+        through every section covering an RVA, for both thunk lists and past descriptors without address table
         """
-        if not self._is_pe:
+        if not PeTools.checkPe(binary):
             return False
-        import_dd_offset = PeTools.getPeOffset(self._buffer) + directory_offset + self._get_64bit_bonus_offset()
-        if len(self._buffer) < import_dd_offset + 4:
+        pe_offset = PeTools.getPeOffset(binary)
+        optional_header_offset = pe_offset + 0x18
+        if len(binary) < optional_header_offset + 2:
             return False
-        thunk_size = 8 if self._is_64bit else 4
-        descriptor_offset = get_dword(self._buffer, import_dd_offset)
-        num_thunks = 0
-        while descriptor_offset and descriptor_offset + descriptor_size <= len(self._buffer):
-            values = struct.unpack_from("<IIIII", self._buffer, descriptor_offset)
-            if not values[4]:
+        is_64bit = get_word(binary, optional_header_offset) == 0x20B
+        import_dd_offset = pe_offset + 0x80 + (0x10 if is_64bit else 0)
+        if len(binary) < import_dd_offset + 4:
+            return False
+        sections = []
+        section_offset = optional_header_offset + get_word(binary, pe_offset + 0x14)
+        for _ in range(get_word(binary, pe_offset + 6)):
+            if len(binary) < section_offset + 0x28:
                 break
-            thunk_offset = values[0] if values[0] else values[4]
-            while thunk_offset + thunk_size <= len(self._buffer) and any(
-                self._buffer[thunk_offset : thunk_offset + thunk_size]
-            ):
-                num_thunks += 1
+            virtual_size, virtual_address, raw_size, raw_offset = struct.unpack_from(
+                "<IIII", binary, section_offset + 8
+            )
+            sections.append((virtual_address, max(virtual_size, raw_size), raw_offset))
+            section_offset += 0x28
+
+        def file_offsets(rva):
+            offsets = {raw_offset + rva - start for start, size, raw_offset in sections if 0 <= rva - start < size}
+            # outside of all sections, an RVA is read as offset into the headers
+            return offsets or {rva}
+
+        thunk_size = 8 if is_64bit else 4
+
+        def count_thunks(rva):
+            longest = 0
+            for offset in file_offsets(rva) if rva else ():
+                start = offset
+                while offset + thunk_size <= len(binary) and any(binary[offset : offset + thunk_size]):
+                    offset += thunk_size
+                    if (offset - start) // thunk_size > max_thunks:
+                        break
+                longest = max(longest, (offset - start) // thunk_size)
+            return longest
+
+        num_thunks = 0
+        for table_offset in file_offsets(get_dword(binary, import_dd_offset)):
+            num_descriptors = 0
+            while table_offset + 20 <= len(binary) and num_descriptors <= max_thunks:
+                values = struct.unpack_from("<IIIII", binary, table_offset)
+                if not any(values):
+                    break
+                num_thunks += max(count_thunks(values[0]), count_thunks(values[4]))
                 if num_thunks > max_thunks:
                     return True
-                thunk_offset += thunk_size
-            descriptor_offset += descriptor_size
+                num_descriptors += 1
+                table_offset += 20
+            if num_descriptors > max_thunks:
+                return True
         return False
 
     def get_import_table(self):

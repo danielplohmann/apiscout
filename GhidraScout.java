@@ -17,6 +17,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.Reader;
+import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
@@ -138,6 +139,14 @@ public class GhidraScout extends GhidraScript {
 		return scoutPyAbsolutePath;
 	}
 
+	// A path that does not work is asked for again with the next run.
+	private void forgetScoutPyPath() {
+		if (!isRunningHeadless() && Preferences.getProperty(PREFERENCE_SCOUT_PY_PATH) != null) {
+			Preferences.removeProperty(PREFERENCE_SCOUT_PY_PATH);
+			Preferences.store();
+		}
+	}
+
 	// The API DBs shipped next to scout.py are offered by name, any other file can be chosen as well.
 	private List<String> askUserForDatabasesToUse() throws CancelledException {
 		File dbFolder = new File(new File(this.scoutPyPath).getParentFile(), "dbs");
@@ -200,17 +209,22 @@ public class GhidraScout extends GhidraScript {
 				}
 			}
 			if (!executeScoutPy(dumpFile, jsonFile, region.start, dataBasePaths)) {
+				forgetScoutPyPath();
 				return results;
 			}
 			try (Reader reader = Files.newBufferedReader(jsonFile.toPath(), StandardCharsets.UTF_8)) {
 				List<ApiScoutResultEntry> entries = new Gson().fromJson(reader,
 						new TypeToken<List<ApiScoutResultEntry>>() {
 						}.getType());
-				if (entries != null) {
-					for (ApiScoutResultEntry entry : entries) {
-						entry.address = region.start.add(entry.offset);
-						results.add(entry);
-					}
+				if (entries == null) {
+					// scout.py writes a list even if it finds nothing
+					printerr("No result was written, is this ApiScout's scout.py? " + this.scoutPyPath);
+					forgetScoutPyPath();
+					return results;
+				}
+				for (ApiScoutResultEntry entry : entries) {
+					entry.address = region.start.add(entry.offset);
+					results.add(entry);
 				}
 			}
 		} finally {
@@ -319,17 +333,20 @@ public class GhidraScout extends GhidraScript {
 		if (function == null || function.getSignatureSource() != SourceType.DEFAULT) {
 			return;
 		}
-		DataTypeManager archive = getWindowsArchive();
-		if (archive == null) {
-			return;
-		}
-		List<DataType> candidates = new ArrayList<DataType>();
-		archive.findDataTypes(api, candidates);
-		for (DataType candidate : candidates) {
-			if (candidate instanceof FunctionDefinition) {
-				new ApplyFunctionSignatureCmd(function.getEntryPoint(), (FunctionDefinition) candidate,
-						SourceType.ANALYSIS).applyTo(currentProgram);
+		// the archive is closed with the dialog, which can happen while rows are still annotated
+		synchronized (this) {
+			DataTypeManager archive = getWindowsArchive();
+			if (archive == null) {
 				return;
+			}
+			List<DataType> candidates = new ArrayList<DataType>();
+			archive.findDataTypes(api, candidates);
+			for (DataType candidate : candidates) {
+				if (candidate instanceof FunctionDefinition) {
+					new ApplyFunctionSignatureCmd(function.getEntryPoint(), (FunctionDefinition) candidate,
+							SourceType.ANALYSIS).applyTo(currentProgram);
+					return;
+				}
 			}
 		}
 	}
@@ -351,11 +368,13 @@ public class GhidraScout extends GhidraScript {
 		return this.windowsArchive;
 	}
 
-	private void closeWindowsArchive() {
+	private synchronized void closeWindowsArchive() {
 		if (this.windowsArchive != null) {
 			this.windowsArchive.close();
 			this.windowsArchive = null;
 		}
+		// not opened again by rows that are annotated after the dialog was closed
+		this.windowsArchiveMissing = true;
 	}
 
 	private int getBitness(ApiScoutResultEntry entry) {
@@ -414,7 +433,8 @@ public class GhidraScout extends GhidraScript {
 
 			@Override
 			public String getColumnValue(AddressableRowObject rowObject) {
-				return Long.toHexString(((ApiRow) rowObject).entry.apiAddress);
+				BigInteger apiAddress = ((ApiRow) rowObject).entry.apiAddress;
+				return apiAddress == null ? "" : apiAddress.toString(16);
 			}
 		};
 		tableChooserDialog.addCustomColumn(apiColumn);
@@ -452,12 +472,13 @@ public class GhidraScout extends GhidraScript {
 	class ApiScoutResultEntry {
 		String api;
 		String dll;
-		long apiAddress;
+		// unsigned in the output of scout.py, kernel addresses exceed a long
+		BigInteger apiAddress;
 		long offset;
 		transient Address address;
 
 		public String toString() {
-			return String.join(" ", this.api, Long.toHexString(this.apiAddress), this.dll, Long.toHexString(this.offset));
+			return String.join(" ", this.api, String.valueOf(this.apiAddress), this.dll, Long.toHexString(this.offset));
 		}
 	}
 

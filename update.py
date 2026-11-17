@@ -37,7 +37,7 @@ def get_newest_db_version():
 
 
 def download_apivector_db():
-    result = {"filename": "", "content": "", "version": 0}
+    result = {"filename": "", "content": b"", "version": 0}
     response = requests.get(
         "https://malpedia.caad.fkie.fraunhofer.de/api/list/apiscout/csv",
         headers={"Authorization": "apitoken " + config.APITOKEN},
@@ -47,9 +47,10 @@ def download_apivector_db():
         version = re.search(
             r"\d{4}-\d\d-\d\d-apivectors-v(?P<version_number>\d+)\.csv", response.headers.get("Content-Disposition", "")
         )
-        if version and response.text.strip():
+        if version and response.content.strip():
             result["filename"] = version.group(0)
-            result["content"] = response.text
+            # stored as received, the charset assumed by requests for text/csv is not the one of the file
+            result["content"] = response.content
             result["version"] = int(version.group("version_number"))
     else:
         print("Failed to download ApiVector DB, response code: ", response.status_code)
@@ -76,7 +77,7 @@ def main():
             # stored under its final name only once it is written completely
             temp_path = update_db_path + ".tmp"
             try:
-                with open(temp_path, "w", encoding="utf-8", newline="") as fout:
+                with open(temp_path, "wb") as fout:
                     fout.write(apivector_update["content"])
                 os.replace(temp_path, update_db_path)
             finally:

@@ -22,6 +22,7 @@
 #
 ########################################################################
 
+import ida_auto
 import ida_bytes
 import ida_funcs
 import ida_ida
@@ -74,6 +75,9 @@ class IdaProxy:
                     ranges.append((chunk_start + start, content[start:end]))
         return ranges
 
+    def getName(self, ea):
+        return ida_name.get_name(ea) or ""
+
     def getNumReferences(self, ea):
         # without the ordinary flow from the preceding instruction
         return sum(1 for _ in idautils.XrefsTo(ea, ida_xref.XREF_FAR))
@@ -114,6 +118,25 @@ class IdaProxy:
         else:
             segment.perm |= ida_segment.SEGPERM_WRITE
         return segment.update()
+
+    def getSegmentsWithBase(self):
+        return [start for start in idautils.Segments() if ida_segment.get_segm_base(ida_segment.getseg(start)) != 0]
+
+    def useFlatAddresses(self):
+        """
+        A binary file loaded with a segment base (-b on the command line) has code whose operands are taken
+        relative to that base, so its calls do not reference the API pointers. The base is set to 0 as for
+        a flat image, returns the affected segments.
+        """
+        changed = []
+        for start in self.getSegmentsWithBase():
+            segment = ida_segment.getseg(start)
+            if ida_segment.set_selector(segment.sel, 0):
+                ida_auto.plan_range(segment.start_ea, segment.end_ea)
+                changed.append(start)
+        if changed:
+            ida_auto.auto_wait()
+        return changed
 
     def undefine(self, ea, size):
         # also releases an item that starts in front of ea and reaches into the range

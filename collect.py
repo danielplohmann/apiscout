@@ -127,6 +127,8 @@ def main():
     if args.root_path and os.path.isdir(args.root_path):
         for destination in (args.output_path, args.update_path):
             # found out before the crawl, not after it
+            if destination and os.path.isdir(destination):
+                parser.error(f"{destination} is a folder, a file is expected")
             if destination and not os.access(os.path.dirname(os.path.abspath(destination)), os.W_OK):
                 parser.error(f"can not write to the folder of {destination}")
         fingerprints = []

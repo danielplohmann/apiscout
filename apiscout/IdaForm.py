@@ -169,6 +169,11 @@ class ApiResultsChooser(Choose):
         else:
             self.all_rows = self.rescan()
             self._applyFilter()
+            # annotations can be undone or replaced in the database in the meantime
+            found = {tuple(row[:4]) for row in self.all_rows}
+            for key, outcome in list(self.status.items()):
+                if key not in found or not outcome.startswith("annotated") or not self.tools.isAnnotated(key):
+                    del self.status[key]
         return [Choose.ALL_CHANGED]
 
     def _redraw(self):

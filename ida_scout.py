@@ -24,10 +24,12 @@
 
 import os
 import sys
+import traceback
 
 import ida_auto
 import ida_idaapi
 import ida_kernwin
+import ida_pro
 import idc
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -114,6 +116,8 @@ def main(api_dbs=None):
         return 1
     if isBatchMode():
         ida_auto.auto_wait()
+        for segment_address in tools.ida_proxy.useFlatAddresses():
+            print(f"ApiScout: segment @0x{segment_address:x} had a segment base, which was set to 0.")
         api_dbs = api_dbs or idc.ARGV[1:]
         if not api_dbs:
             print("ApiScout: no API DB given, nothing to do.")
@@ -124,6 +128,11 @@ def main(api_dbs=None):
         print(f"Annotated {num_renamed} APIs and adapted {num_xrefs_adapted} Xrefs ({num_skipped} skipped).")
         return 0
     db_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dbs")
+    for segment_address in tools.ida_proxy.getSegmentsWithBase():
+        print(
+            f"ApiScout: segment @0x{segment_address:x} has a segment base, its code does not reference the API "
+            "pointers. Load the dump with a loading offset instead (loading segment 0)."
+        )
     parameters = tools.formGetParameters(db_folder)
     if not parameters:
         return 0
@@ -166,4 +175,14 @@ def PLUGIN_ENTRY():
 
 
 if __name__ == "__main__":
-    main()
+    if isBatchMode() and idc.ARGV[1:]:
+        # run with -S and API DBs: IDA 9.0 does not leave on its own and would not save the database
+        try:
+            exit_code = main()
+        except Exception:
+            traceback.print_exc()
+            exit_code = 1
+        ida_auto.auto_wait()
+        ida_pro.qexit(exit_code)
+    else:
+        main()

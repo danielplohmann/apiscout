@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import platform
+import re
 import sys
 from operator import attrgetter
 
@@ -170,6 +171,8 @@ class DatabaseBuilder:
         skipped_count = 0
         num_hit_dlls = 0
         api_db = {"dlls": {}}
+        # Windows file names are not case sensitive, copies of a DLL can differ in the case of their name
+        known_keys = {}
         if paths is None:
             paths = config.DEFAULT_FOLDERS
         for base in paths:
@@ -190,6 +193,7 @@ class DatabaseBuilder:
                     dll_summary = self._extractPeExports(root + os.sep + fn)
                     if dll_summary is not None:
                         dll_key = self._buildDllKey(dll_summary)
+                        dll_key = known_keys.setdefault(dll_key.lower(), dll_key)
                         if dll_key not in api_db["dlls"]:
                             api_db["dlls"][dll_key] = dll_summary
                             num_hit_dlls += 1
@@ -242,6 +246,11 @@ class DatabaseBuilder:
             load_address < 0x100000000 and not dll_path.startswith("syswow64/")
             for dll_path, load_address in load_addresses
         )
+        if is_list_of_32bit_process:
+            LOG.warning(
+                "All load addresses are below 4 GB: the list is treated as the one of a 32bit process, "
+                "its System32 paths are applied to the SysWOW64 DLLs."
+            )
         known_addresses = {}
         for dll_path, load_address in load_addresses:
             if is_list_of_32bit_process and dll_path.startswith("system32/"):
@@ -250,6 +259,8 @@ class DatabaseBuilder:
                 LOG.warning("Several load addresses given for %s, using 0x%x.", dll_path, load_address)
             known_addresses[dll_path] = load_address
         num_offsets = 0
+        used_paths = set()
+        unmatched_dlls = {}
         for dll_key, dll in api_db["dlls"].items():
             for dll_path in all_paths(dll_key, dll):
                 if has_wow64_dlls and dll_path.startswith(
@@ -261,8 +272,23 @@ class DatabaseBuilder:
                 if load_address is not None:
                     dll["aslr_offset"] = dll["base_address"] - load_address
                     num_offsets += 1
+                    used_paths.add(dll_path)
                     break
-        LOG.info("Applied load addresses to %d of %d DLLs.", num_offsets, len(api_db["dlls"]))
+            else:
+                folder, _, filename = normalize_dll_path(dll["filepath"]).rpartition("/")
+                if folder not in ("system32", "syswow64"):
+                    unmatched_dlls.setdefault(filename, []).append(dll)
+        # DLLs copied to a folder of another name are identified by their file name, as far as this is unique
+        unused_addresses = {}
+        for dll_path, load_address in known_addresses.items():
+            if dll_path not in used_paths:
+                unused_addresses.setdefault(dll_path.rsplit("/", 1)[-1], set()).add(load_address)
+        for filename, dlls in unmatched_dlls.items():
+            if len(dlls) == 1 and len(unused_addresses.get(filename, ())) == 1:
+                dlls[0]["aslr_offset"] = dlls[0]["base_address"] - next(iter(unused_addresses[filename]))
+                num_offsets += 1
+        log = LOG.warning if load_addresses and not num_offsets else LOG.info
+        log("Applied load addresses to %d of %d DLLs.", num_offsets, len(api_db["dlls"]))
         api_db["aslr_offsets"] = num_offsets > 0
         return api_db
 
@@ -275,8 +301,10 @@ class DatabaseBuilder:
         result = threaded_basecheck.run(10)
         load_address = 0
         aslr_offset = 0
-        if result["std_out"] and result["std_out"].startswith(b"DLL loaded at: 0x"):
-            load_address = int(result["std_out"][15:], 16)
+        # a DLL can write to the output as well when it is loaded
+        match = re.match(rb"DLL loaded at: 0x([0-9a-fA-F]+)", result["std_out"] or b"")
+        if match:
+            load_address = int(match.group(1), 16)
             if load_address:
                 aslr_offset = dll_entry["base_address"] - load_address
             else:
@@ -343,7 +371,7 @@ def main():
         "--load_addresses",
         type=str,
         default=None,
-        help='File with lines of "<hex load address> <DLL path>" (e.g. the module list of a process), used to derive the ASLR offsets instead of loading the DLLs.',
+        help='File with lines of "<hex load address> <DLL path>" (e.g. the module list of a process), used to derive the ASLR offsets instead of loading the DLLs. DLLs are matched by folder and file name (System32\\kernel32.dll), or by file name alone where it is unique.',
     )
 
     args = parser.parse_args()

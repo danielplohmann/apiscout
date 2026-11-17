@@ -103,6 +103,11 @@ class IdaTools:
             return "{}_ordinal_{}".format(dll_name, match.group("ordinal"))
         return str(api[3])
 
+    def isAnnotated(self, api):
+        """the location still carries the name of the API, possibly with the suffix of a name used several times"""
+        name = self.ida_proxy.getName(api[0])
+        return name == self.getApiName(api) or name.startswith(self.getApiName(api) + "_")
+
     def makeNameAndStructure(self, api):
         return self.ida_proxy.MakeName(api[0], self.getApiName(api))
 
@@ -136,7 +141,8 @@ class IdaTools:
         if not ida_ua.decode_insn(instruction, address) or not ida_idp.is_call_insn(instruction):
             return False
         operand = instruction.ops[0]
-        if operand.type != ida_ua.o_mem or operand.addr != location:
+        # the address of the operand is relative to its segment base
+        if operand.type != ida_ua.o_mem or ida_ua.map_data_ea(instruction, operand) != location:
             return False
         if self.ida_proxy.hasIndexRegister(instruction, operand):
             # e.g. call table[reg*4], which only uses the location as start of a table
@@ -189,6 +195,12 @@ class IdaTools:
         prev_offset = 0
         locations = known_locations if known_locations is not None else {api[0] for api in api_results}
         annotated_locations = {}
+        # pointers annotated earlier or in this run as {location: (API name, size)}, which a later row must not cut
+        pointers = {
+            key[0]: (self.getApiName(key), self.getBitness(key) // 8, key)
+            for key, outcome in status.items()
+            if outcome.startswith("annotated")
+        }
         # of several rows for one location, the one of the database's pointer size is applied
         pointer_bits = 64 if self.ida_proxy.is64bit() else 32
         for api in sorted(api_results, key=lambda api: (api[0], self.getBitness(api) != pointer_bits, api[1:4])):
@@ -203,7 +215,12 @@ class IdaTools:
                 continue
             size = self.getBitness(api) // 8
             in_table = bool(size) and (api[0] - size in locations or api[0] + size in locations)
-            reason = self.makeDQWord(api, in_table)
+            overlapped = [
+                pointers[location][0]
+                for location in range(api[0] - 7, api[0] + size)
+                if location != api[0] and location in pointers and location + pointers[location][1] > api[0]
+            ]
+            reason = "overlapping " + overlapped[0] if overlapped else self.makeDQWord(api, in_table)
             if reason:
                 num_skipped += 1
                 status[tuple(api[:4])] = "skipped: " + reason
@@ -216,6 +233,10 @@ class IdaTools:
                 continue
             num_renamed += 1
             annotated_locations[api[0]] = self.getApiName(api)
+            if api[0] in pointers and pointers[api[0]][2] != tuple(api[:4]):
+                # another row of this location was annotated before, its name is replaced now
+                status[pointers[api[0]][2]] = "skipped: location is annotated as " + self.getApiName(api)
+            pointers[api[0]] = (self.getApiName(api), size, tuple(api[:4]))
             self.ida_proxy.makeSegmentWritable(api[0])
             tinfo, success = self.helper_getTinfoOfFuncName(str(api[3]))
             if not success:

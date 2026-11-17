@@ -651,10 +651,72 @@ class FourthAuditTestSuite(unittest.TestCase):
         for index in range(1, num_descriptors):
             struct.pack_into("<IIIII", pe, 0x200 + 0x300 + 20 * index, 0x1200, 0, 0, 0x1100, 0x1200 + 0x10000 * index)
         struct.pack_into("<II", pe, 0x58 + 104, 0x1300, 20 * num_descriptors)
-        mapped = PeTools.mapBinary(bytes(pe))
-        self.assertTrue(ImportTableLoader(mapped).exceedsThunkBudget(len(pe) // 4))
-        self.assertFalse(ImportTableLoader(PeTools.mapBinary(build_pe32())).exceedsThunkBudget(len(build_pe32()) // 4))
+        self.assertTrue(ImportTableLoader.fileExceedsThunkBudget(bytes(pe), len(pe) // 4))
+        self.assertFalse(ImportTableLoader.fileExceedsThunkBudget(build_pe32(), len(build_pe32()) // 4))
         self.assertLessEqual(len(ApiScout().evaluateImportTable(bytes(pe))["import_table"]), len(pe) // 4)
+
+
+class FifthAuditTestSuite(unittest.TestCase):
+    def _buildSharedThunkPe(self, first_address_table):
+        pe = bytearray(build_pe32()) + bytearray(0x800)
+        struct.pack_into("<IIII", pe, 0x58 + 0xE0 + 8, 0xA00, 0x1000, 0xA00, 0x200)
+        for index in range(0x40):
+            struct.pack_into("<I", pe, 0x200 + 0x200 + 4 * index, 0x1120)
+        num_descriptors = 0x28
+        for index in range(num_descriptors):
+            address_table = 0x1200 if index else first_address_table
+            struct.pack_into("<IIIII", pe, 0x200 + 0x300 + 20 * index, 0x1200, 0, 0, 0x1100, address_table)
+        struct.pack_into("<II", pe, 0x58 + 104, 0x1300, 20 * num_descriptors)
+        return pe
+
+    def testImportBudgetIsCountedInTheFile(self):
+        # a descriptor without address table ends the table for the Windows loader, but not for every parser
+        pe = self._buildSharedThunkPe(0)
+        self.assertTrue(ImportTableLoader.fileExceedsThunkBudget(bytes(pe), len(pe) // 4))
+        self.assertEqual([], ApiScout().evaluateImportTable(bytes(pe))["import_table"])
+        # a section far away makes the image unmappable, its file is still readable for other parsers
+        pe = self._buildSharedThunkPe(0x1200)
+        struct.pack_into("<H", pe, 0x46, 2)
+        struct.pack_into("<IIII", pe, 0x58 + 0xE0 + 0x28 + 8, 0x200, 0x20000000, 0x200, 0x200)
+        self.assertEqual(b"", PeTools.mapBinary(bytes(pe)))
+        self.assertTrue(ImportTableLoader.fileExceedsThunkBudget(bytes(pe), len(pe) // 4))
+        self.assertEqual([], ApiScout().evaluateImportTable(bytes(pe))["import_table"])
+
+    def testLoadAddressesOfRenamedFoldersAndNamesInOtherCase(self):
+        import DatabaseBuilder
+
+        builder = DatabaseBuilder.DatabaseBuilder()
+        api_db = {
+            "dlls": {
+                "flat": {"filepath": "/copy/kernel32.dll", "base_address": 0x180000000, "aslr_offset": 0},
+                "other": {"filepath": "/copy/ntdll.dll", "base_address": 0x180000000, "aslr_offset": 0},
+            }
+        }
+        addresses = [
+            ("system32/kernel32.dll", 0x7FFA10000000),
+            ("system32/ntdll.dll", 0x7FFA20000000),
+            ("syswow64/ntdll.dll", 0x77000000),
+        ]
+        builder.applyLoadAddresses(api_db, addresses)
+        self.assertEqual(0x180000000 - 0x7FFA10000000, api_db["dlls"]["flat"]["aslr_offset"])
+        # two addresses are known for this file name
+        self.assertEqual(0, api_db["dlls"]["other"]["aslr_offset"])
+        with tempfile.TemporaryDirectory() as directory:
+            for folder, name in (("a", "KERNEL32.DLL"), ("b", "kernel32.dll")):
+                os.mkdir(os.path.join(directory, folder))
+                with open(os.path.join(directory, folder, name), "wb"):
+                    pass
+            builder._extractPeExports = lambda path: {
+                "base_address": 0x180000000,
+                "bitness": 64,
+                "version": "1.0",
+                "filepath": path,
+                "aslr_offset": 0,
+                "exports": [],
+            }
+            api_db = builder.extractRecursively([directory], os_name="W", os_version="1")
+        self.assertEqual(1, len(api_db["dlls"]))
+        self.assertEqual(1, len(next(iter(builder._duplicate_paths.values()))))
 
 
 if __name__ == "__main__":
