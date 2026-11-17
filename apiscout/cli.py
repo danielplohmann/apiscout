@@ -67,6 +67,7 @@ repository: {PROJECT_URL}
   apiscout scan dump_0x00400000 --db win7_prof-n_sp1_example.json
   apiscout scan dump.bin --base-addr 0x400000 --filter 32 --json -o result.json
   apiscout scan dump_0x00400000 --min-confidence 30
+  apiscout scan shellcode_0x00400000 --dynamic
   apiscout scan sample.exe --import-table
   cat dump.bin | apiscout scan - --base-addr 0x400000
   apiscout scan crash.dmp --db win10_prof_1803_example.json
@@ -314,6 +315,22 @@ def results_to_records(results, confidences=None):
     return records
 
 
+def dynamic_to_records(dynamic_results):
+    return [
+        {
+            "offset": api.offset,
+            "type": api.kind,
+            "algorithm": api.algorithm,
+            "value": api.value,
+            "api": api.api,
+            "dlls": list(api.dlls),
+            "api_db": api_map_name,
+        }
+        for api_map_name, apis in dynamic_results.items()
+        for api in apis
+    ]
+
+
 def write_output(text, output_path):
     """to the file given with --output, or to standard output"""
     if output_path and output_path != "-":
@@ -377,10 +394,14 @@ def scan_minidump(scout, minidump, args):
         f"{len(ranges)} memory ranges, {len(minidump.getModules())} modules, "
         f"{num_excluded} hits in the images of {len(dll_images)} system DLLs left out"
     )
-    return results, summary
+    return results, summary, dll_images
 
 
 def cmd_scan(args):
+    if args.dynamic and args.import_table:
+        raise CliError(
+            "--dynamic searches the dump for hashes and names of the APIs of API DBs, it can not be combined with --import-table."
+        )
     check_output(args.output)
     placer = DllPlacer()
     if args.modules:
@@ -444,7 +465,7 @@ def cmd_scan(args):
         report_placements(args, placer)
         source = f"{scout.getNumApisLoaded()} APIs of {len(db_paths)} DBs"
         if minidump:
-            results, summary = scan_minidump(scout, minidump, args)
+            results, summary, dll_images = scan_minidump(scout, minidump, args)
             summary += f", with {source}."
         else:
             results = scout.crawl(binary)
@@ -458,7 +479,15 @@ def cmd_scan(args):
         dropped = num_hits - sum(len(hits) for hits in results.values())
         report(args, f"Dropped {dropped} of {num_hits} hits with a confidence below {args.min_confidence}.")
     report(args, summary)
-    vector = scout.getPrimaryVector(scout.getWinApi1024Vectors(results))[1]
+    dynamic = None
+    vector_results = results
+    if args.dynamic:
+        if minidump:
+            dynamic = scout.findDynamicApisInRegions(minidump.getRanges(), dll_images)
+        else:
+            dynamic = scout.findDynamicApis(binary)
+        vector_results = scout.addDynamicApisToResults(results, dynamic)
+    vector = scout.getPrimaryVector(scout.getWinApi1024Vectors(vector_results))[1]
     matches = match_collection(scout, vector["vector"], args.collection) if args.collection else None
     best_match = explain_best_match(scout, vector["vector"], args.collection, matches) if args.explain else None
     if args.json:
@@ -470,6 +499,8 @@ def cmd_scan(args):
             "apivector": vector["vector"],
             "apis_in_vector": vector["in_api_vector"],
         }
+        if dynamic is not None:
+            document["dynamic_apis"] = dynamic_to_records(dynamic)
         if matches:
             matches["match_results"] = matches["match_results"][: args.max_results]
             document["collection_matches"] = matches
@@ -477,7 +508,10 @@ def cmd_scan(args):
             document["best_match"] = best_match
         write_output(json.dumps(document, indent=1, default=list) + "\n", args.output)
         return EXIT_OK
-    lines = [scout.render(results), scout.renderVectorResults(results)]
+    lines = [scout.render(results)]
+    if dynamic is not None:
+        lines.append(scout.renderDynamicApis(dynamic))
+    lines.append(scout.renderVectorResults(vector_results))
     if matches:
         lines.append(scout.renderVectorCollectionResults(matches, args.max_results))
     if best_match:
@@ -916,6 +950,12 @@ def build_parser():
         "chance hits of a scan with the right API DB, an API with no neighbour and no call scores 10",
     )
     scan.add_argument("--ignore-aslr", action="store_true", help="do not apply the ASLR offsets stored in an API DB")
+    scan.add_argument(
+        "--dynamic",
+        action="store_true",
+        help="also find APIs that are resolved at run time: hashes of their names (ROR13, Metasploit block_api, CRC32, "
+        "djb2, FNV-1a) in groups of several, and their names as strings; they are added to the ApiVector",
+    )
     scan.add_argument("-c", "--collection", metavar="FILE", help="also match the ApiVector against this collection")
     scan.add_argument(
         "-n",
