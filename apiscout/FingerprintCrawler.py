@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 
@@ -43,12 +44,14 @@ class FingerprintCrawler:
 
     def _getFamilyAndPath(self, path_to_binary):
         sub_path = path_to_binary[len(self._root_path) :]
-        path_parts = [part for part in sub_path.split(os.sep) if part]
+        # collections are shared between systems, paths in them are separated by / on every OS
+        separators = "".join(re.escape(separator) for separator in {os.sep, os.altsep or os.sep})
+        path_parts = [part for part in re.split(f"[{separators}]", sub_path) if part]
         family = "-"
         path = ""
         if len(path_parts) > 1:
             family = path_parts[0]
-            path = os.sep.join(path_parts[1:])
+            path = "/".join(path_parts[1:])
         else:
             path = path_parts[0]
         # the fields of a fingerprint are separated by semicolons
