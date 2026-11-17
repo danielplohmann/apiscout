@@ -4,7 +4,8 @@
 # or a clone of the repository as script directory. When run for the first time, the script asks for the
 # folder with the API DBs and remembers it in the user preferences of Ghidra.
 # Ctrl+A chooses all APIs found for annotation.
-# Headless: pyghidraRun -H ... -postScript ghidra_scout.py <API DB> [<API DB> ...] annotates all APIs found.
+# Headless: pyghidraRun -H ... -postScript ghidra_scout.py <API DB> [<API DB> ...] [--modules <module list>]
+# annotates all APIs found.
 # @author @mari-mari
 # @category ApiScoutForGhidra
 # @keybinding
@@ -13,6 +14,7 @@
 # @runtime PyGhidra
 
 import builtins
+import functools
 import logging
 import os
 import re
@@ -21,9 +23,14 @@ import threading
 
 PREFERENCE_DB_FOLDER = "apiscout.db.folder"
 OTHER_API_DB = "Other file..."
+MODULE_LIST = "Module list file..."
 ORDINAL_ONLY_API = re.compile(r"None<(\d+)>")
 CHUNK_SIZE = 0x100000
 KEPT_MODULES = "_apiscout_kept_modules"
+NOT_INSTALLED = (
+    "ApiScout is not installed in the Python environment of PyGhidra. Install it with:\n"
+    f"{sys.executable} -m pip install apiscout"
+)
 
 
 class ApiHit:
@@ -55,12 +62,12 @@ def get_label_name(api, dll):
 
 
 def get_db_choices(db_folder):
-    """the API DBs of the folder by name, and the choice of any other file"""
+    """the API DBs of the folder by name, and the choices of any other file and of a module list"""
     try:
         names = sorted(name for name in os.listdir(db_folder) if name.endswith(".json"))
     except OSError:
         names = []
-    return [*names, OTHER_API_DB]
+    return [*names, OTHER_API_DB, MODULE_LIST]
 
 
 def get_memory_regions(blocks):
@@ -99,24 +106,26 @@ def import_api_scout():
     return ApiScout
 
 
-def load_scout(api_scout_class, db_paths):
-    """an ApiScout with the given API DBs, raises ValueError for a file that is missing or no API DB"""
+def load_scout(api_scout_class, db_paths, placer=None):
+    """an ApiScout with the given API DBs, whose DLLs are placed by the DllPlacer if there is one, raises ValueError
+    for a file that is missing or no API DB"""
     scout = api_scout_class()
     for db_path in db_paths:
         if not os.path.isfile(db_path):
             raise ValueError(f"API DB not found: {db_path}")
         try:
-            scout.loadDbFile(db_path)
+            scout.loadDbFile(db_path, placer.forDb(db_path) if placer else None)
         except (ValueError, KeyError, TypeError, AttributeError):
             raise ValueError(f"not an API DB: {db_path}") from None
     return scout
 
 
-def scan_buffer(scout, base_address, binary):
+def scan_buffer(scout, base_address, binary, exclude_ranges=()):
     """(offset, API address, DLL, API, bitness) of the APIs found in a buffer, filtered like `apiscout scan` does
-    by default: API addresses within the buffer itself are left out"""
+    by default: API addresses within the buffer itself are left out, and so are the references located in the
+    exclude_ranges (start, end), the images of DLLs"""
     scout.setBaseAddress(base_address)
-    results = scout.filter(scout.crawl(binary), 0, 0, 0)
+    results = scout.filter(scout.crawl(binary), 0, 0, 0, exclude_ranges=exclude_ranges)
     # DLLs are named with their base address in the API DB, e.g. kernel32.dll_0x7dd60000
     return [
         (entry[0], entry[1], re.sub(r"_0x[0-9a-fA-F]+$", "", entry[2]), entry[3], entry[4])
@@ -156,16 +165,30 @@ class GhidraScout:
         self.archive_lock = threading.Lock()
 
     def run(self):
+        modules = None
         if self.script.isRunningHeadless():
-            db_paths = [os.path.abspath(arg) for arg in self.script.getScriptArgs()]
+            if import_api_scout() is None:
+                self.script.printerr(NOT_INSTALLED)
+                return
+            from apiscout.LoadAddresses import ModuleListError, split_modules_argument
+
+            try:
+                arguments, modules = split_modules_argument(self.script.getScriptArgs())
+            except ModuleListError as exc:
+                self.script.printerr(f"ApiScout: {exc}.")
+                return
+            db_paths = [os.path.abspath(arg) for arg in arguments]
+            modules = os.path.abspath(modules) if modules else None
             if not db_paths:
-                self.script.printerr("Usage: ghidra_scout.py <path to API DB> [<path to API DB> ...]")
+                self.script.printerr(
+                    "Usage: ghidra_scout.py <path to API DB> [<path to API DB> ...] [--modules <module list>]"
+                )
                 return
         else:
             # cancelling one of the dialogs ends the script
-            db_paths = self.ask_for_databases(self.get_db_folder())
+            db_paths, modules = self.ask_for_databases(self.get_db_folder())
         self.script.println(f"\nProcessing {self.program.getName()}\nImage file: {self.program.getExecutablePath()}")
-        hits = self.scan(db_paths)
+        hits = self.scan(db_paths, modules)
         if hits is None:
             return
         hits = order_hits(hits, self.pointer_bits)
@@ -189,32 +212,40 @@ class GhidraScout:
         return chosen
 
     def ask_for_databases(self, db_folder):
-        """the API DBs of the folder are offered by name, any other file can be chosen as well"""
+        """(API DBs, module list or None): the API DBs of the folder are offered by name, any other file can be chosen
+        as well, and a module list that gives the load addresses of the DLLs"""
         from ghidra.util.exception import CancelledException
         from java.util import ArrayList
 
         chosen = self.script.askChoices(
-            "ApiScout", "API DBs of the system the memory dump was taken from:", ArrayList(get_db_choices(db_folder))
+            "ApiScout",
+            "API DBs of the system the memory dump was taken from, and a module list if its DLLs are loaded "
+            "elsewhere than the API DBs have them:",
+            ArrayList(get_db_choices(db_folder)),
         )
         db_paths = []
+        modules = None
         for choice in chosen:
             if choice == OTHER_API_DB:
                 db_paths.append(self.script.askFile("ApiScout: API DB file", "OK").getAbsolutePath())
+            elif choice == MODULE_LIST:
+                modules = self.script.askFile("ApiScout: module list (lines of hex load address and DLL path)", "OK")
+                modules = modules.getAbsolutePath()
             else:
                 db_paths.append(os.path.join(db_folder, str(choice)))
         if not db_paths:
             raise CancelledException()
-        return db_paths
+        return db_paths, modules
 
-    def scan(self, db_paths):
-        """the API references in the memory of the program, None if the API DBs can not be used"""
+    def scan(self, db_paths, modules=None):
+        """the API references in the memory of the program, None if the API DBs or the module list can not be used.
+        The DLLs of the API DBs are placed where the module list file has them."""
         api_scout_class = import_api_scout()
         if api_scout_class is None:
-            self.script.printerr(
-                "ApiScout is not installed in the Python environment of PyGhidra. Install it with:\n"
-                f"{sys.executable} -m pip install apiscout"
-            )
+            self.script.printerr(NOT_INSTALLED)
             return None
+        from apiscout.LoadAddresses import describe_placements, placed_image_ranges, placer_for_modules
+
         monitor = self.script.getMonitor()
         package_log = logging.getLogger("apiscout")
         handler = ScriptLogHandler(self.script)
@@ -222,23 +253,43 @@ class GhidraScout:
         try:
             monitor.setMessage("ApiScout: loading the API DBs")
             try:
-                scout = load_scout(api_scout_class, db_paths)
+                placer = placer_for_modules(modules)
+                scout = load_scout(api_scout_class, db_paths, placer)
             except ValueError as exc:
                 self.script.printerr(f"ApiScout: {exc}")
                 return None
-            hits = []
+            for line in describe_placements(placer):
+                self.script.println(f"ApiScout: {line}")
             # the memory instead of the imported file keeps the offsets right for every loader
-            for region in get_memory_regions(self.program.getMemory().getBlocks()):
+            regions = get_memory_regions(self.program.getMemory().getBlocks())
+            # the images of the DLLs in the memory hold their export tables and import address tables, not references
+            ranges = placed_image_ranges(placer, functools.partial(self.read_memory, regions))
+            hits = []
+            for region in regions:
                 monitor.checkCancelled()
                 monitor.setMessage(f"ApiScout: scanning {region.start}")
                 base_address = region.start.getUnsignedOffset()
                 for offset, api_address, dll, api, bitness in scan_buffer(
-                    scout, base_address, self.read_region(region)
+                    scout, base_address, self.read_region(region), ranges
                 ):
                     hits.append(ApiHit(region.start.add(offset), api, dll, api_address, bitness))
             return hits
         finally:
             package_log.removeHandler(handler)
+
+    def read_memory(self, regions, address, size):
+        """the bytes of the regions at an address, fewer where the block ends, none where there is no memory"""
+        import jpype
+
+        for region in regions:
+            for block in region.blocks:
+                start = block.getStart().getUnsignedOffset()
+                if start <= address < start + block.getSize():
+                    length = min(size, start + block.getSize() - address)
+                    buffer = jpype.JByte[length]
+                    block.getBytes(block.getStart().add(address - start), buffer, 0, length)
+                    return bytes(memoryview(buffer))
+        return b""
 
     def read_region(self, region):
         import jpype

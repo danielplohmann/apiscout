@@ -188,6 +188,8 @@ Annotates everything and saves the database. The segment base from `-b` is reset
 
 It asks once for the DB folder, scans the program's memory and annotates the references you select like imports, with prototypes from Ghidra's Windows data types.
 
+The DLLs of the API DBs are placed at the load addresses of a module list file, as `apiscout scan --modules` does (choose `Module list file...` in the dialog).
+
 ![Ghidra listing with API pointers annotated as external functions](https://raw.githubusercontent.com/danielplohmann/apiscout/master/docs/images/ghidra.png)
 
 <details>
@@ -196,7 +198,7 @@ It asks once for the DB folder, scans the program's memory and annotates the ref
 ```bash
 pyghidraRun -H <project folder> <project name> -import <dump> -loader BinaryLoader -loader-baseAddr <address> \
     -processor x86:LE:64:default -scriptPath <folder of ghidra_scout.py> \
-    -postScript ghidra_scout.py <API DB> [<API DB> ...]
+    -postScript ghidra_scout.py <API DB> [<API DB> ...] [--modules <module list>]
 ```
 
 Use `-processor x86:LE:32:default` for 32bit dumps.
