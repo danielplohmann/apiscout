@@ -1,3 +1,4 @@
+import bisect
 import logging
 import struct
 
@@ -67,12 +68,10 @@ class PeTools:
             mapped_binary = bytearray(max_virt_section_offset)
             mapped_binary[0:header_size] = binary[0:header_size]
             # Sections sharing their raw data would multiply the content of a crafted file: data that an earlier
-            # section mapped already is only mapped again up to the size of the file, and the work spent on
-            # sections is limited as well. Files whose sections do not overlap are not affected.
-            covered = bytearray(len(binary))
+            # section mapped already is only mapped again up to the size of the file. Data that only one section
+            # refers to is always mapped, so files whose sections do not overlap are not affected.
+            covered_starts, covered_ends = [], []
             repeated_bytes_left = len(binary)
-            work_left = 16 * len(binary)
-            is_reported = False
             for section_info in section_infos:
                 # the file may be truncated, so only map what is actually there
                 raw_start = min(section_info["raw_offset"], len(binary))
@@ -80,22 +79,26 @@ class PeTools:
                 raw_end = min(raw_start + section_info["raw_size"], len(binary), raw_start + space)
                 if raw_end <= raw_start:
                     continue
-                if raw_end - raw_start > work_left:
-                    if not is_reported:
-                        LOG.warning("Sections share their data excessively, not all of them are mapped.")
-                    is_reported = True
-                    continue
-                work_left -= raw_end - raw_start
-                repeated = covered.count(1, raw_start, raw_end)
+                # the ranges mapped so far that touch this one are replaced by a single range
+                first = bisect.bisect_left(covered_ends, raw_start)
+                last = bisect.bisect_right(covered_starts, raw_end)
+                touched = list(zip(covered_starts[first:last], covered_ends[first:last], strict=True))
+                repeated = sum(min(raw_end, end) - max(raw_start, start) for start, end in touched)
                 if repeated <= repeated_bytes_left:
                     repeated_bytes_left -= repeated
                     parts = [(raw_start, raw_end)]
                 else:
-                    parts = PeTools._getUncoveredParts(covered, raw_start, raw_end)
+                    borders = (
+                        [raw_start] + [border for touched_range in touched for border in touched_range] + [raw_end]
+                    )
+                    parts = [
+                        (start, end) for start, end in zip(borders[::2], borders[1::2], strict=True) if start < end
+                    ]
                 for start, end in parts:
                     target = section_info["virt_offset"] + start - raw_start
                     mapped_binary[target : target + end - start] = binary[start:end]
-                    covered[start:end] = b"\x01" * (end - start)
+                covered_starts[first:last] = [min([raw_start] + [start for start, _ in touched])]
+                covered_ends[first:last] = [max([raw_end] + [end for _, end in touched])]
                 LOG.debug(
                     "Mapping %d: raw 0x%x (0x%x bytes) -> virtual 0x%x (0x%x bytes)",
                     section_info["section_index"],
@@ -111,19 +114,6 @@ class PeTools:
             len(mapped_binary),
         )
         return bytes(mapped_binary)
-
-    @staticmethod
-    def _getUncoveredParts(covered, start, end):
-        parts = []
-        while start < end:
-            start = covered.find(0, start, end)
-            if start < 0:
-                break
-            part_end = covered.find(1, start, end)
-            part_end = end if part_end < 0 else part_end
-            parts.append((start, part_end))
-            start = part_end
-        return parts
 
     @staticmethod
     def getBitness(binary):

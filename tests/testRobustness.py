@@ -330,8 +330,8 @@ class HostileInputTestSuite(unittest.TestCase):
         parsed = []
         original_parse = ImportDescriptor.parse
 
-        def counting_parse(self, buf, max_imports=None):
-            original_parse(self, buf, max_imports)
+        def counting_parse(self, buf, *limits):
+            original_parse(self, buf, *limits)
             parsed.append(len(self.imports))
 
         ImportDescriptor.parse = counting_parse
@@ -721,6 +721,28 @@ class SixthAuditTestSuite(unittest.TestCase):
         struct.pack_into("<IIII", pe, section_table + 0x78 + 8, 0x1001, 0x4000, 0x1001, 0xDFF)
         mapped = PeTools.mapBinary(bytes(pe))
         self.assertEqual(0x1001, mapped[0x4000:0x5001].count(b"A"))
+        # also behind any number of sections sharing their data
+        pe = bytearray(build_pe32()) + b"A" * 0x2000
+        struct.pack_into("<H", pe, 0x46, 41)
+        table = bytearray()
+        for index in range(40):
+            table += b".shared\x00" + struct.pack("<IIII", 0x1000, 0x1000 * (index + 1), 0x1000, 0x800) + bytes(16)
+        table += b".own\x00\x00\x00\x00" + struct.pack("<IIII", 0x800, 0x30000, 0x800, 0x1C00) + bytes(16)
+        pe[section_table : section_table + len(table)] = table
+        mapped = PeTools.mapBinary(bytes(pe))
+        self.assertEqual(0x800, mapped[0x30000:0x30800].count(b"A"))
+
+    def testOverlappingImportNamesAreLimited(self):
+        pe = bytearray(build_pe32()) + b"A" * 0x4000
+        struct.pack_into("<IIII", pe, 0x58 + 0xE0 + 8, 0x4200, 0x1000, 0x4200, 0x200)
+        # thunks naming every offset of one long run of characters
+        for index in range(0x400):
+            struct.pack_into("<I", pe, 0x1000 + 4 * index, 0x3000 + index)
+        struct.pack_into("<IIIII", pe, 0x200, 0x1E00, 0, 0, 0x1100, 0x1E00)
+        struct.pack_into("<IIIII", pe, 0x214, 0, 0, 0, 0, 0)
+        entries = ApiScout().evaluateImportTable(bytes(pe))["import_table"]
+        self.assertLessEqual(sum(len(entry[3]) for entry in entries), 2 * len(pe))
+        self.assertLess(len(entries), 0x400)
 
     def testAmbiguousLoadAddressOfA32bitProcess(self):
         import DatabaseBuilder
