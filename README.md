@@ -171,6 +171,7 @@ vector = scout.getPrimaryVector(scout.getWinApi1024Vectors(results))[1]["vector"
 | `win7_prof-n_sp1_example.json` | Windows 7 Professional N SP1, 32bit and 64bit DLLs | no |
 | `win10_prof_1803_example.json` | Windows 10 Pro 1803, 32bit and 64bit DLLs | yes |
 | `win2022_server_21h2_example.json` | Windows Server 2022 21H2, 32bit and 64bit DLLs | yes |
+| `win11_pro_26h2_example.json` | Windows 11 Pro 26H2, 32bit and 64bit DLLs | yes |
 
 `apiscout dbs download` fetches them from the release tag of the installed version and checks them against [`dbs/SHA256SUMS`](https://github.com/danielplohmann/apiscout/blob/master/dbs/SHA256SUMS). It stores them in `~/.local/share/apiscout/dbs` (Linux), `~/Library/Application Support/apiscout/dbs` (macOS) or `%LOCALAPPDATA%\apiscout\dbs` (Windows), or in `--db-dir`.
 
