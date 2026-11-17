@@ -10,6 +10,7 @@
 #
 ########################################################################
 
+import itertools
 import logging
 import os
 import random
@@ -160,6 +161,120 @@ class ApiVectorTestSuite(unittest.TestCase):
             n_decompressed = apivector.n_decompress(compressed)
             self.assertEqual(vector_length, len(decompressed))
             self.assertEqual(vector_length, len(n_decompressed))
+
+
+class ExplainMatchTestSuite(unittest.TestCase):
+    """explainMatch() must agree with matchVectors() and name the APIs behind the score"""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        module_path = os.path.dirname(os.path.realpath(apiscout.__file__))
+        cls.apivector = ApiVector(os.sep.join([module_path, "data", "winapi1024v1.txt"]))
+        collection_path = os.sep.join([module_path, "..", "dbs", "collection_example.csv"])
+        collection_vectors = [
+            sample_vector
+            for samples in cls.apivector._loadCollectionData(collection_path).values()
+            for sample_vector in samples.values()
+        ]
+        cls.vectors = [
+            "WDBCAgBBAAgCA159",
+            "WDBCABBACAgAEAAgA155",
+            cls.apivector.compress([0] * 1024),
+            cls.apivector.compress([1] * 1024),
+            *collection_vectors,
+        ]
+
+    def bits(self, indices):
+        return self.apivector.compress([1 if index in indices else 0 for index in range(1024)])
+
+    def assertExplanationIsConsistent(self, vector_a, vector_b):
+        explanation = self.apivector.explainMatch(vector_a, vector_b)
+        score = self.apivector.matchVectors(vector_a, vector_b)
+        self.assertEqual(score, explanation["score"])
+        ranks = self.apivector._vector_ranks_only
+        for key in ("shared", "only_a", "only_b"):
+            weights = [entry["weight"] for entry in explanation[key]]
+            self.assertEqual(sorted(weights, reverse=True), weights)
+        # the weights of the APIs of both vectors make up the score: a sum over the shared ones, a union of all
+        shared = sum(entry["weight"] for entry in explanation["shared"])
+        union = shared + sum(entry["weight"] for entry in explanation["only_a"] + explanation["only_b"])
+        if union:
+            self.assertAlmostEqual(shared / union, score, places=12)
+        else:
+            self.assertEqual(0.0, score)
+        for entry in explanation["shared"] + explanation["only_a"] + explanation["only_b"]:
+            self.assertIn(entry["weight"], ranks)
+        return explanation
+
+    def testScoreEqualsMatchVectors(self):
+        for vector_a, vector_b in itertools.combinations(self.vectors, 2):
+            self.assertExplanationIsConsistent(vector_a, vector_b)
+        for vector in self.vectors:
+            self.assertExplanationIsConsistent(vector, vector)
+
+    def testExampleVectors(self):
+        explanation = self.assertExplanationIsConsistent("WDBCAgBBAAgCA159", "WDBCABBACAgAEAAgA155")
+        self.assertAlmostEqual(0.572, explanation["score"], places=3)
+        self.assertTrue(explanation["shared"])
+        self.assertTrue(explanation["only_a"])
+        self.assertTrue(explanation["only_b"])
+
+    def testSharedAndDifferingApis(self):
+        explanation = self.assertExplanationIsConsistent(self.bits({0, 1, 2}), self.bits({1, 2, 3}))
+        definitions = self.apivector.getWinApi1024()
+        self.assertEqual({1, 2}, self.indices(explanation["shared"], definitions))
+        self.assertEqual({0}, self.indices(explanation["only_a"], definitions))
+        self.assertEqual({3}, self.indices(explanation["only_b"], definitions))
+        # weights are the ones matchVectors applies
+        ranks = self.apivector._vector_ranks_only
+        for key, index in (("shared", 1), ("shared", 2), ("only_a", 0), ("only_b", 3)):
+            found = [entry for entry in explanation[key] if entry["api"] == definitions[index][1]]
+            weights = [entry["weight"] for entry in found]
+            self.assertEqual([ranks[index]], weights)
+
+    def indices(self, entries, definitions):
+        return {
+            index for index, definition in enumerate(definitions) for entry in entries if entry["api"] == definition[1]
+        }
+
+    def testIdenticalVectors(self):
+        vector = self.bits({0, 5, 900})
+        explanation = self.assertExplanationIsConsistent(vector, vector)
+        self.assertEqual(1.0, explanation["score"])
+        self.assertEqual(3, len(explanation["shared"]))
+        self.assertEqual([], explanation["only_a"] + explanation["only_b"])
+
+    def testDisjointVectors(self):
+        explanation = self.assertExplanationIsConsistent(self.bits({0, 1}), self.bits({2, 3}))
+        self.assertEqual(0.0, explanation["score"])
+        self.assertEqual([], explanation["shared"])
+        self.assertEqual(2, len(explanation["only_a"]))
+        self.assertEqual(2, len(explanation["only_b"]))
+
+    def testEmptyVectors(self):
+        empty = self.bits(set())
+        explanation = self.assertExplanationIsConsistent(empty, empty)
+        self.assertEqual(0.0, explanation["score"])
+        self.assertEqual({"score": 0.0, "shared": [], "only_a": [], "only_b": []}, explanation)
+        explanation = self.assertExplanationIsConsistent(empty, self.vectors[0])
+        self.assertEqual(0.0, explanation["score"])
+        self.assertEqual([], explanation["shared"])
+        self.assertEqual([], explanation["only_a"])
+
+    def testListsAndStringsAgree(self):
+        vector_a, vector_b = self.vectors[0], self.vectors[1]
+        from_strings = self.apivector.explainMatch(vector_a, vector_b)
+        from_lists = self.apivector.explainMatch(
+            self.apivector.decompress(vector_a), self.apivector.decompress(vector_b)
+        )
+        self.assertEqual(from_strings, from_lists)
+
+    def testInvalidVectorsAreRejected(self):
+        with self.assertRaises(ValueError):
+            self.apivector.explainMatch("!!", self.vectors[0])
+        with self.assertRaises(ValueError):
+            self.apivector.explainMatch([1, 0, 1], [1, 0, 1])
 
 
 if __name__ == "__main__":

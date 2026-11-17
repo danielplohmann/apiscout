@@ -236,6 +236,46 @@ class ApiVector:
             jaccard_index = 1.0 * intersection_score / union_score
         return jaccard_index
 
+    def explainMatch(self, vector_a, vector_b):
+        """why two vectors match: the score of matchVectors, and the APIs found in both vectors or in only one of them,
+        each with its weight as used by matchVectors, heaviest first"""
+        if not self._winapi1024:
+            raise ValueError("The WinApi1024 definitions are needed to explain a match.")
+        score = self.matchVectors(vector_a, vector_b)
+        bits_a = self._getBits(vector_a)
+        bits_b = self._getBits(vector_b)
+        shared, only_a, only_b = [], [], []
+        for index, (dll, function, _, _) in enumerate(self._winapi1024):
+            entry = {"dll": dll, "api": function, "weight": int(self._vector_ranks_only[index])}
+            if bits_a[index] and bits_b[index]:
+                shared.append(entry)
+            elif bits_a[index]:
+                only_a.append(entry)
+            elif bits_b[index]:
+                only_b.append(entry)
+
+        def heaviest_first(entries):
+            return sorted(entries, key=lambda entry: (-entry["weight"], entry["dll"].lower(), entry["api"]))
+
+        return {
+            "score": score,
+            "shared": heaviest_first(shared),
+            "only_a": heaviest_first(only_a),
+            "only_b": heaviest_first(only_b),
+        }
+
+    def _getBits(self, vector):
+        if not self._isDecompressed(vector):
+            vector = self.decompress(vector)
+        bits = [int(bit) for bit in vector]
+        if len(bits) != len(self._winapi1024):
+            raise ValueError(f"Not a valid ApiVector: expected {len(self._winapi1024)} bits, got {len(bits)}.")
+        return bits
+
+    def getCollectionVector(self, collection_filepath, family, sample):
+        """the compressed ApiVector of a sample in a collection"""
+        return self._loadCollectionData(collection_filepath)[family][sample]
+
     def matchVectorCollection(self, vector, collection_filepath):
         collection_data = self._loadCollectionData(collection_filepath)
         results = {

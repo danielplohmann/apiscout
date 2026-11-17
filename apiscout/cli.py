@@ -36,6 +36,7 @@ MALPEDIA_URL = "https://malpedia.caad.fkie.fraunhofer.de"
 DB_DIR_VARIABLE = "APISCOUT_DB_DIR"
 COLLECTION_PATTERN = r"\d{4}-\d\d-\d\d-apivectors-v(?P<version_number>\d+)\.csv"
 COMMANDS = ("scan", "match", "export", "collect", "update", "dbs", "help")
+EXPLAIN_TOP = 10  # APIs listed per group when two vectors are explained
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -202,6 +203,20 @@ def match_collection(scout, vector, collection_path):
     if not result["match_results"]:
         raise CliError(f"no ApiVectors in {collection_path}. A collection has lines of family;sample;...;vector.")
     return result
+
+
+def explain_pair(scout, vector_a, vector_b):
+    try:
+        return scout.explainMatch(vector_a, vector_b)
+    except ValueError as exc:
+        raise CliError(str(exc)) from None
+
+
+def explain_best_match(scout, vector, collection_path, matches):
+    """the explanation of the best match of the collection, which is first in matches"""
+    family, sample, _ = matches["match_results"][0]
+    other = scout.getCollectionVector(collection_path, family, sample)
+    return {"family": family, "sample": sample, **explain_pair(scout, vector, other)}
 
 
 def parse_address(value):
@@ -376,6 +391,8 @@ def cmd_scan(args):
         if not load_addresses:
             raise CliError(f"no lines of '<hex load address> <DLL path>' in {args.modules}.")
         placer.addModuleList(SOURCE_MODULES, load_addresses)
+    if args.explain and not args.collection:
+        raise CliError("--explain explains the best match with a collection, give --collection as well.")
     binary = read_input(args.dump)
     minidump = None
     if Minidump.isMinidump(binary):
@@ -443,6 +460,7 @@ def cmd_scan(args):
     report(args, summary)
     vector = scout.getPrimaryVector(scout.getWinApi1024Vectors(results))[1]
     matches = match_collection(scout, vector["vector"], args.collection) if args.collection else None
+    best_match = explain_best_match(scout, vector["vector"], args.collection, matches) if args.explain else None
     if args.json:
         document = {
             "base_address": base_address,
@@ -455,11 +473,15 @@ def cmd_scan(args):
         if matches:
             matches["match_results"] = matches["match_results"][: args.max_results]
             document["collection_matches"] = matches
+        if best_match:
+            document["best_match"] = best_match
         write_output(json.dumps(document, indent=1, default=list) + "\n", args.output)
         return EXIT_OK
     lines = [scout.render(results), scout.renderVectorResults(results)]
     if matches:
         lines.append(scout.renderVectorCollectionResults(matches, args.max_results))
+    if best_match:
+        lines.append(scout.renderBestMatchExplanation(best_match))
     write_output("\n".join(lines) + "\n", args.output)
     return EXIT_OK
 
@@ -478,17 +500,30 @@ def cmd_match(args):
             score = scout.matchVectors(vector, args.other)
         except ValueError as exc:
             raise CliError(str(exc)) from None
-        if args.json:
+        if args.explain:
+            explanation = explain_pair(scout, vector, args.other)
+            if args.json:
+                text = json.dumps({"vector_a": vector, "vector_b": args.other, **explanation}) + "\n"
+            else:
+                text = f"Vector A: {vector}\nVector B: {args.other}\nScore: {score}\n"
+                text += scout.renderMatchExplanation(explanation, EXPLAIN_TOP)
+        elif args.json:
             text = json.dumps({"vector_a": vector, "vector_b": args.other, "score": score}) + "\n"
         else:
             text = f"Vector A: {vector}\nVector B: {args.other}\nScore: {score}\n"
     else:
         result = match_collection(scout, vector, args.collection)
+        best_match = explain_best_match(scout, vector, args.collection, result) if args.explain else None
         if args.json:
             result["match_results"] = result["match_results"][: args.max_results]
+            if best_match:
+                result["best_match"] = best_match
             text = json.dumps(result, indent=1, default=list) + "\n"
         else:
-            text = scout.renderVectorCollectionResults(result, args.max_results) + "\n"
+            lines = [scout.renderVectorCollectionResults(result, args.max_results)]
+            if best_match:
+                lines.append(scout.renderBestMatchExplanation(best_match))
+            text = "\n".join(lines) + "\n"
     write_output(text, args.output)
     return EXIT_OK
 
@@ -890,6 +925,11 @@ def build_parser():
         metavar="N",
         help="matches of the collection to list (default: 5)",
     )
+    scan.add_argument(
+        "--explain",
+        action="store_true",
+        help="with --collection: also list the APIs the best match shares with the vector and those only one of them has",
+    )
     add_output_options(scan)
     scan.set_defaults(run=cmd_scan)
 
@@ -906,6 +946,12 @@ def build_parser():
     match.add_argument("-c", "--collection", metavar="FILE", help="collection of ApiVectors to compare with")
     match.add_argument(
         "-n", "--max-results", type=parse_count(1), default=5, metavar="N", help="matches to list (default: 5)"
+    )
+    match.add_argument(
+        "--explain",
+        action="store_true",
+        help="list the APIs that drive the score: shared by both vectors, or in only one of them, with their weights "
+        "(with --collection: for the best match)",
     )
     add_output_options(match)
     match.set_defaults(run=cmd_match)

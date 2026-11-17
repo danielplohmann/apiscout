@@ -501,6 +501,12 @@ class ApiScout:
     def matchVectorCollection(self, vector, collection_path):
         return self._apivector.matchVectorCollection(vector, collection_path)
 
+    def explainMatch(self, vector_a, vector_b):
+        return self._apivector.explainMatch(vector_a, vector_b)
+
+    def getCollectionVector(self, collection_path, family, sample):
+        return self._apivector.getCollectionVector(collection_path, family, sample)
+
     def getPrimaryVector(self, api_vectors):
         if not api_vectors:
             empty_vector = {
@@ -593,4 +599,24 @@ class ApiScout:
             output += "{:{fw}} - {:{sw}} - {:.3f}\n".format(
                 result[0], result[1], result[2], fw=family_width, sw=sample_width
             )
+        return output
+
+    def renderBestMatchExplanation(self, best_match, top=5):
+        """best_match is the explanation of a match with a collection, as produced by cli"""
+        output = "Best match: {} - {} - {:.3f}\n".format(
+            best_match["family"], best_match["sample"], best_match["score"]
+        )
+        return output + self.renderMatchExplanation(best_match, top)
+
+    def renderMatchExplanation(self, explanation, top=10):
+        output = ""
+        sections = (("Shared APIs", "shared"), ("APIs only in vector A", "only_a"), ("APIs only in vector B", "only_b"))
+        for title, key in sections:
+            entries = explanation[key]
+            if not entries:
+                output += f"{title}: none\n"
+                continue
+            output += f"{title}, top {min(top, len(entries))} of {len(entries)} by weight:\n"
+            for entry in entries[:top]:
+                output += f"  {entry['weight']:6}  {entry['dll']}!{entry['api']}\n"
         return output
