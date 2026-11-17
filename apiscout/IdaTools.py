@@ -43,7 +43,7 @@ LOG = logging.getLogger(__name__)
 
 
 class IdaTools:
-    # the locations and call sites annotated by ApiScout, so that names and types set by an analyst are kept
+    # the names and call types ApiScout set, so that those an analyst sets afterwards or before are kept
     ANNOTATIONS_NODE = "$ apiscout annotations"
     TAG_LOCATION = "L"
     TAG_CALL = "C"
@@ -109,10 +109,15 @@ class IdaTools:
             return "{}_ordinal_{}".format(dll_name, match.group("ordinal"))
         return str(api[3])
 
+    def _isApiName(self, name, api):
+        """the name of the API, possibly with the numeric suffix IDA adds to a name used several times"""
+        return bool(re.fullmatch(re.escape(self.getApiName(api)) + r"(_\d+)?", name or ""))
+
     def isAnnotated(self, api):
-        """the location still carries the name of the API, possibly with the suffix of a name used several times"""
+        """the location still carries the name ApiScout gave it for this API"""
         name = self.ida_proxy.getName(api[0])
-        return name == self.getApiName(api) or name.startswith(self.getApiName(api) + "_")
+        recorded = self._recorded(api[0], self.TAG_LOCATION)
+        return self._isApiName(name, api) and (recorded is None or name == recorded)
 
     def makeNameAndStructure(self, api):
         return self.ida_proxy.MakeName(api[0], self.getApiName(api))
@@ -120,25 +125,33 @@ class IdaTools:
     def _annotations(self):
         return ida_netnode.netnode(self.ANNOTATIONS_NODE, 0, True)
 
-    def _isMarked(self, address, tag):
-        return self._annotations().altval(address, tag) == 1
+    def _recorded(self, address, tag):
+        """the name or call type ApiScout set at the address, None if it set none"""
+        return self._annotations().supstr(address, tag)
 
-    def _mark(self, address, tag):
-        self._annotations().altset(address, 1, tag)
+    def _record(self, address, tag, value):
+        self._annotations().supset(address, value, tag)
+
+    def _getCallType(self, address):
+        tinfo = ida_typeinf.tinfo_t()
+        return str(tinfo) if ida_nalt.get_op_tinfo(tinfo, address, 0) else None
 
     def getAnalystName(self, api):
-        """the name an analyst gave the location, None if it has none or the name is one ApiScout set"""
+        """the name an analyst gave the location, None if it has none or it still is the name ApiScout set"""
         if not ida_bytes.has_user_name(ida_bytes.get_flags(api[0])):
             return None
-        if self._isMarked(api[0], self.TAG_LOCATION) or self.isAnnotated(api):
-            return None
-        return self.ida_proxy.getName(api[0])
+        name = self.ida_proxy.getName(api[0])
+        recorded = self._recorded(api[0], self.TAG_LOCATION)
+        if recorded is not None:
+            # renamed since ApiScout set its name, e.g. by an analyst
+            return None if name == recorded else name
+        # no name recorded, e.g. annotated by a version that did not record names
+        return None if self._isApiName(name, api) else name
 
     def _hasAnalystCallType(self, address):
-        """an analyst set the type of the call, e.g. with "Set call type" of the decompiler"""
-        if self._isMarked(address, self.TAG_CALL):
-            return False
-        return ida_nalt.get_op_tinfo(ida_typeinf.tinfo_t(), address, 0)
+        """the call has a type that ApiScout did not set, or changed since, e.g. with "Set call type" of the decompiler"""
+        current = self._getCallType(address)
+        return current is not None and current != self._recorded(address, self.TAG_CALL)
 
     def importTypeLibraries(self):
         """load the type libraries matching the bitness of the database, returns True if all of them are available"""
@@ -182,7 +195,7 @@ class IdaTools:
         # the operand type makes the decompiler use the prototype for this indirect call
         if not ida_nalt.set_op_tinfo(address, 0, tinfo):
             return False
-        self._mark(address, self.TAG_CALL)
+        self._record(address, self.TAG_CALL, self._getCallType(address))
         return True
 
     def setPointerType(self, tinfo, address):
@@ -273,7 +286,8 @@ class IdaTools:
                 print(f"Skipping 0x{api[0]:x}: could not set name {self.getApiName(api)}.")
                 continue
             num_renamed += 1
-            self._mark(api[0], self.TAG_LOCATION)
+            # the name as IDA stored it, which can carry a suffix
+            self._record(api[0], self.TAG_LOCATION, self.ida_proxy.getName(api[0]))
             annotated_locations[api[0]] = self.getApiName(api)
             if api[0] in pointers and pointers[api[0]][2] != tuple(api[:4]):
                 # another row of this location was annotated before, its name is replaced now
