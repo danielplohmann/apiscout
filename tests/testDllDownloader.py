@@ -650,7 +650,7 @@ class RunTestSuite(unittest.TestCase):
     def test_builds_the_db_from_the_rest(self):
         built = {}
 
-        def build_db(out_dir, update, os_version_hint, outfile):
+        def build_db(out_dir, update, os_version_hint, outfile, files=None):
             built.update(out_dir=out_dir, update=update, hint=os_version_hint, outfile=outfile)
             return {"num_dlls": 2, "num_apis": 3}
 
@@ -670,7 +670,7 @@ class RunTestSuite(unittest.TestCase):
         self.network.files[symbol_url(9, 0x5000, "ntdll.dll")] = data
         built = {}
 
-        def build_db(out_dir, update, os_version_hint, outfile):
+        def build_db(out_dir, update, os_version_hint, outfile, files=None):
             built.update(update=update, hint=os_version_hint)
             return {"num_dlls": 1, "num_apis": 1}
 
@@ -683,6 +683,45 @@ class RunTestSuite(unittest.TestCase):
             ("Windows 11 24H2 RTM (AMD64)", "10.0.26100.1"), self.D.os_names(built["update"], built["hint"])
         )
         self.assertEqual("win11_24h2_base.json", self.D.default_db_name(built["update"]))
+
+    def test_files_of_an_earlier_run_are_left_out(self):
+        built = []
+
+        def build_db(out_dir, update, os_version_hint, outfile, files=()):
+            built.append(sorted(os.path.relpath(path, out_dir).replace(os.sep, "/") for path in files))
+            return {"num_dlls": len(files), "num_apis": 0}
+
+        # KB5000001 has the old x64 file, the x64 download of KB5000002 is then not the file of Winbindex
+        self.network.files[symbol_url(0x65000000, 0x5000)] = DATA_OLD_X64
+        os.makedirs(os.path.join(self.out, "SysWOW64"))
+        with open(os.path.join(self.out, "SysWOW64", "other.dll"), "wb") as f_out:
+            f_out.write(b"MZ other")
+        with unittest.mock.patch.object(self.D, "build_db", build_db):
+            code, out, _ = self.run_main("--windows", "11-24H2", "--update", "KB5000001")
+            self.assertEqual(0, code)
+            self.assertIn("Left out of the DB, not verified as files of KB5000001: SysWOW64/other.dll.", out)
+            self.network.files[symbol_url(0x66000001, 0x5000)] = DATA_X64[:-1] + b"!"
+            code, out, _ = self.run_main("--windows", "11-24H2", "--update", "KB5000002")
+        self.assertEqual(0, code)
+        self.assertIn("1 rejected", out)
+        self.assertEqual([["System32/foo.dll"], ["SysWOW64/foo.dll"]], built)
+        self.assertIn("files of KB5000002: System32/foo.dll, SysWOW64/other.dll.", out)
+
+    def test_db_is_built_from_the_given_files_only(self):
+        sys.path.insert(0, os.path.join(THIS_DIR, "..", "apiscout", "db_builder"))
+        self.addCleanup(sys.path.remove, sys.path[0])
+        import DatabaseBuilder
+
+        for folder in ("System32", "SysWOW64"):
+            os.makedirs(os.path.join(self.out, folder))
+            with open(os.path.join(self.out, folder, NAME), "wb") as f_out:
+                f_out.write(b"MZ")
+        keep = os.path.join(self.out, "SysWOW64", NAME)
+        seen = []
+        builder = DatabaseBuilder.DatabaseBuilder()
+        with unittest.mock.patch.object(builder, "_extractPeExports", side_effect=lambda path: seen.append(path)):
+            builder.extractRecursively([self.out], False, "W", "1", only_files={os.path.abspath(keep)})
+        self.assertEqual([os.path.join(self.out, "SysWOW64") + os.sep + NAME], seen)
 
     def test_failure_is_reported_and_db_is_built_from_the_rest(self):
         real = self.network.__call__

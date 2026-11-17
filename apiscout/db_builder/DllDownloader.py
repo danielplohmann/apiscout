@@ -408,8 +408,9 @@ def download_file(files, out_dir, fetch=http_get):
     raise Unavailable(problem, rejected)
 
 
-def fetch_dll(name, update, out_dir, cache_dir, fetch=http_get):
-    """get the files of one DLL, returns (status, message) of each folder or of the DLL as a whole"""
+def fetch_dll(name, update, out_dir, cache_dir, fetch=http_get, verified=None):
+    """get the files of one DLL, returns (status, message) of each folder or of the DLL as a whole. The paths of the
+    files that are now the ones of the update are added to the list verified."""
     try:
         index = load_index(name, cache_dir, fetch)
     except NotFound:
@@ -426,6 +427,8 @@ def fetch_dll(name, update, out_dir, cache_dir, fetch=http_get):
             continue
         try:
             file, status = download_file(files[folder], out_dir, fetch)
+            if verified is not None:
+                verified.append(os.path.join(out_dir, file.folder, file.filename))
             note = f" as of {file.source_kb}" if file.source_kb != update.kb else ""
             results.append((status, f"{folder}: {status}{note}"))
         except Unavailable as exc:
@@ -493,8 +496,9 @@ def print_listing(index, name, windows, out=sys.stdout):
         )
 
 
-def build_db(out_dir, update, os_version_hint, outfile):
-    """the API DB of the folders, with the DatabaseBuilder that lies next to this script"""
+def build_db(out_dir, update, os_version_hint, outfile, files=None):
+    """the API DB of the folders, with the DatabaseBuilder that lies next to this script. With files, only those files
+    of the folders are used."""
     import DatabaseBuilder
 
     paths = [
@@ -502,7 +506,8 @@ def build_db(out_dir, update, os_version_hint, outfile):
     ]
     os_name, os_version = os_names(update, os_version_hint)
     builder = DatabaseBuilder.DatabaseBuilder()
-    api_db = builder.extractRecursively(paths, False, os_name, os_version)
+    only_files = None if files is None else {os.path.abspath(path) for path in files}
+    api_db = builder.extractRecursively(paths, False, os_name, os_version, only_files=only_files)
     if not api_db["dlls"]:
         raise DownloaderError("no DLLs to build an API DB from in {}.".format(", ".join(paths)))
     builder.persistApiDb(api_db, outfile)
@@ -544,9 +549,10 @@ def run(args, fetch=None, out=None):
     outfile = args.outfile or os.path.join(args.out, default_db_name(update))
     counts = {"downloaded": 0, "present": 0, "missing": 0, "rejected": 0, "failed": 0}
     problems = []
+    verified = []
     started = time.time()
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        futures = {pool.submit(fetch_dll, name, update, args.out, cache_dir, fetch): name for name in names}
+        futures = {pool.submit(fetch_dll, name, update, args.out, cache_dir, fetch, verified): name for name in names}
         try:
             for number, future in enumerate(concurrent.futures.as_completed(futures), 1):
                 name = futures[future]
@@ -571,7 +577,15 @@ def run(args, fetch=None, out=None):
     )
     if args.download_only:
         return 1 if counts["failed"] else 0
-    api_db = build_db(args.out, update, os_version_hint, outfile)
+    # the folders may hold files of another update or of other DLLs from an earlier run, only this run's go in
+    others = other_files(args.out, verified)
+    if others:
+        out.write(
+            "Left out of the DB, not verified as files of {}: {}{}.\n".format(
+                update.kb, ", ".join(others[:10]), f" and {len(others) - 10} more" if len(others) > 10 else ""
+            )
+        )
+    api_db = build_db(args.out, update, os_version_hint, outfile, files=verified)
     out.write("API DB {}: {} DLLs, {} APIs.\n".format(outfile, api_db["num_dlls"], api_db["num_apis"]))
     if counts["failed"]:
         out.write(
@@ -579,6 +593,20 @@ def run(args, fetch=None, out=None):
         )
         return 1
     return 0
+
+
+def other_files(out_dir, files):
+    """the DLLs in the folders of out_dir that are not among files, e.g. left from a run for another update"""
+    kept = {os.path.abspath(path) for path in files}
+    others = []
+    for folder, _, _ in SYSTEM_FOLDERS:
+        folder_path = os.path.join(out_dir, folder)
+        if os.path.isdir(folder_path):
+            for name in sorted(os.listdir(folder_path)):
+                path = os.path.join(folder_path, name)
+                if name.lower().endswith(".dll") and os.path.abspath(path) not in kept:
+                    others.append(f"{folder}/{name}")
+    return others
 
 
 def clean_partial_files(out_dir):

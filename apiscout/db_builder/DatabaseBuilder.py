@@ -506,7 +506,8 @@ class DatabaseBuilder:
         filename = os.path.basename(dll_info["filepath"])
         return "{}_{}_{}_0x{:x}".format(dll_info["bitness"], dll_info["version"], filename, dll_info["base_address"])
 
-    def extractRecursively(self, paths, filter_dlls=False, os_name=None, os_version=None):
+    def extractRecursively(self, paths, filter_dlls=False, os_name=None, os_version=None, only_files=None):
+        """the API DB of the DLLs in paths; with only_files, a set of absolute paths, only those files are used"""
         api_count = 0
         pe_count = 0
         duplicate_count = 0
@@ -525,6 +526,9 @@ class DatabaseBuilder:
                 continue
             for root, _, files in os.walk(base):
                 for fn in files:
+                    if only_files is not None and os.path.abspath(os.path.join(root, fn)) not in only_files:
+                        skipped_count += 1
+                        continue
                     if filter_dlls and fn.casefold() not in filter_names:
                         skipped_count += 1
                         continue
