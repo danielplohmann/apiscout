@@ -46,6 +46,9 @@ class ApiScout:
         # Used to achieve coherent offset view in IdaScout
         self.load_offset = 0
         self.ignore_aslr_offsets = False
+        # 32 restricts the search to 32bit pointers (dumps of 32bit systems), otherwise both sizes are searched
+        self.bitness = None
+        self._dll_file_names = set()
         self._import_table = None
         if db_filepath:
             self.loadDbFile(db_filepath)
@@ -75,6 +78,7 @@ class ApiScout:
                 if api_name == "None":
                     api_name = "None<{}>".format(export["ordinal"])
                 dll_name = "_".join(dll_entry.split("_")[2:])
+                self._dll_file_names.add(re.sub(r"_0x[0-9a-fA-F]+$", "", dll_name).lower())
                 bitness = api_db["dlls"][dll_entry]["bitness"]
                 self.has_64bit |= bitness == 64
                 base_address = api_db["dlls"][dll_entry]["base_address"]
@@ -139,6 +143,14 @@ class ApiScout:
 
     def ignoreAslrOffsets(self, value):
         self.ignore_aslr_offsets = value
+
+    def setBitness(self, bitness):
+        """32 searches 32bit pointers only, which is all there is in the memory of a 32bit system, None both sizes"""
+        self.bitness = bitness
+
+    def hasDll(self, file_name):
+        """whether a DLL of this file name is in one of the loaded API DBs"""
+        return file_name.lower() in self._dll_file_names
 
     def setBaseAddress(self, address):
         self.base_address = address
@@ -312,10 +324,10 @@ class ApiScout:
                             bitness,
                             self._isImportTableEntry(offset),
                             ref_count,
-                            references[bitness].get(offset, set()),
+                            {caller + self.load_offset for caller in references[bitness].get(offset, set())},
                         )
                     )
-            if self.has_64bit:
+            if self.has_64bit and self.bitness != 32:
                 for offset, api_address in self._iterateCandidates(binary, api_map_name, 8):
                     dll, api, bitness = self._resolveApiByAddress(api_map_name, api_address, 64)
                     if dll and api and bitness == 64:
@@ -329,12 +341,31 @@ class ApiScout:
                                 bitness,
                                 self._isImportTableEntry(offset),
                                 ref_count,
-                                references[bitness].get(offset, set()),
+                                {caller + self.load_offset for caller in references[bitness].get(offset, set())},
                             )
                         )
             # hits of both bitnesses are reported in the order of their offsets, as filter() and render() work on neighbouring entries
             recovered_apis.sort(key=lambda entry: (entry[0], entry[4]))
             results[api_map_name] = recovered_apis
+        return results
+
+    def crawlRegions(self, regions):
+        """crawl memory regions given as (start address, buffer), like ida_scout.py does with the segments of IDA.
+        The offsets of the results are relative to the base address set before, so base address plus offset is the
+        address of the hit. References of code are resolved within each region."""
+        base_address, load_offset, binary_length = self.base_address, self.load_offset, self._binary_length
+        results = {}
+        try:
+            for start, binary in regions:
+                self.setLoadOffset(start - base_address)
+                self.setBaseAddress(start)
+                for api_map_name, recovered_apis in self.crawl(binary).items():
+                    results.setdefault(api_map_name, []).extend(recovered_apis)
+        finally:
+            self.base_address, self.load_offset, self._binary_length = base_address, load_offset, binary_length
+        # the regions are crawled in the order of their addresses, unless they were given in another one
+        for recovered_apis in results.values():
+            recovered_apis.sort(key=lambda entry: (entry[0], entry[4]))
         return results
 
     @staticmethod
@@ -348,10 +379,17 @@ class ApiScout:
                 keep.update((offset, next_offset))
         return [item for item in list_to_filter if item[0] in keep]
 
-    def filter(self, result, from_addr, to_addr, distance, own_image=True):
+    def filter(self, result, from_addr, to_addr, distance, own_image=True, exclude_ranges=()):
+        """exclude_ranges: (start, end) addresses of memory whose references are dropped, e.g. the images of DLLs"""
         filtered_result = {}
         for key in result:
             filtered_list = result[key]
+            if exclude_ranges:
+                filtered_list = [
+                    item
+                    for item in filtered_list
+                    if not any(start <= self.base_address + item[0] < end for start, end in exclude_ranges)
+                ]
             # filter all entries pointing into our own image
             if own_image:
                 filtered_list = [
