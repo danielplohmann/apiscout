@@ -20,6 +20,7 @@ import tempfile
 import threading
 import types
 import unittest
+from unittest import mock
 
 from apiscout import cli
 
@@ -868,6 +869,17 @@ class AnnotationTest(unittest.TestCase):
         tools.annotate(view, other, status)
         self.assertEqual(["Second", "data_1000"], sorted(sym.name for sym in view.symbols[0x1000]))
 
+    def testStatusOfUndoneAnnotationIsDropped(self):
+        view = self.makeView(4)
+        rows = [[0x1000, 0x7000, "a.dll (32bit)", "First", 0]]
+        status = {}
+        tools.annotate(view, rows, status)
+        self.assertEqual("annotated (no type information)", status[tuple(rows[0][:4])])
+        # an undo removes the symbols again
+        view.symbols.clear()
+        tools.annotate(view, [], status)
+        self.assertEqual({}, status)
+
     def testNoPlatform(self):
         view = FakeBinaryView([FakeSegment(0x1000, 0x10, b"\0" * 0x10)], 4, None)
         rows = [[0x1000, 0x7000, "kernel32.dll (32bit)", "ReadProcessMemory", 0]]
@@ -959,6 +971,21 @@ class CommandTest(unittest.TestCase):
         parameters = tools.ask_parameters()
         self.assertEqual([os.path.realpath(WIN7_DB)], [os.path.realpath(path) for path in parameters["db_paths"]])
         self.assertFalse(parameters["ignore_aslr_offsets"])
+
+    def testSameDbInTwoFoldersIsOfferedOnce(self):
+        other = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, other)
+        shutil.copy(self.db_path, other)
+        names = []
+
+        def answer(fields):
+            names.extend(field.prompt for field in fields if isinstance(field, CheckboxField))
+            return False
+
+        FakeInteraction.form_handler = answer
+        with mock.patch.object(tools, "get_db_folders", return_value=[self.folder, other]):
+            tools.ask_parameters()
+        self.assertEqual(1, names.count("three_apis.json"))
 
     def testCancelledAndEmptyForms(self):
         view = self.makeView()

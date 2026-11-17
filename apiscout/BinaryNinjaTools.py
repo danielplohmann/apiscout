@@ -243,6 +243,11 @@ def annotate(bv, rows, status=None, task=None):
     """
     if status is None:
         status = {}
+    for key in [key for key, outcome in status.items() if outcome.startswith("annotated")]:
+        # an undo removed the annotation, the report must not claim it any longer
+        symbol = bv.get_symbol_at(key[0])
+        if symbol is None or symbol.name != get_api_name(key):
+            del status[key]
     resolver = PrototypeResolver(bv)
     num_annotated = 0
     num_skipped = 0
@@ -341,7 +346,7 @@ def _as_text(value):
 
 
 def get_db_folders():
-    """folders searched for API DBs: $APISCOUT_DB_DIR, ./dbs and the dbs folder of a checkout of the repository"""
+    """folders searched for API DBs: the default one of "apiscout dbs download" and the dbs folder of a checkout"""
     from apiscout.cli import get_default_db_dir
 
     folders = [get_default_db_dir(), os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "dbs")]
@@ -355,8 +360,13 @@ def get_db_folders():
 def ask_parameters():
     """the API DBs and options chosen in a form, None if cancelled or nothing chosen"""
     db_files = []
+    listed = set()
     for folder in get_db_folders():
-        db_files.extend(os.path.join(folder, name) for name in sorted(os.listdir(folder)) if name.endswith(".json"))
+        for name in sorted(os.listdir(folder)):
+            # the same DB in several folders is offered once, from the first folder
+            if name.endswith(".json") and name not in listed:
+                listed.add(name)
+                db_files.append(os.path.join(folder, name))
     fields = ["API DBs of the system the memory dump was taken from:"]
     checkboxes = [interaction.CheckboxField(os.path.basename(path), False) for path in db_files]
     other_db = interaction.OpenFileNameField("Other API DB file", "*.json")
