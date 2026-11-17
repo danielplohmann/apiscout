@@ -5,20 +5,41 @@ As input, arbitrary memory dumps for a known environment can be processed (pleas
 The output is an ordered list of identified Windows API references with some meta information, and an ApiVector fingerprint.  
 
 * scout.py -- should give a good outline on how to work with the library.  
-* ida_scout.py -- is a convenience GUI wrapper for use in IDA Pro.  
-* GhidraScout.java -- is a Ghidra plugin for ApiScout (contributed by @mari-mari).
+* ida_scout.py -- is the plugin for IDA Pro (see below).  
+* GhidraScout.java -- is a Ghidra script for ApiScout (contributed by @mari-mari, see below).  
 * match.py -- demonstrates how ApiVectors can be matched against each other and collections of fingerprints.  
 * collect.py -- builds a database of WinAPI fingerprints (ApiVectors) that can be used for matching.  
 * export.py -- generates ApiQR diagrams that visualize ApiVectors.  
 * update.py -- pull the most recent ApiVector DB from Malpedia (requires Malpedia account / API token).  
 
-The code should be fully compatible with Python 2 and 3.  
+ApiScout requires Python 3.10 or newer (`pip install apiscout`), the DB builder alone also runs with Python 3.8, the last version for Windows 7, the IDA plugin requires IDA 9.0 or newer (tested with all releases from 9.0 to 9.5), the Ghidra script is tested with Ghidra 12.2.  
+For development, [uv](https://docs.astral.sh/uv/) sets up the environment: `uv sync`, then `uv run python -m unittest discover -s tests -p "test*.py" -t .`, `uv run ruff check`, `uv run ruff format` and `uv run ty check`.  
 There is a blog post describing ApiScout in more detail: http://byte-atlas.blogspot.com/2017/04/apiscout.html.  
 Also, another blog post explaining how ApiVectors are constructed and stored: https://byte-atlas.blogspot.com/2018/04/apivectors.html.  
-We also presented a paper at Botconf 2018 that describes the ApiScout methodology in-depth, including an evaluation over Malpedia: https://journal.cecyf.fr/ojs/index.php/cybin/article/view/20/23  
+We also presented a paper at Botconf 2018 that describes the ApiScout methodology in-depth, including an evaluation over Malpedia: https://cyberjournal.cecyf.fr/index.php/cybin/en/article/download/20/15/50  
+
+## IDA Pro
+
+`ida_scout.py` works as plugin and as script (File > Script file...). To use it as plugin, install it with the plugin manager (`hcli plugin install <path to apiscout>`) or link the repository into `$IDAUSR/plugins`; it is then available as Edit > Plugins > ApiScout (Ctrl-Alt-A).
+After choosing the API DBs, the API references found are listed in the dockable ApiScout view. Enter or a double click jumps to a reference. The context menu annotates the selected APIs or all APIs of the view (A / Shift-A, IDA's quick filter only hides rows) and filters the view to APIs with a neighbour within a given distance (F), Refresh (Ctrl-U) scans the database again.
+Annotating an API names its location, types it as pointer to the API's prototype and applies the prototype to the calls referencing it. Memory dumps should be loaded as binary file at the address they were dumped from.
+In batch mode, all references are annotated: `idat -A -TBinary -b<dump address / 16, hex> -pmetapc -S"ida_scout.py <API DB> [<API DB> ...]" <dump>`. The segment base that `-b` sets is reset to 0 so that calls reference the API pointers, and the database is saved when the script is done. A database that was analysed with such a base before is repaired as far as possible; functions that IDA split under the base stay split, switches it missed there are not recovered, and `noreturn` flags are determined again, so the batch command is best run on the dump itself. Without `-TBinary`, IDA loads a dump that starts with a PE header as file instead of as memory image, and idat creates a 64bit database for binary files, so 32bit dumps are best prepared as database first.
+
+## Ghidra
+
+Copy `GhidraScout.java` into a script directory of Ghidra and run it from the Script Manager (ticking its "In Tool" checkbox adds it as Tools > ApiScout). It asks for the location of `scout.py` once and runs it on the memory of the current program, so `python3` needs to be able to run `scout.py`.
+The table lists the API references found, the selected ones are annotated like imports: a pointer with an external reference to the function of its library, with the prototype of Ghidra's Windows data type archive.
+Headless: `analyzeHeadless <project> <name> -import <dump> -loader BinaryLoader -loader-baseAddr <address> -processor x86:LE:64:default -postScript GhidraScout.java <path to scout.py> [<API DB> ...]`.
 
 ## Version History
 
+ * 2026-11-16: Added a Windows Server 2022 (21H2, build 20348) 64bit import DB (`dbs/win2022_server_21h2_example.json`, 343 DLLs, built with `DatabaseBuilder.py --filter` on a fresh installation). Like the Windows 10 DB, it carries the ASLR offsets of the boot it was built in and serves as example and for tests, not for dumps of other systems.
+ * 2026-11-16: v3.0.0 - (BREAKING) Python 2 and IDA before 9.0 are no longer supported. Packaging moved to `pyproject.toml` (with `uv.lock`), code is linted and formatted with ruff and type checked with ty, CI runs on GitHub Actions.
+   * Library: fixed a crash when a buffer ends in `FF 15`/`FF 25`, import tables (`scout.py -t`) are read by the own parser only, which gave the same imports as LIEF on all files tested and is bounded for crafted files, so LIEF is no longer a dependency, import descriptors without import name table, PE mapping of truncated or unusual files, matching of vectors given as lists, `NaN` when matching empty vectors, and API DBs of the same OS replacing each other. Crawl results are now ordered by offset. Imports by ordinal are resolved for `ws2_32.dll`, `wsock32.dll` and `oleaut32.dll`, compressed ApiVectors are validated, and a 32bit and a 64bit export at the same address are both resolved.
+   * `export.py` (ApiQR) works again, `update.py` works from any directory, `collect.py -u` no longer writes a second file.
+   * IDA: `ida_scout.py` is a plugin now (see above) with a dockable results view instead of a modal dialog, a batch mode and `ida-plugin.json` for the plugin manager. APIs are also annotated when their location was defined as something else before, type libraries match the bitness of the database and include ntapi, API locations are typed as function pointers, and the decompiler shows the API names for dumps loaded as binary file.
+   * Ghidra: the script scans the program's memory instead of the imported file, keeps all references to an API, annotates them like imports (external references and prototypes) and can be run headless.
+   * DB Builder: `--os_name`/`--os_version` build a DB from a copy of the DLLs on any OS, `--load_addresses` takes the ASLR offsets from a module list (lines of `<hex load address> <DLL path>`) instead of loading each DLL; DLLs are matched by folder and file name, or by file name alone where it is unique. The DLL filter covers DLLs of current Windows versions.
  * 2026-11-16: Follow-ups for the Windows 10 DB: `collect.py` now skips API DBs with ASLR offsets unless `--use_aslr_dbs` or `--ignore_aslr` is given (`FingerprintCrawler` got an `ignore_aslr_offsets` parameter) and loading a DB warns about many colliding addresses. ApiVector now matches DLL names case-insensitively (e.g. `IPHLPAPI.DLL`). Fixed `ws2_32.dll` being truncated in the JSON output of `scout.py`, missed references of 64bit `jmp [rip+x]` thunks, the base address of PE32+ headers and 64bit imports by ordinal. Tests now run with `unittest` instead of nose.
  * 2026-11-01: Added Windows 10 Pro 1803 (build 17134.1) 64bit import DB, including the ASLR offsets of the boot it was built in (as all 64bit system DLLs share the file ImageBase 0x180000000). These offsets are only valid for memory dumps from that very boot; for other dumps, use import table parsing (`scout.py -t`) or rebuild the DB on the system the dump was taken from. `scout.py --ignore_aslr` (`ApiScout.ignoreAslrOffsets(True)`) is only meaningful for systems without ASLR and not usable for this DB's 64bit DLLs, as they then overlap at 0x180000000. Also note that the offsets of several rarely loaded DLLs in this DB (mostly 32bit ones, e.g. iphlpapi.dll, wininet.dll) put them at overlapping addresses, so APIs of these DLLs may be resolved incorrectly. Also fixed two DB Builder bugs: version 0.0.0.0 was written for all DLLs, and ordinal-only exports were truncated for DLLs mapping many ordinals to one address (e.g. mfc42.dll lost ~90% of its exports).
  * 2023-03-27: v2.0.2 - Bugfix for IdaScout and handling of sets, contributed by @7a6570 (THX!!)

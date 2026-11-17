@@ -1,97 +1,152 @@
+import bisect
 import logging
 import struct
 
-from .utility import get_word
+from .utility import get_dword, get_qword, get_word
 
-if len(logging._handlerList) == 0:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)-15s %(message)s")
 LOG = logging.getLogger(__name__)
 
-class PeTools(object):
 
-    BITNESS_MAP = {0x14c: 32, 0x8664: 64}
+class PeTools:
+    BITNESS_MAP = {0x14C: 32, 0x8664: 64}
+    # images beyond this size, or this multiple of the file size, are not mapped as their section table is most likely corrupt
+    MAX_MAPPED_SIZE = 0x10000000
+    MAX_MAPPED_RATIO = 256
 
     @staticmethod
     def mapBinary(binary):
-        # This is a pretty rough implementation but does the job for now
+        """map a PE file as it would be laid out in memory (sections moved to their virtual offsets), returns empty bytes if this is not possible"""
         mapped_binary = bytearray([])
         pe_offset = PeTools.getPeOffset(binary)
-        if pe_offset:
-            num_sections = 0
-            bitness = 0
-            section_infos = []
-            optional_header_size = 0xF8
-            if pe_offset and len(binary) >= pe_offset + 0x8:
-                num_sections = struct.unpack("H", binary[pe_offset + 0x6:pe_offset + 0x8])[0]
-                bitness = PeTools.getBitness(binary)
-                if bitness == 64:
-                    optional_header_size = 0x108
-            if pe_offset and num_sections and len(binary) >= pe_offset + optional_header_size + num_sections * 0x28:
+        num_sections = 0
+        section_infos = []
+        if pe_offset and len(binary) >= pe_offset + 0x18:
+            num_sections = get_word(binary, pe_offset + 0x6)
+            # the section table starts behind the optional header, whose size is given in the file header
+            section_table_offset = pe_offset + 0x18 + get_word(binary, pe_offset + 0x14)
+            if num_sections and len(binary) >= section_table_offset + num_sections * 0x28:
                 for section_index in range(num_sections):
-                    section_offset = section_index * 0x28
-                    slice_start = pe_offset + optional_header_size + section_offset + 0x8
-                    slice_end = pe_offset + optional_header_size + section_offset + 0x8 + 0x10
-                    virt_size, virt_offset, raw_size, raw_offset = struct.unpack("IIII", binary[slice_start:slice_end])
-                    section_info = {
-                        "section_index": section_index,
-                        "virt_size": virt_size,
-                        "virt_offset": virt_offset,
-                        "raw_size": raw_size,
-                        "raw_offset": raw_offset,
-                    }
-                    section_infos.append(section_info)
-            max_virt_section_offset = 0
-            min_raw_section_offset = 0xFFFFFFFF
-            if section_infos:
-                for section_info in section_infos:
-                    max_virt_section_offset = max(max_virt_section_offset, section_info["virt_size"] + section_info["virt_offset"])
-                    max_virt_section_offset = max(max_virt_section_offset, section_info["raw_size"] + section_info["virt_offset"])
-                    if section_info["raw_offset"] > 0x200:
-                        min_raw_section_offset = min(min_raw_section_offset, section_info["raw_offset"])
-            if max_virt_section_offset:
-                mapped_binary = bytearray([0] * max_virt_section_offset)
-                mapped_binary[0:min_raw_section_offset] = binary[0:min_raw_section_offset]
+                    virt_size, virt_offset, raw_size, raw_offset = struct.unpack_from(
+                        "<IIII", binary, section_table_offset + section_index * 0x28 + 0x8
+                    )
+                    section_infos.append(
+                        {
+                            "section_index": section_index,
+                            "virt_size": virt_size,
+                            "virt_offset": virt_offset,
+                            "raw_size": raw_size,
+                            "raw_offset": raw_offset,
+                        }
+                    )
+        max_virt_section_offset = 0
+        header_size = len(binary)
+        for section_info in section_infos:
+            max_virt_section_offset = max(
+                max_virt_section_offset, section_info["virt_size"] + section_info["virt_offset"]
+            )
+            max_virt_section_offset = max(
+                max_virt_section_offset, section_info["raw_size"] + section_info["virt_offset"]
+            )
+            # the headers reach up to the raw data of the first section, and are not allowed to overlap any mapped section
+            if section_info["raw_size"] and section_info["raw_offset"]:
+                header_size = min(header_size, section_info["raw_offset"])
+            header_size = min(header_size, section_info["virt_offset"])
+        if max_virt_section_offset > min(PeTools.MAX_MAPPED_SIZE, PeTools.MAX_MAPPED_RATIO * max(len(binary), 0x1000)):
+            # mostly uninitialized memory (or a corrupt size), which is cut off behind the data the file provides
+            max_virt_section_offset = max(
+                section_info["virt_offset"]
+                + max(0, min(section_info["raw_size"], len(binary) - section_info["raw_offset"]))
+                for section_info in section_infos
+            )
+        if max_virt_section_offset > PeTools.MAX_MAPPED_SIZE:
+            LOG.warning(
+                "Section table describes an image of 0x%x bytes, which is treated as corrupt - not mapping this binary.",
+                max_virt_section_offset,
+            )
+            return bytes(mapped_binary)
+        if max_virt_section_offset:
+            mapped_binary = bytearray(max_virt_section_offset)
+            mapped_binary[0:header_size] = binary[0:header_size]
+            # Sections sharing their raw data would multiply the content of a crafted file: data that an earlier
+            # section mapped already is only mapped again up to the size of the file. Data that only one section
+            # refers to is always mapped, so files whose sections do not overlap are not affected.
+            covered_starts, covered_ends = [], []
+            repeated_bytes_left = len(binary)
             for section_info in section_infos:
-                mapped_binary[section_info["virt_offset"]:section_info["virt_offset"] + section_info["raw_size"]] = binary[section_info["raw_offset"]:section_info["raw_offset"] + section_info["raw_size"]]
-                LOG.debug("Mapping %d: raw 0x%x (0x%x bytes) -> virtual 0x%x (0x%x bytes)", section_info["section_index"], section_info["raw_offset"], section_info["raw_size"], section_info["virt_offset"], section_info["virt_size"])
-        LOG.debug("Mapped binary of size %d bytes (%d sections) to memory view of size %d bytes", len(binary), num_sections, len(mapped_binary))
+                # the file may be truncated, so only map what is actually there
+                raw_start = min(section_info["raw_offset"], len(binary))
+                space = max(0, len(mapped_binary) - section_info["virt_offset"])
+                raw_end = min(raw_start + section_info["raw_size"], len(binary), raw_start + space)
+                if raw_end <= raw_start:
+                    continue
+                # the ranges mapped so far that touch this one are replaced by a single range
+                first = bisect.bisect_left(covered_ends, raw_start)
+                last = bisect.bisect_right(covered_starts, raw_end)
+                touched = list(zip(covered_starts[first:last], covered_ends[first:last], strict=True))
+                repeated = sum(min(raw_end, end) - max(raw_start, start) for start, end in touched)
+                if repeated <= repeated_bytes_left:
+                    repeated_bytes_left -= repeated
+                    parts = [(raw_start, raw_end)]
+                else:
+                    borders = (
+                        [raw_start] + [border for touched_range in touched for border in touched_range] + [raw_end]
+                    )
+                    parts = [
+                        (start, end) for start, end in zip(borders[::2], borders[1::2], strict=True) if start < end
+                    ]
+                for start, end in parts:
+                    target = section_info["virt_offset"] + start - raw_start
+                    mapped_binary[target : target + end - start] = binary[start:end]
+                covered_starts[first:last] = [min([raw_start] + [start for start, _ in touched])]
+                covered_ends[first:last] = [max([raw_end] + [end for _, end in touched])]
+                LOG.debug(
+                    "Mapping %d: raw 0x%x (0x%x bytes) -> virtual 0x%x (0x%x bytes)",
+                    section_info["section_index"],
+                    section_info["raw_offset"],
+                    section_info["raw_size"],
+                    section_info["virt_offset"],
+                    section_info["virt_size"],
+                )
+        LOG.debug(
+            "Mapped binary of size %d bytes (%d sections) to memory view of size %d bytes",
+            len(binary),
+            num_sections,
+            len(mapped_binary),
+        )
         return bytes(mapped_binary)
 
     @staticmethod
     def getBitness(binary):
         bitness_id = 0
         pe_offset = PeTools.getPeOffset(binary)
-        if pe_offset:
-            if pe_offset and len(binary) >= pe_offset + 0x6:
-                bitness_id = struct.unpack("H", binary[pe_offset + 0x4:pe_offset + 0x6])[0]
+        if pe_offset and pe_offset and len(binary) >= pe_offset + 0x6:
+            bitness_id = struct.unpack("<H", binary[pe_offset + 0x4 : pe_offset + 0x6])[0]
         return PeTools.BITNESS_MAP.get(bitness_id, 0)
 
     @staticmethod
     def getBaseAddressFromPeHeader(binary):
         pe_offset = PeTools.getPeOffset(binary)
-        if pe_offset:
-            if pe_offset and len(binary) >= pe_offset + 0x38:
-                if get_word(binary, pe_offset + 0x18) == 0x20b:
-                    # PE32+: ImageBase is a QWORD at offset 0x18 of the optional header
-                    base_addr = struct.unpack("Q", binary[pe_offset + 0x30:pe_offset + 0x38])[0]
-                else:
-                    base_addr = struct.unpack("I", binary[pe_offset + 0x34:pe_offset + 0x38])[0]
-                LOG.debug("Changing base address from 0 to: 0x%x for inference of reference counts (based on PE header)", base_addr)
-                return base_addr
+        if pe_offset and len(binary) >= pe_offset + 0x38:
+            if get_word(binary, pe_offset + 0x18) == 0x20B:
+                # PE32+: ImageBase is a QWORD at offset 0x18 of the optional header
+                base_addr = get_qword(binary, pe_offset + 0x30)
+            else:
+                base_addr = get_dword(binary, pe_offset + 0x34)
+            LOG.debug("Using base address 0x%x from PE header for inference of reference counts", base_addr)
+            return base_addr
         return 0
 
     @staticmethod
     def getPeOffset(binary):
         if len(binary) >= 0x40:
-            pe_offset = get_word(binary, 0x3c)
-            return pe_offset
+            pe_offset = get_dword(binary, 0x3C)
+            if pe_offset < len(binary):
+                return pe_offset
         return 0
 
     @staticmethod
     def checkPe(binary):
         pe_offset = PeTools.getPeOffset(binary)
-        if pe_offset and len(binary) >= pe_offset + 6:
-            bitness = get_word(binary, pe_offset + 4)
-            return bitness in PeTools.BITNESS_MAP
+        if binary[:2] == b"MZ" and pe_offset and binary[pe_offset : pe_offset + 4] == b"PE\x00\x00":
+            return PeTools.getBitness(binary) != 0
         return False
-

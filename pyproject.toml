@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "apiscout"
+version = "3.0.0"
+description = "A library for Windows API usage recovery and similarity assessment with focus on memory dumps."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "BSD-2-Clause"
+license-files = ["LICENSE"]
+authors = [{ name = "Daniel Plohmann", email = "daniel.plohmann@mailbox.org" }]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+    "Topic :: Software Development :: Disassemblers",
+]
+dependencies = ["numpy", "Pillow"]
+
+[project.optional-dependencies]
+update = ["requests"]
+
+[project.urls]
+Repository = "https://github.com/danielplohmann/apiscout"
+
+[dependency-groups]
+dev = ["ruff==0.17.5", "ty==0.0.104", "requests"]
+
+[tool.setuptools.packages.find]
+include = ["apiscout"]
+
+[tool.setuptools.package-data]
+apiscout = ["data/*"]
+
+[tool.ruff]
+line-length = 120
+extend-exclude = ["apiscout/db_builder/pefile.py", "apiscout/db_builder/peutils.py", "apiscout/db_builder/ordlookup"]
+
+[tool.ruff.lint]
+select = ["E", "F", "UP", "B", "SIM", "I"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["apiscout", "config", "pefile", "ThreadedCommand", "DatabaseBuilder"]
+
+[tool.ty.src]
+exclude = ["apiscout/db_builder"]
+
+[tool.ty.analysis]
+allowed-unresolved-imports = ["idaapi", "idc", "idautils", "ida_*", "config", "DatabaseBuilder"]

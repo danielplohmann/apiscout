@@ -23,11 +23,11 @@
 #
 ########################################################################
 
-import operator
-import numpy as np
-import math
 import numbers
+import operator
 import os
+
+import numpy as np
 from PIL import Image
 
 from .ApiQRContext import ApiQRContext
@@ -39,8 +39,6 @@ class ApiQR:
     Class for a two-dimensional vector where each component stands for one distinct API.
     The vector is saved one-dimensionally though.
     """
-    vector = None
-    context = None
 
     def __init__(self, winapi1024_filepath, vector=None):
         self._apivector = ApiVector(winapi1024_filepath, sort_vector=False)
@@ -50,17 +48,23 @@ class ApiQR:
             self.vector = self.context.empty_vector
         else:
             self.vector = vector
-        
+
     def setVector(self, vector):
         self.vector = self._apivector.decompress(vector)
 
     @property
     def vector_unsorted(self):
         result = [None] * len(self.vector)
-        with open(self._apivector_path, "r") as infile:
+        with open(self._apivector_path) as infile:
             translation = {
                 new_index: entry[0]
-                for new_index, entry in enumerate(sorted(enumerate(infile.readlines()), key=lambda entry: int(entry[1].split(";")[3].strip()), reverse=True))
+                for new_index, entry in enumerate(
+                    sorted(
+                        enumerate(line for line in infile.readlines() if line.strip()),
+                        key=lambda entry: int(entry[1].split(";")[3].strip()),
+                        reverse=True,
+                    )
+                )
             }
         for index, entry in enumerate(self.vector):
             result[translation[index]] = entry
@@ -69,18 +73,21 @@ class ApiQR:
     def getPng(self, destination_path, scale_factor=5):
         # colored_vector = list(map(self.__mapColor, self.vector_unsorted, self.context.colors))
         colored_vector = []
-        for index in range(len(self.vector_unsorted)):
-            value, raw_color = self.vector_unsorted[index], self.context.colors[index]
+        vector = self.vector_unsorted
+        colors = self.context.colors
+        for index in range(len(vector)):
+            value, raw_color = vector[index], colors[index]
             color = self.__mapColor(value, raw_color)
-            if color == self.context.colors_white: 
+            if color == self.context.colors_white:
                 color = self.__mapColor(0.2, raw_color)
             else:
                 value = 0.4 + (value * (1 - 0.4))
                 color = self.__mapColor(value, raw_color)
             colored_vector.append(color)
-        scaled_vector = sum(([e] * 4 ** scale_factor for e in colored_vector), [])
-        transformed_vector = np.int8(self.__vectorToHilbert(scaled_vector))
-        image = Image.fromarray(transformed_vector, mode=self.context.colors_format)
+        # each API is drawn as a square of 2**scale_factor pixels edge length, which is 4**scale_factor consecutive points on the curve
+        scaled_vector = np.repeat(np.array(colored_vector, dtype=np.uint8), 4**scale_factor, axis=0)
+        transformed_vector = np.asarray(self.__vectorToHilbert(scaled_vector), dtype=np.uint8)
+        image = Image.fromarray(transformed_vector).convert(self.context.colors_format)
         return image
 
     def exportPng(self, destination_path, scale_factor=5):
@@ -89,7 +96,7 @@ class ApiQR:
 
     def getHtmlHeader(self):
         hilbert_size = int(len(self.vector_unsorted) ** 0.5)
-        return """\
+        return f"""\
         <meta charset="utf-8">
         <link href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-Gn5384xqQ1aoWXA+058RXPxPg6fy4IWvTNh0E263XmFcJlSAwiGgFAW/dAiS6JXm" crossorigin="anonymous">
         <script src="https://code.jquery.com/jquery-3.3.1.min.js" integrity="sha256-FgpCb/KJQlLNfOu91ta32o/NMZxltwRo8QtmkMRdAu8=" crossorigin="anonymous"></script>
@@ -97,10 +104,10 @@ class ApiQR:
         <style>
         td.apicell {{
             position: relative;
-            width: {:.4f}%;
+            width: {1.0 / hilbert_size:.4f}%;
         }}
         td.apicell-white {{
-            background-color: rgb({white[0]:d}, {white[1]:d}, {white[2]:d});
+            background-color: rgb({self.context.colors_white[0]:d}, {self.context.colors_white[1]:d}, {self.context.colors_white[2]:d});
         }}
         td.apicell:after {{
             content: '';
@@ -114,26 +121,28 @@ class ApiQR:
             left: 0;
             right: 0;
         }}
-        </style>\n""".format(1.0 / hilbert_size, white=self.context.colors_white)
+        </style>\n"""
 
     def _getHtmlTableContent(self, hilbert_size, vector):
         result = ""
+        colors = self.context.colors
+        apis = self.context.apis
         for hilbert_row in self.__hilbertCurve(hilbert_size):
             result += "<tr>\n"
             for index in hilbert_row:
-                value, raw_color = vector[index], self.context.colors[index]
+                value, raw_color = vector[index], colors[index]
                 color = self.__mapColor(value, raw_color)
-                if color == self.context.colors_white: 
+                if color == self.context.colors_white:
                     # result += '<td class="api-cell api-cell-white"></td>'
                     color = self.__mapColor(0.2, raw_color)
-                    text = ":".join(self.context.apis[index])
-                    result += '<td data-toggle="popover" data-content="{popover:s}" data-delay="200" class="apicell" style="background-color: rgb({color[0]:d}, {color[1]:d}, {color[2]:d});"></td>'.format(popover=text, color=color)
+                    text = ":".join(apis[index])
+                    result += f'<td data-toggle="popover" data-content="{text:s}" data-delay="200" class="apicell" style="background-color: rgb({color[0]:d}, {color[1]:d}, {color[2]:d});"></td>'
                 else:
-                    text = ":".join(self.context.apis[index])
+                    text = ":".join(apis[index])
                     # rescale value to range 0.4-1.0
                     value = 0.4 + (value * (1 - 0.4))
                     color = self.__mapColor(value, raw_color)
-                    result += '<td data-toggle="popover" data-content="{popover:s}" class="apicell" style="background-color: rgb({color[0]:d}, {color[1]:d}, {color[2]:d});"></td>'.format(popover=text, color=color)
+                    result += f'<td data-toggle="popover" data-content="{text:s}" class="apicell" style="background-color: rgb({color[0]:d}, {color[1]:d}, {color[2]:d});"></td>'
                 result += "\n"
             result += "</tr>\n"
         return result
@@ -149,17 +158,21 @@ class ApiQR:
 
     def exportHtml(self, output_path, full=False):
         result = self.getHtmlTable()
-        if not full: return result
+        if not full:
+            return result
         this_path = os.path.abspath(os.path.join(os.path.dirname(__file__)))
-        with open(os.sep.join([this_path, "..", "data", "html_frame.html"]), "r") as f_html:
-            compressed_vector = self._apivector.compress(self.vector_unsorted)
+        with open(os.sep.join([this_path, "data", "html_frame.html"])) as f_html:
+            # the vector is kept in the order of the (rank sorted) WinApi1024 definition, which is also the order of its compressed form
+            compressed_vector = self._apivector.compress([1 if value else 0 for value in self.vector])
             result = f_html.read().format(vector=compressed_vector, body=result, head=self.getHtmlHeader())
         with open(output_path, "w") as f_out:
             f_out.write(result)
 
     def __mapColor(self, value, color):
-        if value is True or value == 1 or value == 1.0: return color
-        if value is False or value == 0 or value == 0.0: return self.context.colors_white
+        if value is True or value == 1 or value == 1.0:
+            return color
+        if value is False or value == 0 or value == 0.0:
+            return self.context.colors_white
         alpha = max(min(value, 1), 0)
         return (
             int((1 - alpha) * 255 + alpha * color[0]),
@@ -173,47 +186,49 @@ class ApiQR:
 
     def __vectorToHilbert(self, vector):
         element_size = 1
-        if len(np.array(vector)[0].shape): element_size = np.array(vector)[0].shape[0]
+        if len(np.array(vector)[0].shape):
+            element_size = np.array(vector)[0].shape[0]
         hilbert_indices = self.__hilbertCurve(int(len(vector) ** 0.5))
-        return np.array(vector)[np.digitize(hilbert_indices.ravel(), list(range(len(vector))), right=True)]\
-            .reshape(hilbert_indices.shape[0], hilbert_indices.shape[1], element_size)
+        return np.array(vector)[np.digitize(hilbert_indices.ravel(), list(range(len(vector))), right=True)].reshape(
+            hilbert_indices.shape[0], hilbert_indices.shape[1], element_size
+        )
 
     def __hilbertCurve(self, n):
         """
         Generate Hilbert curve indexing for (n, n) array. 'n' must be a power of two.
         https://github.com/znah/notebooks/blob/master/hilbert_curve.ipynb
         """
-        if n == 1: return np.zeros((1, 1), np.int32)
-        t = self.__hilbertCurve(n//2)
+        if n == 1:
+            return np.zeros((1, 1), np.int32)
+        t = self.__hilbertCurve(n // 2)
         a = np.flipud(np.rot90(t))
         b = t + t.size
-        c = t + t.size*2
-        d = np.flipud(np.rot90(t, -1)) + t.size*3
+        c = t + t.size * 2
+        d = np.flipud(np.rot90(t, -1)) + t.size * 3
         return np.vstack([i for i in map(np.hstack, [[a, b], [d, c]])])
 
     def __add__(self, other):
         if not isinstance(other, ApiQR):
             raise ValueError("Only another ApiQR instance can be added.")
-        if self.context != other.context:
+        if self.context.data != other.context.data:
             raise ValueError("Both ApiQR instances need to share the same context in order to be added together!")
-        return ApiQR(vector=list(map(operator.add, self.vector, other.vector)), context=self.context)
+        return ApiQR(self._apivector_path, vector=list(map(operator.add, self.vector, other.vector)))
 
     def __mul__(self, other):
         if not isinstance(other, numbers.Number):
             raise ValueError("An ApiQR instance can only be multiplied with numbers.")
-        return ApiQR(vector=list(map(lambda x: x * other, self.vector)), context=self.context)
+        return ApiQR(self._apivector_path, vector=list(map(lambda x: x * other, self.vector)))
 
     def __div__(self, other):
         if not isinstance(other, numbers.Number):
             raise ValueError("An ApiQR instance can only be divided by numbers.")
-        return ApiQR(vector=list(map(lambda x: 1.0 * x / other, self.vector)), context=self.context)
+        return ApiQR(self._apivector_path, vector=list(map(lambda x: 1.0 * x / other, self.vector)))
 
     def __truediv__(self, other):
         return self.__div__(other)
 
     def __str__(self):
-        return "ApiQR {}".format(np.array(self.vector))
+        return f"ApiQR {np.array(self.vector)}"
 
     def __repr__(self):
         return str(self)
-

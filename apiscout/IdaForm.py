@@ -5,89 +5,105 @@
 #
 import json
 import os
+import re
 
-import idautils
-import idaapi
-if idaapi.IDA_SDK_VERSION < 700:
-    from idaapi import Form
-    from idaapi import Choose2 as Choose
-else:
-    from idaapi import Form, Choose
+import ida_kernwin
+from ida_kernwin import Choose, Form
 
-from apiscout.ApiScout import ApiScout
+ICONS = {}
+
+
+def loadIcon(name):
+    """id of an icon shipped in apiscout/data, loaded once per session"""
+    if name not in ICONS:
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", name + ".png")
+        ICONS[name] = ida_kernwin.load_custom_icon(file_name=icon_path, format="png")
+    return ICONS[name]
 
 
 class ApiDbChooser(Choose):
-    """
-    A simple chooser to be used as an embedded chooser
-    """
+    """the API DBs of a folder, embedded in the options dialog"""
+
     def __init__(self, title, api_db_folder, flags=0):
-        Choose.__init__(self,
-                         title,
-                         [["Filename", 25], ["OS Version", 20], ["ASLR Offset?", 8], ["DLLs", 6], ["APIs", 6]],
-                         embedded=True, width=120, height=10, flags=flags)
-        self.row_count = 0
+        Choose.__init__(
+            self,
+            title,
+            [
+                ["File", 29],
+                ["Version", 11],
+                ["ASLR", 5],
+                ["DLLs", 5 | Choose.CHCOL_DEC],
+                ["APIs", 7 | Choose.CHCOL_DEC],
+            ],
+            embedded=True,
+            width=150,
+            height=8,
+            flags=flags,
+            icon=loadIcon("icon"),
+        )
         self.api_db_folder = api_db_folder
         self.items = self.populate(api_db_folder)
-        self.icon = 4
-        self.selcount = 0
 
     def populate(self, api_db_folder):
         api_dbs = []
-        for filename in os.listdir(api_db_folder):
+        if not os.path.isdir(api_db_folder):
+            return api_dbs
+        for filename in sorted(os.listdir(api_db_folder)):
             if not filename.endswith(".json"):
                 continue
-            db_data = {}
-            with open(api_db_folder + os.sep + filename, "r") as f_api_file:
-                db_data = json.loads(f_api_file.read())
-            api_dbs.append([filename, db_data["os_version"], "%s" % db_data["aslr_offsets"], "%d" % db_data["num_dlls"], "%d" % db_data["num_apis"]])
-            self.row_count += 1
+            try:
+                with open(api_db_folder + os.sep + filename) as f_api_file:
+                    db_data = json.loads(f_api_file.read())
+                api_dbs.append(
+                    [
+                        filename,
+                        str(db_data["os_version"]).split(" ")[0],
+                        "yes" if db_data["aslr_offsets"] else "no",
+                        str(int(db_data["num_dlls"])),
+                        str(int(db_data["num_apis"])),
+                    ]
+                )
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
         return api_dbs
 
     def OnClose(self):
         pass
 
     def getItems(self, indices):
-        items = []
-        for index in indices:
-            items.append(self.api_db_folder + os.sep + self.items[index][0])
-        return items
+        return [self.api_db_folder + os.sep + self.items[index][0] for index in indices]
 
     def OnGetLine(self, n):
         return self.items[n]
 
     def OnGetSize(self):
-        n = len(self.items)
-        return n
+        return len(self.items)
+
 
 class IdaApiScoutOptionsForm(Form):
-
     def __init__(self, api_db_folder):
-        self.invert = False
         self.chosenValues = []
-        self.apiDbChooser = ApiDbChooser("ApiDBs", api_db_folder, flags=Choose.CH_MULTI)
-        Form.__init__(self, r"""STARTITEM {id:rNormal}
-BUTTON YES* Run
+        self.apiDbChooser = ApiDbChooser("API DBs", api_db_folder, flags=Choose.CH_MULTI)
+        Form.__init__(
+            self,
+            r"""STARTITEM 0
+BUTTON YES* Scan
 BUTTON CANCEL Cancel
-IDA ApiScout
+ApiScout
 
 {FormChangeCb}
-Please select one or more API DBs from your apiscout/dbs folder:
-
-<Available API DBs:{cApiDbChooser}>
-
-or load a database from another location:
-
-<#Select a file to open#:{iFileOpen}>
-
-<##Ignore ASLR offsets:{rAslr}>{cGroup1}>
-""", {
-    'iAslrOffset': Form.NumericInput(tp=Form.FT_UINT64, value=0x0),
-    'iFileOpen': Form.FileInput(swidth=40, open=True, value="*.*"),
-    'cGroup1': Form.ChkGroupControl(("rAslr", "rNormal")),
-    'FormChangeCb': Form.FormChangeCb(self.OnFormChange),
-    'cApiDbChooser' : Form.EmbeddedChooserControl(self.apiDbChooser)
-})
+Select the API DBs of the system the memory dump was taken from (found in apiscout/dbs):
+<:{cApiDbChooser}>
+<Other API DB file:{iFileOpen}>
+<Ignore the ASLR offsets stored in the API DBs:{rAslr}>{cGroup1}>
+""",
+            {
+                "iFileOpen": Form.FileInput(swidth=46, open=True, value=""),
+                "cGroup1": Form.ChkGroupControl(("rAslr",)),
+                "FormChangeCb": Form.FormChangeCb(self.OnFormChange),
+                "cApiDbChooser": Form.EmbeddedChooserControl(self.apiDbChooser, swidth=64),
+            },
+        )
 
     def OnFormChange(self, fid):
         if fid == self.cApiDbChooser.id:
@@ -96,121 +112,121 @@ or load a database from another location:
         return 1
 
 
-class ApiChooser(Choose):
+class ApiResultsChooser(Choose):
     """
-    A simple chooser to be used as an embedded chooser
+    Dockable list of the API references found. Enter or double click jumps to a reference,
+    annotation and filtering are offered in the context menu.
     """
-    def __init__(self, title, api_results, flags=0):
-        Choose.__init__(self,
-                         title,
-                         [["#", 6], ["Offset", 14], ["API Address", 14], ["DLL", 20], ["API", 35]],
-                         embedded=True, width=140, height=20, flags=flags)
-        self.row_count = 0
-        self.base_address = [ea for ea in idautils.Segments()][0]
-        self.scout = ApiScout()
-        self.scout.setBaseAddress(self.base_address)
-        self.api_results = api_results
-        self.all_items = self.populate(api_results)
-        self.items = self.populate(api_results)
-        self.icon = 4
-        self.selcount = 0
 
-    def filterDisplay(self, from_addr, to_addr, distance):
-        filtered_items = self.scout.filter(self.api_results, from_addr, to_addr, distance)
-        self.items = self.populate(filtered_items)
+    TITLE = "ApiScout"
+    ACTION_ANNOTATE = "apiscout:annotate"
+    ACTION_ANNOTATE_ALL = "apiscout:annotate_all"
+    ACTION_FILTER = "apiscout:filter"
 
-    def populate(self, api_results):
+    def __init__(self, tools, rows, rescan):
+        Choose.__init__(
+            self,
+            self.TITLE,
+            [
+                ["Address", 16 | Choose.CHCOL_EA],
+                ["API", 36],
+                ["Library", 20],
+                ["API Address", 16 | Choose.CHCOL_HEX],
+                ["References", 8 | Choose.CHCOL_DEC],
+                ["Status", 30],
+            ],
+            flags=Choose.CH_MULTI | Choose.CH_RESTORE | Choose.CH_CAN_REFRESH,
+            icon=loadIcon("icon"),
+        )
+        self.tools = tools
+        self.rescan = rescan
+        self.distance = 0
+        self._keep_rows = False
+        self.all_rows = rows
+        self.rows = rows
+        self.status = {}
+        self.icons = {state: loadIcon("icon_" + state) for state in ("reference", "annotated", "skipped")}
 
-        api_rows = []
-        unified_results = set([])
-        new_api_results = {}
+    def OnGetSize(self):
+        return len(self.rows)
 
-        # replace sets with frozensets, so that the tuple is hashable
-        for key in api_results:
-            new_api_results[key] = []
-            for h in api_results[key]:
-                a1, a2, a3, a4, a5, a6, a7, a8 = h
-                new_api_results[key].append((a1, a2, a3, a4, a5, a6, a7, frozenset(a8)))
+    def OnGetLine(self, n):
+        row = self.rows[n]
+        library = re.sub(r"(_0x[0-9a-fA-F]+)? \(\d+bit\)$", "", row[2])
+        return [f"{row[0]:X}", row[3], library, f"{row[1]:X}", str(row[4]), self.status.get(tuple(row[:4]), "")]
 
-        for key in new_api_results:
-            unified_results.update(new_api_results[key])
-        for index, entry in enumerate(sorted(unified_results)):
-            dll_name = "{} ({}bit)".format(entry[2], entry[4])
-            api_rows.append(["%d" % (index + 1), "0x%x" % (self.base_address + entry[0]), "0x%x" % entry[1], dll_name, entry[3]])
-            self.row_count += 1
-        return api_rows
+    def OnGetEA(self, n):
+        return self.rows[n][0]
+
+    def OnGetIcon(self, n):
+        state = self.status.get(tuple(self.rows[n][:4]), "reference").split(":")[0].split(" ")[0]
+        return self.icons.get(state, self.icons["reference"])
+
+    def OnRefresh(self, selection):
+        """the native refresh of the view scans the database again"""
+        if self._keep_rows:
+            self._keep_rows = False
+        else:
+            self.all_rows = self.rescan()
+            self._applyFilter()
+            # annotations can be undone or replaced in the database in the meantime
+            found = {tuple(row[:4]) for row in self.all_rows}
+            for key, outcome in list(self.status.items()):
+                if key not in found or not outcome.startswith("annotated") or not self.tools.isAnnotated(key):
+                    del self.status[key]
+        return [Choose.ALL_CHANGED]
+
+    def _redraw(self):
+        # the refresh is carried out later by IDA, OnRefresh() takes the flag back
+        self._keep_rows = True
+        self.Refresh()
+
+    def OnSelectLine(self, selection):
+        if selection:
+            ida_kernwin.jumpto(self.rows[selection[0]][0])
+        return (Choose.NOTHING_CHANGED,)
 
     def OnClose(self):
         pass
 
-    def getItems(self, l):
-        items = []
-        for index in l:
-            items.append([int(self.items[index][1], 16), int(self.items[index][2], 16), self.items[index][3], str(self.items[index][4])])
-        return items
+    def annotate(self, indices):
+        self.tools.importTypeLibraries()
+        num_renamed, num_skipped, num_xrefs_adapted = self.tools.applyApiNames(
+            [self.rows[index] for index in indices], self.status, {row[0] for row in self.all_rows}
+        )
+        print(f"Annotated {num_renamed} APIs and adapted {num_xrefs_adapted} Xrefs ({num_skipped} skipped).")
+        self._redraw()
 
-    def OnGetLine(self, n):
-        return self.items[n]
+    def filterByNeighbourhood(self, distance):
+        """only show API references with another reference within the given distance, 0 shows all of them"""
+        self.distance = distance
+        self._applyFilter()
+        self._redraw()
 
-    def OnGetSize(self):
-        n = len(self.items)
-        return n
+    def _applyFilter(self):
+        self.rows = self.tools.filterByDistance(self.all_rows, self.distance) if self.distance else self.all_rows
+
+    def show(self):
+        if self.Show() < 0:
+            return False
+        for action_name in ("-", self.ACTION_ANNOTATE, self.ACTION_ANNOTATE_ALL, self.ACTION_FILTER):
+            ida_kernwin.attach_action_to_popup(self.GetWidget(), None, action_name)
+        return True
 
 
-class IdaApiScoutResultsForm(Form):
+class ApiResultsAction(ida_kernwin.action_handler_t):
+    """an action of the context menu of the results list"""
 
-    def __init__(self, crawled_apis, from_addr=0, to_addr=0):
-        self.invert = False
-        self.chosenApis = []
-        self.apiChooser = ApiChooser("Apis", crawled_apis, flags=Choose.CH_MULTI)
-        Form.__init__(self, r"""STARTITEM {id:rNormal}
-BUTTON YES* Annotate
-BUTTON CANCEL Cancel
-IDA ApiScout (Results)
+    def __init__(self, chooser, callback):
+        ida_kernwin.action_handler_t.__init__(self)
+        self.chooser = chooser
+        self.callback = callback
 
-{FormChangeCb}
-ApiScout has found the following APIs (select to annotate, e.g. CTRL+A):
-
-<APIs:{cApiChooser}>
-{cApiInfo}
-
-Filter APIs by Range -  
-<##from  :{iAddrFrom}>
-<##to    :{iAddrTo}>
-Filter APIs by Grouping - require another API 
-<##within:{iByteRange}> bytes
-<##Apply Filter:{bApplyFilter}>
-""", {
-    'cApiInfo': Form.StringLabel("APIs"),
-    'bApplyFilter': Form.ButtonInput(self.OnButtonApplyFilter),
-    'iAddrFrom': Form.NumericInput(tp=Form.FT_ADDR, value=from_addr),
-    'iAddrTo': Form.NumericInput(tp=Form.FT_ADDR, value=to_addr),
-    'iByteRange': Form.NumericInput(tp=Form.FT_UINT64, value=0x800),
-    'cGroup1': Form.ChkGroupControl(("rFilter", "rNormal")),
-    'FormChangeCb': Form.FormChangeCb(self.OnFormChange),
-    'cApiChooser' : Form.EmbeddedChooserControl(self.apiChooser)
-})
-
-    def OnButtonApplyFilter(self, code=0):
-        addr_from = self.GetControlValue(self.iAddrFrom)
-        addr_to = self.GetControlValue(self.iAddrTo)
-        byte_range = self.GetControlValue(self.iByteRange)
-        self.apiChooser.filterDisplay(addr_from, addr_to, byte_range)
-        # SetControlValue seems to have broken in some API migration...
-        # if addr_from == 0 and addr_to == 0 and byte_range == 0:
-        #     self.SetControlValue(self.cApiInfo, "APIs: %d/%d (unfiltered)" % (len(self.apiChooser.items), len(self.apiChooser.all_items)))
-        # else:
-        #     self.SetControlValue(self.cApiInfo, "APIs: %d/%d (filtered to 0x%x - 0x%x, range: 0x%x)" % (len(self.apiChooser.items), len(self.apiChooser.all_items), addr_from, addr_to, byte_range))
-        l = self.GetControlValue(self.cApiChooser)
-        self.chosenApis = self.apiChooser.getItems(l)
-        self.RefreshField(self.cApiChooser)
-
-    def OnFormChange(self, fid):
-        if fid == self.cApiChooser.id:
-            l = self.GetControlValue(self.cApiChooser)
-            self.chosenApis = self.apiChooser.getItems(l)
+    def activate(self, ctx):
+        self.callback(self.chooser, list(ctx.chooser_selection))
         return 1
 
-    def OnClose(self):
-        l = self.GetControlValue(self.cApiChooser)
-        self.chosenApis = self.apiChooser.getItems(l)
+    def update(self, ctx):
+        if ctx.widget_title == ApiResultsChooser.TITLE:
+            return ida_kernwin.AST_ENABLE_FOR_WIDGET
+        return ida_kernwin.AST_DISABLE_FOR_WIDGET

@@ -1,0 +1,34 @@
+{
+  "IDAMetadataDescriptorVersion": 1,
+  "plugin": {
+    "name": "apiscout",
+    "entryPoint": "ida_scout.py",
+    "version": "3.0.0",
+    "idaVersions": ">=9.0",
+    "description": "Recover Windows API references from memory dumps: lists the references found with an ApiScout API DB and annotates them with names and types.",
+    "license": "BSD-2-Clause",
+    "categories": [
+      "malware-analysis"
+    ],
+    "keywords": [
+      "windows-api",
+      "memory-dumps",
+      "imports",
+      "unpacking"
+    ],
+    "pythonDependencies": [
+      "numpy",
+      "Pillow"
+    ],
+    "urls": {
+      "repository": "https://github.com/danielplohmann/apiscout"
+    },
+    "authors": [
+      {
+        "name": "Daniel Plohmann",
+        "email": "daniel.plohmann@mailbox.org"
+      }
+    ],
+    "logoPath": "ida-plugin.png"
+  }
+}

@@ -23,15 +23,14 @@
 #
 ########################################################################
 
+import argparse
+import json
+import logging
 import os
 import re
 import sys
-import json
-import logging
-import argparse
 
 from apiscout.ApiScout import ApiScout
-
 
 LOG = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)-15s %(message)s")
@@ -48,12 +47,13 @@ def get_all_db_files():
 
 def get_base_addr(args):
     if args.base_addr:
-        return int(args.base_addr, 16) if args.base_addr.startswith("0x") else int(args.base_addr)
+        return int(args.base_addr, 16) if args.base_addr.lower().startswith("0x") else int(args.base_addr)
     # try to infer from filename:
     baddr_match = re.search(re.compile("0x(?P<base_addr>[0-9a-fA-F]{8,16})$"), args.binary_path)
     if baddr_match:
         return int(baddr_match.group("base_addr"), 16)
     return 0
+
 
 def get_dll_name(dll_entry):
     # DLL names are stored as "<filename>_<base address>", the filename itself may contain underscores (ws2_32.dll)
@@ -64,40 +64,76 @@ def write_results_to_json(output_file, filtered_results):
     json_results = []
     for api_map_name in filtered_results:
         for api in filtered_results[api_map_name]:
-            json_results.append({
+            json_results.append(
+                {
                     "offset": api[0],
                     "apiAddress": api[1],
-                    "dll": get_dll_name(api[2]) + "({} bit)".format(api[4]),
+                    "dll": get_dll_name(api[2]) + f"({api[4]} bit)",
                     "api": api[3],
-                    "references": sorted(api[7])
-                    })
+                    "references": sorted(api[7]),
+                }
+            )
 
-    with open(output_file, 'w') as f:
+    with open(output_file, "w") as f:
         json.dump(json_results, f)
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Demo: Use apiscout with a prepared api database (created using DatabaseBuilder.py) to crawl a dump for imports and render the results.')
-    parser.add_argument('-f', '--filter', type=int, default=0, help='Filter out APIs that do not have a neighbour within N bytes (e.g. 32 or 2048).')
-    parser.add_argument('-i', '--ignore_aslr', action='store_true', help='Do not apply the per-module ASLR offset potentially contained in a API DB file.')
-    parser.add_argument('-c', '--collection_file', type=str, default='', help='Optionally match the output against a WinApi1024 vector collection file.')
-    parser.add_argument('-b', '--base_addr', type=str, default='', help='Set base address to given value (int or 0x-hex format).')
-    parser.add_argument('-t', '--import_table_only', action='store_true', help='Do not crawl for API references but only parse the import table instead - assumes an unmapped PE file as input.')
-    parser.add_argument('-o', '--json_file', type=str, default='', help='Write mapping from addresses to APIs found to JSON file.')
-    parser.add_argument('-s', '--silent', action='store_true', default=False, help='Suppress all output.')
-    parser.add_argument('binary_path', type=str, default='', help='Path to the memory dump to crawl.')
-    parser.add_argument('db_path', type=str, nargs='*', help='Path to the DB(s). If no argument is given, use all files found in "./dbs"')
+    parser = argparse.ArgumentParser(
+        description="Demo: Use apiscout with a prepared api database (created using DatabaseBuilder.py) to crawl a dump for imports and render the results."
+    )
+    parser.add_argument(
+        "-f",
+        "--filter",
+        type=int,
+        default=0,
+        help="Filter out APIs that do not have a neighbour within N bytes (e.g. 32 or 2048).",
+    )
+    parser.add_argument(
+        "-i",
+        "--ignore_aslr",
+        action="store_true",
+        help="Do not apply the per-module ASLR offset potentially contained in a API DB file.",
+    )
+    parser.add_argument(
+        "-c",
+        "--collection_file",
+        type=str,
+        default="",
+        help="Optionally match the output against a WinApi1024 vector collection file.",
+    )
+    parser.add_argument(
+        "-b", "--base_addr", type=str, default="", help="Set base address to given value (int or 0x-hex format)."
+    )
+    parser.add_argument(
+        "-t",
+        "--import_table_only",
+        action="store_true",
+        help="Do not crawl for API references but only parse the import table instead - assumes an unmapped PE file as input.",
+    )
+    parser.add_argument(
+        "-o", "--json_file", type=str, default="", help="Write mapping from addresses to APIs found to JSON file."
+    )
+    parser.add_argument("-s", "--silent", action="store_true", default=False, help="Suppress all output.")
+    parser.add_argument("binary_path", type=str, default="", help="Path to the memory dump to crawl.")
+    parser.add_argument(
+        "db_path",
+        type=str,
+        nargs="*",
+        help='Path to the DB(s). If no argument is given, use all files found in "./dbs"',
+    )
 
     args = parser.parse_args()
     if args.binary_path:
-        binary = ""
-        if os.path.isfile(args.binary_path):
-            with open(args.binary_path, "rb") as f_binary:
-                binary = f_binary.read()
+        if not os.path.isfile(args.binary_path):
+            sys.stderr.write(f"Not a file: {args.binary_path}\n")
+            return 1
+        with open(args.binary_path, "rb") as f_binary:
+            binary = f_binary.read()
         scout = ApiScout()
         base_addr = get_base_addr(args)
         if not args.silent:
-            print("Using base address 0x{:x} to infer reference counts.".format(base_addr))
+            print(f"Using base address 0x{base_addr:x} to infer reference counts.")
         scout.setBaseAddress(base_addr)
         # override potential ASLR offsets that are stored in the API DB files.
         scout.ignoreAslrOffsets(args.ignore_aslr)
@@ -108,19 +144,22 @@ def main():
         elif not args.import_table_only:
             db_paths = get_all_db_files()
         for db_path in db_paths:
+            if not os.path.isfile(db_path):
+                sys.stderr.write(f"Not a file: {db_path}\n")
+                return 1
             scout.loadDbFile(db_path)
         # scout the binary
         results = {}
         if args.import_table_only:
             if not args.silent:
-                print("Parsing Import Table for\n  {}.".format(args.binary_path))
+                print(f"Parsing Import Table for\n  {args.binary_path}.")
             results = scout.evaluateImportTable(binary, is_unmapped=True)
         else:
             num_apis_loaded = scout.getNumApisLoaded()
-            filter_info = " - neighbour filter: 0x%x" % args.filter if args.filter else ""
+            filter_info = f" - neighbour filter: 0x{args.filter:x}" if args.filter else ""
             if not args.silent:
                 print("Using \n  {}\nto analyze\n  {}.".format("\n  ".join(db_paths), args.binary_path))
-                print("Buffer size is {} bytes, {} APIs loaded{}.\n".format(len(binary), num_apis_loaded, filter_info))
+                print(f"Buffer size is {len(binary)} bytes, {num_apis_loaded} APIs loaded{filter_info}.\n")
             results = scout.crawl(binary)
         filtered_results = scout.filter(results, 0, 0, args.filter)
         if not args.silent:
@@ -129,11 +168,12 @@ def main():
         if args.json_file:
             write_results_to_json(args.json_file, filtered_results)
             if not args.silent:
-                print("Wrote ApiScout results to {}.".format(args.json_file))
+                print(f"Wrote ApiScout results to {args.json_file}.")
         if args.collection_file and not args.silent:
             print(scout.renderResultsVsCollection(filtered_results, args.collection_file))
     else:
         parser.print_help()
+
 
 if __name__ == "__main__":
     sys.exit(main())
