@@ -202,6 +202,8 @@ The plugin in `binja_scout` works with Binary Ninja 6 (tested with 6.0):
 1. Install ApiScout for Binary Ninja's Python: `Install python3 module` in the command palette.
 2. Link `binja_scout` into the `plugins` folder of the [user folder](https://docs.binary.ninja/guide/index.html#user-folder).
 
+The extension manager needs neither step: it installs the repository with numpy.
+
 Open the dump with Open with Options as `Mapped` view, with its address as image base and `windows-x86` or `windows-x86_64` as platform, then use Plugins > ApiScout to scan, show the results and annotate all or filtered references. Calls through annotated pointers read as API calls in HLIL.
 
 <details>
