@@ -36,7 +36,9 @@ class ImportDescriptor:
             thunk = self.load_table_offset + imp_offset
             if imp not in parsed:
                 parsed[imp] = self._parse_import(buf, name_table_offset + imp_offset)
-                self.name_bytes += len(parsed[imp]["name"] or "")
+                # names of ordinals are not read from the buffer
+                is_ordinal_import = imp & (0x8000000000000000 if self._is_64bit else 0x80000000)
+                self.name_bytes += 0 if is_ordinal_import else len(parsed[imp]["name"])
                 if max_name_bytes is not None and self.name_bytes > max_name_bytes:
                     # names overlapping each other, which a file can only hold in a crafted table
                     break
@@ -69,9 +71,10 @@ class ImportDescriptor:
 
 
 class ImportTableLoader:
-    def __init__(self, buf, sample_name="", max_thunks=None):
+    def __init__(self, buf, sample_name="", max_thunks=None, max_name_bytes=None):
         self._buffer = buf
         self._max_thunks = max_thunks
+        self._max_name_bytes = max_name_bytes
         self._is_pe = PeTools.checkPe(buf)
         self._is_64bit = self._check_64bit()
         self._sample_name = sample_name
@@ -124,6 +127,8 @@ class ImportTableLoader:
                 descriptor = self._parse_descriptor(it_rva + it_offset, descriptor_size)
                 # names can not take more space than the buffer has
                 name_bytes_left = len(self._buffer)
+                if self._max_name_bytes is not None:
+                    name_bytes_left = min(name_bytes_left, self._max_name_bytes)
                 while descriptor.load_table_offset and thunks_left > 0 and name_bytes_left >= 0:
                     descriptor.parse(self._buffer, thunks_left, name_bytes_left)
                     thunks_left -= len(descriptor.imports) + 1

@@ -743,6 +743,24 @@ class SixthAuditTestSuite(unittest.TestCase):
         entries = ApiScout().evaluateImportTable(bytes(pe))["import_table"]
         self.assertLessEqual(sum(len(entry[3]) for entry in entries), 2 * len(pe))
         self.assertLess(len(entries), 0x400)
+        # the limit follows the file, not the image it is mapped to
+        struct.pack_into("<I", pe, 0x58 + 0xE0 + 8, 0x100000)
+        struct.pack_into("<I", pe, 0x58 + 56, 0x101000)
+        entries = ApiScout().evaluateImportTable(bytes(pe))["import_table"]
+        self.assertLessEqual(sum(len(entry[3]) for entry in entries), 2 * len(pe))
+
+    def testImportsByOrdinalAreNotLimitedByTheirNames(self):
+        pe = bytearray(build_pe32()) + bytearray(0x400)
+        struct.pack_into("<IIII", pe, 0x58 + 0xE0 + 8, 0x600, 0x1000, 0x600, 0x200)
+        # oleaut32.dll by ordinal: names that are not held by the file
+        pe[0x200 + 0x140 : 0x200 + 0x14D] = b"OLEAUT32.dll\x00"
+        ordinals = [2, 4, 6, 7, 8, 9, 10, 12, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26] * 5
+        for index, ordinal in enumerate(ordinals):
+            struct.pack_into("<I", pe, 0x200 + 0x200 + 4 * index, 0x80000000 | ordinal)
+        struct.pack_into("<IIIII", pe, 0x200, 0, 0, 0, 0x1140, 0x1200)
+        struct.pack_into("<IIIII", pe, 0x214, 0, 0, 0, 0, 0)
+        loader = ImportTableLoader(PeTools.mapBinary(bytes(pe)), max_name_bytes=0x10)
+        self.assertEqual(len(ordinals), len(loader.get_import_table()))
 
     def testAmbiguousLoadAddressOfA32bitProcess(self):
         import DatabaseBuilder

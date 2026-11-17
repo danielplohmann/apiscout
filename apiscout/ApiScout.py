@@ -222,7 +222,7 @@ class ApiScout:
         mapped_binary = PeTools.mapBinary(binary) if is_unmapped else binary
         # a file can not hold more imports than pointers, crafted tables referencing each other are cut off there
         max_thunks = len(binary) // 8 if PeTools.getBitness(mapped_binary) == 64 else len(binary) // 4
-        import_table_loader = ImportTableLoader(mapped_binary, max_thunks=max_thunks)
+        import_table_loader = ImportTableLoader(mapped_binary, max_thunks=max_thunks, max_name_bytes=len(binary))
         self._import_table = import_table_loader.get_import_table()
         bitness = PeTools.getBitness(mapped_binary)
         references = self._getCodeReferences(mapped_binary, self._import_table.keys())
