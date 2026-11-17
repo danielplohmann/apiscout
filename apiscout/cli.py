@@ -478,6 +478,9 @@ def init_worker(log_level, *crawler_arguments):
     except Exception as exc:
         # reported with the first task, a worker that ends here would be started again and again
         WORKER_ERROR = f"{type(exc).__name__}: {exc}"
+    if not logging.getLogger().handlers:
+        # a worker that was not forked has no logging set up
+        logging.basicConfig(level=logging.WARNING, format="%(message)s")
     package_log.setLevel(log_level)
 
 
