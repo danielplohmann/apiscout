@@ -694,5 +694,55 @@ class FifthAuditTestSuite(unittest.TestCase):
         self.assertEqual(1, len(next(iter(builder._duplicate_paths.values()))))
 
 
+class SixthAuditTestSuite(unittest.TestCase):
+    def testSectionsSharingRawDataAreMappedOnce(self):
+        pe = bytearray(build_pe32()) + bytearray(0x200)
+        pe[0x400:0x410] = b"SECOND SECTION!!"
+        struct.pack_into("<H", pe, 0x46, 3)
+        section_table = 0x58 + 0xE0
+        # two more sections: one sharing the raw data of the first, one with data of its own
+        struct.pack_into("<IIII", pe, section_table + 0x28 + 8, 0x200, 0x2000, 0x200, 0x200)
+        struct.pack_into("<IIII", pe, section_table + 0x50 + 8, 0x200, 0x3000, 0x200, 0x400)
+        mapped = PeTools.mapBinary(bytes(pe))
+        self.assertEqual(mapped[0x1000:0x1200], mapped[0x2000:0x2200])
+        self.assertEqual(b"SECOND SECTION!!", mapped[0x3000:0x3010])
+        # many sections sharing one raw range are only mapped up to the size of the file
+        struct.pack_into("<H", pe, 0x46, 12)
+        for index in range(1, 12):
+            offset = section_table + 0x28 * index + 8
+            struct.pack_into("<IIII", pe, offset, 0x200, 0x1000 * (index + 1), 0x200, 0x200)
+        mapped = PeTools.mapBinary(bytes(pe))
+        self.assertLessEqual(sum(1 for byte in mapped if byte), 2 * len(pe))
+
+    def testAmbiguousLoadAddressOfA32bitProcess(self):
+        import DatabaseBuilder
+
+        def build_db():
+            return {
+                "dlls": {
+                    "k64": {"filepath": "C:/Windows/System32/kernel32.dll", "base_address": 0x180000000, "bitness": 64},
+                    "k32": {"filepath": "C:/Windows/SysWOW64/kernel32.dll", "base_address": 0x6B800000, "bitness": 32},
+                    "t64": {"filepath": "C:/Program Files/ink/tiptsf.dll", "base_address": 0x180000000, "bitness": 64},
+                    "t32": {
+                        "filepath": "C:/Program Files (x86)/ink/tiptsf.dll",
+                        "base_address": 0x10000000,
+                        "bitness": 32,
+                    },
+                }
+            }
+
+        api_db = build_db()
+        addresses = [("system32/kernel32.dll", 0x75990000), ("ink/tiptsf.dll", 0x6F000000)]
+        DatabaseBuilder.DatabaseBuilder().applyLoadAddresses(api_db, addresses)
+        self.assertEqual(0x10000000 - 0x6F000000, api_db["dlls"]["t32"]["aslr_offset"])
+        self.assertFalse(api_db["dlls"]["t64"].get("aslr_offset"))
+        # in the list of a 64bit process, the same address does not tell which DLL is meant
+        api_db = build_db()
+        addresses = [("system32/kernel32.dll", 0x7FFB11110000), ("ink/tiptsf.dll", 0x6F000000)]
+        DatabaseBuilder.DatabaseBuilder().applyLoadAddresses(api_db, addresses)
+        self.assertFalse(api_db["dlls"]["t32"].get("aslr_offset"))
+        self.assertFalse(api_db["dlls"]["t64"].get("aslr_offset"))
+
+
 if __name__ == "__main__":
     unittest.main()

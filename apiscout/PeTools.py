@@ -66,16 +66,22 @@ class PeTools:
         if max_virt_section_offset:
             mapped_binary = bytearray(max_virt_section_offset)
             mapped_binary[0:header_size] = binary[0:header_size]
-            # sections sharing their raw data would multiply the content of a crafted file
-            bytes_left = len(binary)
+            # sections sharing their raw data would multiply the content of a crafted file,
+            # so data that was mapped by an earlier section already is only mapped again up to the size of the file
+            repeated_bytes_left = len(binary)
+            mapped_ranges = []
             for section_info in section_infos:
                 # the file may be truncated, so only map what is actually there
-                section_data = binary[
-                    section_info["raw_offset"] : section_info["raw_offset"] + section_info["raw_size"]
-                ]
+                raw_start = section_info["raw_offset"]
+                section_data = binary[raw_start : raw_start + section_info["raw_size"]]
                 section_data = section_data[: max(0, len(mapped_binary) - section_info["virt_offset"])]
-                section_data = section_data[:bytes_left]
-                bytes_left -= len(section_data)
+                raw_end = raw_start + len(section_data)
+                repeated = sum(max(0, min(raw_end, end) - max(raw_start, start)) for start, end in mapped_ranges)
+                if repeated > repeated_bytes_left:
+                    section_data = b""
+                elif section_data:
+                    repeated_bytes_left -= repeated
+                    mapped_ranges.append((raw_start, raw_end))
                 mapped_binary[section_info["virt_offset"] : section_info["virt_offset"] + len(section_data)] = (
                     section_data
                 )
