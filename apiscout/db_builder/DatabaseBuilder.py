@@ -48,7 +48,9 @@ def is_windows():
 def get_system_info():
     platform_info = platform.uname()
     version_info = sys.getwindowsversion()
-    parts = [platform_info.system, platform_info.release, version_info.service_pack, f"({platform_info.machine})"]
+    # Python reports the release of Windows Server as e.g. "2022Server"
+    release = re.sub(r"(?<=\d)(?=Server)", " ", platform_info.release)
+    parts = [platform_info.system, release, version_info.service_pack, f"({platform_info.machine})"]
     return " ".join(part for part in parts if part), platform_info.version
 
 
