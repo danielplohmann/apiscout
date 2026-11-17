@@ -131,10 +131,25 @@ class IdaProxy:
         changed = []
         for start in self.getSegmentsWithBase():
             segment = ida_segment.getseg(start)
-            if ida_segment.set_selector(segment.sel, 0):
-                ida_auto.plan_range(segment.start_ea, segment.end_ea)
-                changed.append(start)
+            if not ida_segment.set_selector(segment.sel, 0):
+                continue
+            changed.append(start)
+            # calls that led to no code under the base made their functions end early
+            for function_start in idautils.Functions(segment.start_ea, segment.end_ea):
+                function = ida_funcs.get_func(function_start)
+                if function.flags & ida_funcs.FUNC_NORET:
+                    function.flags &= ~ida_funcs.FUNC_NORET
+                    ida_funcs.update_func(function)
+            # the references of instructions are only taken anew when they are decoded again
+            for head in idautils.Heads(segment.start_ea, segment.end_ea):
+                if ida_bytes.is_code(ida_bytes.get_full_flags(head)):
+                    ida_auto.auto_recreate_insn(head)
+            ida_auto.plan_range(segment.start_ea, segment.end_ea)
         if changed:
+            ida_auto.auto_wait()
+            for start in changed:
+                for function_start in idautils.Functions(start, self.getSegEnd(start)):
+                    ida_funcs.reanalyze_function(ida_funcs.get_func(function_start))
             ida_auto.auto_wait()
         return changed
 

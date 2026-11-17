@@ -285,7 +285,10 @@ class DatabaseBuilder:
                 unused_addresses.setdefault(dll_path.rsplit("/", 1)[-1], set()).add(load_address)
         for filename, dlls in unmatched_dlls.items():
             if len(dlls) == 1 and len(unused_addresses.get(filename, ())) == 1:
-                dlls[0]["aslr_offset"] = dlls[0]["base_address"] - next(iter(unused_addresses[filename]))
+                load_address = next(iter(unused_addresses[filename]))
+                if dlls[0].get("bitness") == 32 and load_address >= 0x100000000:
+                    continue
+                dlls[0]["aslr_offset"] = dlls[0]["base_address"] - load_address
                 num_offsets += 1
         log = LOG.warning if load_addresses and not num_offsets else LOG.info
         log("Applied load addresses to %d of %d DLLs.", num_offsets, len(api_db["dlls"]))
@@ -302,7 +305,7 @@ class DatabaseBuilder:
         load_address = 0
         aslr_offset = 0
         # a DLL can write to the output as well when it is loaded
-        match = re.match(rb"DLL loaded at: 0x([0-9a-fA-F]+)", result["std_out"] or b"")
+        match = re.search(rb"^DLL loaded at: 0x([0-9a-fA-F]+)", result["std_out"] or b"", re.MULTILINE)
         if match:
             load_address = int(match.group(1), 16)
             if load_address:

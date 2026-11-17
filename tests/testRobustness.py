@@ -718,6 +718,26 @@ class FifthAuditTestSuite(unittest.TestCase):
         self.assertEqual(1, len(api_db["dlls"]))
         self.assertEqual(1, len(next(iter(builder._duplicate_paths.values()))))
 
+    def testImportBudgetCoversDelayImportsAndTheWorkOfCounting(self):
+        # delay import descriptors sharing one thunk list
+        pe = bytearray(build_pe32()) + bytearray(0x800)
+        struct.pack_into("<IIII", pe, 0x58 + 0xE0 + 8, 0xA00, 0x1000, 0xA00, 0x200)
+        for index in range(0x40):
+            struct.pack_into("<I", pe, 0x200 + 0x200 + 4 * index, 0x1120)
+        num_descriptors = 0x28
+        for index in range(num_descriptors):
+            struct.pack_into("<8I", pe, 0x200 + 0x300 + 32 * index, 1, 0x1100, 0, 0x1200, 0x1200, 0, 0, 0)
+        struct.pack_into("<II", pe, 0x58 + 96 + 8 * 13, 0x1300, 32 * num_descriptors)
+        self.assertTrue(ImportTableLoader.fileExceedsThunkBudget(bytes(pe), len(pe) // 4))
+        # descriptors whose thunk lists are empty cost work as well
+        pe = bytearray(build_pe32()) + bytearray(0x6000)
+        struct.pack_into("<IIII", pe, 0x58 + 0xE0 + 8, 0x6200, 0x1000, 0x6200, 0x200)
+        for index in range(0x300):
+            struct.pack_into("<IIIII", pe, 0x400 + 20 * index, 0x4800 + 8 * index, 0, 0, 0, 0x4800 + 8 * index)
+        struct.pack_into("<II", pe, 0x58 + 104, 0x1200, 20 * 0x300)
+        self.assertFalse(ImportTableLoader.fileExceedsThunkBudget(bytes(pe), len(pe) // 4))
+        self.assertTrue(ImportTableLoader.fileExceedsThunkBudget(bytes(pe), 0x10))
+
 
 if __name__ == "__main__":
     unittest.main()

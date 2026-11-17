@@ -143,19 +143,22 @@ class ImportTableLoader:
     @staticmethod
     def fileExceedsThunkBudget(binary, max_thunks):
         """
-        counts the thunks of the import descriptors of a PE file the way a parser of the file layout may read them:
-        through every section covering an RVA, for both thunk lists and past descriptors without address table
+        counts the thunks of the import and delay import descriptors of a PE file the way a parser of the file
+        layout may read them: through every section covering an RVA, for both thunk lists and past descriptors
+        without address table. The work spent on counting is limited as well.
         """
         if not PeTools.checkPe(binary):
             return False
         pe_offset = PeTools.getPeOffset(binary)
         optional_header_offset = pe_offset + 0x18
-        if len(binary) < optional_header_offset + 2:
+        if len(binary) < optional_header_offset + 0x20:
             return False
         is_64bit = get_word(binary, optional_header_offset) == 0x20B
-        import_dd_offset = pe_offset + 0x80 + (0x10 if is_64bit else 0)
-        if len(binary) < import_dd_offset + 4:
-            return False
+        thunk_size = 8 if is_64bit else 4
+        if is_64bit:
+            image_base = get_qword(binary, optional_header_offset + 0x18)
+        else:
+            image_base = get_dword(binary, optional_header_offset + 0x1C)
         sections = []
         section_offset = optional_header_offset + get_word(binary, pe_offset + 0x14)
         for _ in range(get_word(binary, pe_offset + 6)):
@@ -172,33 +175,43 @@ class ImportTableLoader:
             # outside of all sections, an RVA is read as offset into the headers
             return offsets or {rva}
 
-        thunk_size = 8 if is_64bit else 4
+        budget = {"steps": 4 * max_thunks + 0x400}
+        thunk_counts = {}
 
         def count_thunks(rva):
-            longest = 0
-            for offset in file_offsets(rva) if rva else ():
-                start = offset
-                while offset + thunk_size <= len(binary) and any(binary[offset : offset + thunk_size]):
-                    offset += thunk_size
-                    if (offset - start) // thunk_size > max_thunks:
-                        break
-                longest = max(longest, (offset - start) // thunk_size)
-            return longest
+            if rva not in thunk_counts:
+                longest = 0
+                for offset in file_offsets(rva) if rva else ():
+                    start = offset
+                    while budget["steps"] > 0 and any(binary[offset : offset + thunk_size]):
+                        offset += thunk_size
+                        budget["steps"] -= 1
+                    budget["steps"] -= 1
+                    longest = max(longest, (offset - start) // thunk_size)
+                thunk_counts[rva] = longest
+            return thunk_counts[rva]
 
         num_thunks = 0
-        for table_offset in file_offsets(get_dword(binary, import_dd_offset)):
-            num_descriptors = 0
-            while table_offset + 20 <= len(binary) and num_descriptors <= max_thunks:
-                values = struct.unpack_from("<IIIII", binary, table_offset)
-                if not any(values):
-                    break
-                num_thunks += max(count_thunks(values[0]), count_thunks(values[4]))
-                if num_thunks > max_thunks:
-                    return True
-                num_descriptors += 1
-                table_offset += 20
-            if num_descriptors > max_thunks:
-                return True
+        # import directory and delay import directory: (offset of the data directory, descriptor size, thunk list fields)
+        for directory_offset, descriptor_size, thunk_fields in ((0x80, 20, (0, 4)), (0xE0, 32, (3, 4))):
+            directory_offset += pe_offset + (0x10 if is_64bit else 0)
+            if len(binary) < directory_offset + 4 or not get_dword(binary, directory_offset):
+                continue
+            for table_offset in file_offsets(get_dword(binary, directory_offset)):
+                while table_offset + descriptor_size <= len(binary):
+                    values = struct.unpack_from("<" + "I" * (descriptor_size // 4), binary, table_offset)
+                    if not any(values):
+                        break
+                    # delay import descriptors of old linkers hold virtual addresses instead of RVAs
+                    rvas = {values[field] for field in thunk_fields}
+                    rvas.update(
+                        rva - image_base for rva in list(rvas) if descriptor_size == 32 and rva >= image_base > 0
+                    )
+                    num_thunks += max(count_thunks(rva) for rva in rvas)
+                    budget["steps"] -= 1
+                    if num_thunks > max_thunks or budget["steps"] <= 0:
+                        return True
+                    table_offset += descriptor_size
         return False
 
     def get_import_table(self):
