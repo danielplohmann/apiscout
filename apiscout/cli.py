@@ -954,7 +954,8 @@ def build_parser():
         "--dynamic",
         action="store_true",
         help="also find APIs that are resolved at run time: hashes of their names (ROR13, Metasploit block_api, CRC32, "
-        "djb2, FNV-1a) in groups of several, and their names as strings; they are added to the ApiVector",
+        "djb2, FNV-1a, sdbm) in groups of several, also those that the sample XORs or adds a key of its own to (listed "
+        "with the key, e.g. sdbm^0x1e5c48de), and their names as strings; they are added to the ApiVector",
     )
     scan.add_argument("-c", "--collection", metavar="FILE", help="also match the ApiVector against this collection")
     scan.add_argument(

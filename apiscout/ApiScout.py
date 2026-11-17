@@ -423,19 +423,23 @@ class ApiScout:
         min_hits=None,
         algorithms=None,
         min_string_run=None,
+        keyed=True,
+        min_key_apis=None,
     ):
         """APIs that the binary does not refer to by pointer but resolves at run time, per API map as {name: [DynamicApi]}, by offset
 
         hashes: APIs of which the hash of the name (algorithms, by default all of DynamicApis.HASH_ALGORITHMS) is in the binary, in a
-        region of several hashes (min_hits sets the number, see DynamicApis.getMinimumHits). strings: APIs of which the name, at least
-        min_string_length characters long (default: DynamicApis.DEFAULT_MIN_STRING_LENGTH), is a whole ASCII or UTF-16LE string that is in a
+        region of several hashes (min_hits sets the number, see DynamicApis.getMinimumHits). keyed: also the hashes that the program
+        combines with a key of its own by XOR or ADD; the key is found in the binary from the hashes of common APIs (at least
+        min_key_apis of them, default: DynamicApis.getMinimumKeyApis) and is part of the algorithm of such a hit, e.g. sdbm^0x1e5c48de.
+        strings: APIs of which the name, at least min_string_length characters long (default: DynamicApis.DEFAULT_MIN_STRING_LENGTH), is a whole ASCII or UTF-16LE string that is in a
         run of at least min_string_run different names (default: DynamicApis.MIN_STRING_RUN, see DynamicApis.getStringRuns).
         The hashes of an API DB are computed at the first call after loading it."""
         finder = self._getDynamicFinder()
         results = {name: [] for name in self.api_maps}
         found = []
         if hashes:
-            found.append(finder.findHashes(binary, algorithms, min_hits, self.load_offset))
+            found.append(finder.findHashes(binary, algorithms, min_hits, self.load_offset, keyed, min_key_apis))
         if strings:
             found.append(finder.findStrings(binary, min_string_length, self.load_offset, min_string_run))
         for found_in_map in found:
@@ -488,15 +492,17 @@ class ApiScout:
                 output += f"No dynamically resolved APIs for API DB: {api_map_name}\n"
                 continue
             output += f"Dynamically resolved APIs for API DB: {api_map_name}\n"
-            output += "{:3}: {:10}; {:6}; {:9}; {:10}; {:40}; {:60}\n".format(
-                "idx", "offset", "type", "algorithm", "value", "DLL", "API"
+            # the algorithm of a hit with a key is longer
+            width = max(9, *(len(api.algorithm) for api in apis))
+            output += "{:3}: {:10}; {:6}; {:{width}}; {:10}; {:40}; {:60}\n".format(
+                "idx", "offset", "type", "algorithm", "value", "DLL", "API", width=width
             )
             for index, api in enumerate(apis):
                 dlls = ", ".join(api.dlls[:max_dlls]) + (
                     f" (+{len(api.dlls) - max_dlls})" if len(api.dlls) > max_dlls else ""
                 )
                 value = "" if api.value is None else f"0x{api.value:08x}"
-                output += f"{index + 1:3}: 0x{self.base_address + api.offset:08x}; {api.kind:6}; {api.algorithm:9}; {value:10}; {dlls:40}; {api.api:60}\n"
+                output += f"{index + 1:3}: 0x{self.base_address + api.offset:08x}; {api.kind:6}; {api.algorithm:{width}}; {value:10}; {dlls:40}; {api.api:60}\n"
             num_hashes = sum(api.kind == "hash" for api in apis)
             output += (
                 f"APIs: {len({api.api for api in apis})}, by hash: {num_hashes}, by string: {len(apis) - num_hashes}\n"

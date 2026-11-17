@@ -2,7 +2,7 @@
 APIs that a program resolves at run time and therefore never stores as pointers: hashes of export names and export names as strings.
 
 Hashes: shellcode and loaders walk the export table of a DLL and compare a hash of each name with a constant. For every export name
-of an API DB, the hashes of five common algorithms are computed once (with numpy) and searched in the dump as 32bit little endian
+of an API DB, the hashes of six common algorithms are computed once (with numpy) and searched in the dump as 32bit little endian
 constants at any offset:
 
     ror13      ROR13 of the name, the "ror13AddHash32" of Mandiant FLARE's shellcode_hashes
@@ -11,9 +11,25 @@ constants at any offset:
     crc32      CRC-32 (zlib) of the name
     djb2       hash * 33 + c from 5381, "add1505Shl5Hash32" in shellcode_hashes
     fnv1a      32bit FNV-1a
+    sdbm       hash * 65599 + c from 0, the sdbm of http://www.cse.yorku.ca/~oz/hash.html
 
-Sources of the definitions and the values the tests check: tests/testDynamicApis.py. Variants (other seeds, case folding, a constant
-xored to the result, ...) are not searched.
+Sources of the definitions and the values the tests check: tests/testDynamicApis.py. Other variants (other seeds, case folding, ...)
+are not searched.
+
+Keyed hashes: malware often combines the hash with a constant that is chosen for each sample, XOR (hash ^ key) or ADD (hash + key),
+so that the hashes of the DB do not match. The key is found in the dump itself, for every algorithm but block_api (whose module hash
+already is an added constant). PROBE_APIS are APIs that loaders almost always resolve; their hashes combined with every 32bit value of
+the dump (at any offset) give the candidate keys value ^ hash and value - hash, and the real key is the one that many different probe
+APIs agree on. To keep it cheap, only the first KEY_ANCHORS probes propose candidates (KEY_ANCHOR_HITS of them have to agree), the
+others are looked up for those. A key needs min_apis different probe APIs, so many that the dump is expected to hold less than
+MAX_CHANCE_KEYS keys by chance, see getMinimumKeyApis(). The dump is searched in windows of KEY_WINDOW bytes (the hashes of a sample
+are not farther apart). Values with a zero byte are left out (a hash has none in 98.4% of the cases, text, small numbers and pointers
+do), and so are blocks of RANDOM_BLOCK_SIZE bytes of uniformly distributed bytes (compressed or encrypted data, nothing to be found).
+With an accepted key, all export names are searched in the dump with it, like the other hashes but in regions with a larger gap,
+KEYED_REGION_GAP: the hashes of a resolver are constants in its code, not a table. The findings say the key, as in sdbm^0x1e5c48de
+(XOR) and crc32+0x218fe95b (ADD). A constant is the hash of one API, so keys compete for the hits (see DynamicApiFinder._findHits):
+the hashes of the names that end with A and W differ by the same value for CRC-32 and for the hashes that add the last character,
+which makes a key at that difference from the real one agree with many probe APIs.
 
 One constant matches one of many hashes by chance: a DB with n distinct hashes of an algorithm makes every offset of a dump a hit with
 probability n / 2**32, some 24 hits per MB for 100,000 names. So hits are only reported in a region, a chain of hits of the same
@@ -28,13 +44,76 @@ different names of one encoding that follow each other within STRING_RUN_GAP byt
 import name table do.
 """
 
+import concurrent.futures
+import functools
+import math
+import os
 import re
 import zlib
 from typing import NamedTuple
 
 import numpy as np
 
-HASH_ALGORITHMS = ("ror13", "block_api", "crc32", "djb2", "fnv1a")
+HASH_ALGORITHMS = ("ror13", "block_api", "crc32", "djb2", "fnv1a", "sdbm")
+# the algorithms with which hashes combined with a key are searched: all but block_api
+KEYED_ALGORITHMS = ("ror13", "crc32", "djb2", "fnv1a", "sdbm")
+# a key is combined with the hash of the API by XOR (value = hash ^ key) or ADD (value = hash + key), 32bit
+KEY_MODES = ("xor", "add")
+KEY_SYMBOLS = {"xor": "^", "add": "+"}
+# the APIs that loaders, droppers and injectors almost always resolve, hashed to find the key of a sample: the first KEY_ANCHORS ones
+# are the most common ones, they propose the keys
+PROBE_APIS = (
+    "LoadLibraryA",
+    "GetProcAddress",
+    "VirtualAlloc",
+    "LoadLibraryW",
+    "ExitProcess",
+    "CloseHandle",
+    "VirtualProtect",
+    "CreateFileW",
+    "CreateFileA",
+    "ReadFile",
+    "WriteFile",
+    "GetModuleHandleA",
+    "GetModuleHandleW",
+    "CreateProcessA",
+    "CreateProcessW",
+    "CreateThread",
+    "WaitForSingleObject",
+    "Sleep",
+    "VirtualFree",
+    "OpenProcess",
+    "GetCurrentProcess",
+    "GetLastError",
+    "VirtualAllocEx",
+    "WriteProcessMemory",
+    "CreateRemoteThread",
+    "GetTickCount",
+    "FreeLibrary",
+    "TerminateProcess",
+    "WinExec",
+    "HeapAlloc",
+    "GetModuleFileNameW",
+    "LocalFree",
+)
+NUM_PROBE_APIS = len(PROBE_APIS)
+KEY_ANCHORS = 4
+# a candidate key is looked up with all probes if this many anchors agree on it
+KEY_ANCHOR_HITS = 2
+# fewest different probe APIs that make a key, whatever the size of the dump
+MIN_KEY_APIS = 3
+# keys that chance may form in a dump (expected number) at most, more probe APIs are demanded above
+MAX_CHANCE_KEYS = 0.01
+# the dump is searched for keys in windows of this many bytes, overlapping by a quarter
+KEY_WINDOW = 1 << 20
+# a block of this many bytes of the dump is left out of the search for keys if its bytes are uniformly distributed (the entropy is at
+# most this many bits, plus what the size of a random sample explains, below the 8 of random bytes): compressed or encrypted data
+RANDOM_BLOCK_SIZE = 1 << 16
+RANDOM_ENTROPY_DEFICIT = 0.01
+# the windows are searched by this many threads at most
+MAX_KEY_THREADS = 8
+# hits of a keyed hash are a region if each one is at most this many bytes behind the previous one
+KEYED_REGION_GAP = 4096
 
 # hits of one algorithm are a region if each one is at most this many bytes behind the previous one
 REGION_GAP = 128
@@ -58,9 +137,10 @@ _DLL_SUFFIX = re.compile(r"_0x[0-9a-fA-F]+$")
 
 
 class DynamicApi(NamedTuple):
-    """an API found by one of its hashes (kind "hash", algorithm one of HASH_ALGORITHMS, value the constant) or by its name (kind "string",
-    algorithm "ascii" or "utf16le"). offset is the position in the dump; dlls are all DLLs of the API DB that export the name (the one
-    that was hashed, for block_api)."""
+    """an API found by one of its hashes (kind "hash", algorithm one of HASH_ALGORITHMS, value the constant; with a key of the sample
+    it is the algorithm, ^ for XOR or + for ADD, and the key, e.g. "sdbm^0x1e5c48de") or by its name (kind "string", algorithm "ascii"
+    or "utf16le"). offset is the position in the dump; dlls are all DLLs of the API DB that export the name (the one that was hashed,
+    for block_api)."""
 
     offset: int
     kind: str
@@ -106,6 +186,21 @@ def hashFnv1a(name):
     return value
 
 
+def hashSdbm(name):
+    """hash * 65599 + c from 0 (65599 is 2**6 + 2**16 - 1, the shifts of the sdbm function)"""
+    value = 0
+    for char in name:
+        value = (value * 65599 + char) & _MASK
+    return value
+
+
+HASH_FUNCTIONS = {"ror13": hashRor13, "crc32": hashCrc32, "djb2": hashDjb2, "fnv1a": hashFnv1a, "sdbm": hashSdbm}
+
+
+def getKeyedLabel(algorithm, mode, key):
+    return f"{algorithm}{KEY_SYMBOLS[mode]}0x{key:08x}"
+
+
 def getMinimumHits(num_hashes, size, gap=REGION_GAP, floor=MIN_REGION_HITS, budget=MAX_CHANCE_REGIONS):
     """the fewest hits of one algorithm that make a region in a dump of the given size
 
@@ -116,6 +211,25 @@ def getMinimumHits(num_hashes, size, gap=REGION_GAP, floor=MIN_REGION_HITS, budg
     while hits < 64 and size * probability * (probability * gap) ** (hits - 1) > budget:
         hits += 1
     return hits
+
+
+def getMinimumKeyApis(num_values, trials=1, num_probes=NUM_PROBE_APIS, floor=MIN_KEY_APIS, budget=MAX_CHANCE_KEYS):
+    """the fewest different probe APIs that make a key, when num_values different values are searched in each of trials searches
+
+    A probe hash plus key (or xor key) is one of the num_values values by chance with probability q = num_values / 2**32, so a given
+    key is made by at least that many of the num_probes probes with probability tail(q), and of the 2**32 keys there are
+    trials * 2**32 * tail(q) by chance. More than num_probes is returned if even all probes would not do."""
+    probability = num_values / 2**32
+    needed = floor
+    while needed <= num_probes:
+        tail = sum(
+            math.comb(num_probes, hits) * probability**hits * (1 - probability) ** (num_probes - hits)
+            for hits in range(needed, num_probes + 1)
+        )
+        if trials * 2**32 * tail <= budget:
+            break
+        needed += 1
+    return needed
 
 
 def getExpectedChanceHits(num_hashes, size):
@@ -133,6 +247,10 @@ def _stepDjb2(values, chars):
 
 def _stepFnv1a(values, chars):
     return (values ^ chars) * np.uint32(0x01000193)
+
+
+def _stepSdbm(values, chars):
+    return values * np.uint32(65599) + chars
 
 
 def _hashNames(names, step, initial):
@@ -190,6 +308,14 @@ class ApiNameIndex:
             self._tables[algorithm] = self._buildTable(algorithm)
         return self._tables[algorithm]
 
+    def getKeyedTable(self, algorithm, mode, key):
+        """the table of an algorithm with every hash combined with a key (mode "xor" or "add"); the unchanged table without a mode"""
+        table = self.getTable(algorithm)
+        if mode is None:
+            return table
+        hashes = table.hashes ^ np.uint32(key) if mode == "xor" else table.hashes + np.uint32(key)
+        return self._sortTable(hashes, table.entries, table.modules)
+
     def getNumHashes(self, algorithm):
         """number of distinct hashes of an algorithm"""
         if algorithm not in self._num_hashes:
@@ -199,9 +325,9 @@ class ApiNameIndex:
     def getNamesWithMinLength(self, min_length):
         return {name: dlls for name, dlls in zip(self.names, self.dlls, strict=True) if len(name) >= min_length}
 
-    def resolve(self, algorithm, row):
-        """the API name and DLLs of a row of the table of an algorithm"""
-        table = self.getTable(algorithm)
+    def resolve(self, algorithm, row, table=None):
+        """the API name and DLLs of a row of the table of an algorithm (the table of getKeyedTable(), if it is given)"""
+        table = table or self.getTable(algorithm)
         entry = int(table.entries[row])
         if table.modules is None:
             return self.names[entry], self.dlls[entry]
@@ -227,6 +353,8 @@ class ApiNameIndex:
             hashes = _hashNames(self._getNameBytes(), _stepDjb2, 5381)
         elif algorithm == "fnv1a":
             hashes = _hashNames(self._getNameBytes(), _stepFnv1a, 0x811C9DC5)
+        elif algorithm == "sdbm":
+            hashes = _hashNames(self._getNameBytes(), _stepSdbm, 0)
         elif algorithm == "block_api":
             # the terminator of the name is one more rotation by 13, adding 0
             ror13 = self._getRor13()
@@ -395,6 +523,164 @@ def _isPrintable(units):
     return (units >= 0x20) & (units <= 0x7E)
 
 
+@functools.cache
+def _getProbeHashes(algorithm):
+    """the different hashes of PROBE_APIS of an algorithm, and those of the first KEY_ANCHORS ones, as numpy arrays"""
+    hashes = list(dict.fromkeys(HASH_FUNCTIONS[algorithm](name.encode("ascii")) for name in PROBE_APIS))
+    return np.array(sorted(hashes), dtype=np.uint32), np.array(hashes[:KEY_ANCHORS], dtype=np.uint32)
+
+
+def _getKeyWindows(size, window):
+    """(start, end) of the windows over a dump of the given size, each one overlapping the previous one by a quarter"""
+    if size <= window:
+        return [(0, size)]
+    starts = list(range(0, size - window + 1, window * 3 // 4))
+    if starts[-1] + window < size:
+        starts.append(size - window)
+    return [(start, start + window) for start in starts]
+
+
+def _isRandom(binary, start, end):
+    """whether the bytes are uniformly distributed, as in compressed or encrypted data; there is nothing to find in it, no table of
+    hashes can be told from the rest. Less than a block of bytes is never random, the entropy of a sample of random bytes is lower."""
+    size = end - start
+    if size < RANDOM_BLOCK_SIZE:
+        return False
+    counts = np.bincount(np.frombuffer(binary, dtype=np.uint8, count=size, offset=start), minlength=256)
+    probabilities = counts[counts > 0] / size
+    entropy = -(probabilities * np.log2(probabilities)).sum()
+    return bool(8 - entropy <= RANDOM_ENTROPY_DEFICIT + 255 / (2 * size * math.log(2)))
+
+
+def _getRandomBlocks(binary):
+    """for every block of RANDOM_BLOCK_SIZE bytes of the dump (the last one is smaller) whether its bytes are uniformly distributed"""
+    return [
+        _isRandom(binary, start, min(start + RANDOM_BLOCK_SIZE, len(binary)))
+        for start in range(0, len(binary), RANDOM_BLOCK_SIZE)
+    ]
+
+
+def _getSpans(start, end, random_blocks):
+    """(start, end) of the parts of a window that are not in a random block"""
+    if random_blocks is None:
+        return [(start, end)]
+    spans = []
+    for block in range(start // RANDOM_BLOCK_SIZE, (end - 1) // RANDOM_BLOCK_SIZE + 1):
+        if not random_blocks[block]:
+            first, last = max(start, block * RANDOM_BLOCK_SIZE), min(end, (block + 1) * RANDOM_BLOCK_SIZE)
+            if spans and spans[-1][1] == first:
+                spans[-1] = (spans[-1][0], last)
+            else:
+                spans.append((first, last))
+    return spans
+
+
+def _getKeyCandidates(binary, start, end, random_blocks=None):
+    """the different 32bit values (at any offset) of a window, in ascending order, without those that have a zero byte and those in
+    random blocks (see _getRandomBlocks)"""
+    values = []
+    for first, last in _getSpans(start, end, random_blocks):
+        for alignment in range(4):
+            count = (last - first - alignment) // 4
+            if count > 0:
+                values.append(np.frombuffer(binary, dtype="<u4", count=count, offset=first + alignment))
+    if not values:
+        return np.zeros(0, dtype=np.uint32)
+    values = np.concatenate(values)
+    # a byte of a value is zero if the bit 7 is set in (value - 0x01010101) & ~value
+    values = values[((values - np.uint32(0x01010101)) & ~values & np.uint32(0x80808080)) == 0]
+    return _getDifferent(values)
+
+
+def _getDifferent(values):
+    """the different values in ascending order (a sort and a comparison, np.unique is slower)"""
+    values = np.sort(values)
+    if len(values) > 1:
+        values = values[np.concatenate(([True], values[1:] != values[:-1]))]
+    return values
+
+
+def _getLookup(values):
+    """a table that rules out most 32bit values that are not one of the values with one lookup (as _ConstantSet does)"""
+    bits = min(24, max(16, len(values).bit_length() + 3))
+    mask = np.uint32((1 << bits) - 1)
+    table = np.zeros(1 << bits, dtype=np.bool_)
+    table[values & mask] = True
+    return table, mask
+
+
+def _findKeysInWindow(values, algorithm, mode, min_apis, lookup=None, buffer=None):
+    """the keys of one mode and algorithm that at least min_apis different probe APIs agree on in the sorted different values"""
+    probes, anchors = _getProbeHashes(algorithm)
+    combine = np.bitwise_xor if mode == "xor" else np.subtract
+    # the buffer of a window is used for all algorithms and modes
+    if buffer is None:
+        buffer = np.empty(len(values) * len(anchors), dtype=np.uint32)
+    proposed = buffer[: len(values) * len(anchors)]
+    for index, anchor in enumerate(anchors):
+        combine(values, anchor, out=proposed[index * len(values) : (index + 1) * len(values)])
+    proposed.sort()
+    # at least KEY_ANCHOR_HITS (two) different anchors agree on a key: it is there more than once (different anchors always give
+    # different keys for the same value, and different values always different keys for the same anchor)
+    agreed = proposed[KEY_ANCHOR_HITS - 1 :] == proposed[: len(proposed) - KEY_ANCHOR_HITS + 1]
+    candidates = _getDifferent(proposed[: len(proposed) - KEY_ANCHOR_HITS + 1][agreed])
+    # the key 0 means the hashes themselves, which are searched anyway
+    candidates = candidates[candidates != 0]
+    if not len(candidates):
+        return []
+    wanted = (combine if mode == "xor" else np.add).outer(candidates, probes).ravel()
+    table, mask = lookup or _getLookup(values)
+    # the wanted values that may be one of the values are looked up, the others are not
+    maybe = np.flatnonzero(table[wanted & mask])
+    present = wanted[maybe]
+    present = values[np.minimum(np.searchsorted(values, present), len(values) - 1)] == present
+    found = np.bincount(maybe[present] // len(probes), minlength=len(candidates))
+    return candidates[found >= min_apis].tolist()
+
+
+def findKeys(binary, algorithms=None, min_apis=None, window=None, skip_random=True):
+    """the keys that a program combines with the hashes of an algorithm, as {(algorithm, mode): [keys]}, mode "xor" (the value is
+    hash ^ key) or "add" (hash + key)
+
+    A key is found if at least min_apis (default: getMinimumKeyApis()) different PROBE_APIS have their value hash ^ key (hash + key) in
+    the same window of the dump, see the module description. algorithms: of KEYED_ALGORITHMS, by default all. window: size of the
+    windows in bytes (default: KEY_WINDOW). skip_random: leave out blocks of uniformly distributed bytes."""
+    algorithms = tuple(algorithm for algorithm in KEYED_ALGORITHMS if algorithms is None or algorithm in algorithms)
+    found = {}
+    if not algorithms or len(binary) < 4:
+        return found
+    windows = _getKeyWindows(len(binary), window or KEY_WINDOW)
+    trials = len(windows) * len(algorithms) * len(KEY_MODES)
+    random_blocks = _getRandomBlocks(binary) if skip_random else None
+
+    def findKeysInWindow(window):
+        start, end = window
+        values = _getKeyCandidates(binary, start, end, random_blocks)
+        needed = min_apis or getMinimumKeyApis(len(values), trials)
+        if needed > NUM_PROBE_APIS or not len(values):
+            return []
+        lookup = _getLookup(values)
+        buffer = np.empty(len(values) * KEY_ANCHORS, dtype=np.uint32)
+        return [
+            ((algorithm, mode), key)
+            for algorithm in algorithms
+            for mode in KEY_MODES
+            for key in _findKeysInWindow(values, algorithm, mode, needed, lookup, buffer)
+        ]
+
+    # the windows are independent, and numpy sorts and searches without the GIL
+    workers = min(len(windows), os.cpu_count() or 1, MAX_KEY_THREADS)
+    if workers > 1:
+        with concurrent.futures.ThreadPoolExecutor(workers) as pool:
+            parts = list(pool.map(findKeysInWindow, windows))
+    else:
+        parts = [findKeysInWindow(window) for window in windows]
+    for part in parts:
+        for variant, key in part:
+            found.setdefault(variant, set()).add(key)
+    return {variant: sorted(keys) for variant, keys in found.items()}
+
+
 class DynamicApiFinder:
     """finds the APIs of API DBs by hashes and strings; the DBs are given as ApiNameIndex by the name of their API map"""
 
@@ -415,11 +701,16 @@ class DynamicApiFinder:
             )
         return self._constants[key]
 
-    def findHashes(self, binary, algorithms=None, min_hits=None, load_offset=0):
+    def findKeys(self, binary, algorithms=None, min_apis=None, window=None, skip_random=True):
+        """the keys of the algorithms in the binary, see findKeys()"""
+        return findKeys(binary, algorithms, min_apis, window, skip_random)
+
+    def findHashes(self, binary, algorithms=None, min_hits=None, load_offset=0, keyed=True, min_key_apis=None):
         """APIs of which the hash is in the binary, in regions of hits that chance is unlikely to form, as {API map name: [DynamicApi]}
 
         min_hits: the fewest distinct constants of one algorithm in a region; given, it replaces the number that depends on the size of
-        the binary and the number of hashes (getMinimumHits)"""
+        the binary and the number of hashes (getMinimumHits). keyed: also look for the hashes combined with a key that the binary holds
+        (findKeys(), min_key_apis), in regions with a larger gap."""
         results = {name: [] for name in self.indexes}
         algorithms = tuple(
             algorithm
@@ -428,31 +719,71 @@ class DynamicApiFinder:
         )
         if not algorithms or not len(binary):
             return results
+        # offsets of the hits that are reported so far, for each API map
+        taken = {name: set() for name in self.indexes}
         constants = self._getConstants(algorithms)
-        if not len(constants.values):
-            return results
-        offsets, values = constants.find(binary)
-        if not len(offsets):
-            return results
-        for name, index in self.indexes.items():
-            for algorithm in algorithms:
-                table = index.getTable(algorithm)
-                left = np.searchsorted(table.hashes, values, side="left")
-                right = np.searchsorted(table.hashes, values, side="right")
-                member = np.flatnonzero(right > left)
-                if not len(member):
-                    continue
-                needed = min_hits or getMinimumHits(index.getNumHashes(algorithm), len(binary))
-                hits = list(zip(offsets[member].tolist(), values[member].tolist(), strict=True))
-                for offset, value in getRegions(hits, needed):
-                    first = int(np.searchsorted(table.hashes, value, side="left"))
-                    last = int(np.searchsorted(table.hashes, value, side="right"))
-                    for row in range(first, last):
-                        api, dlls = index.resolve(algorithm, row)
-                        results[name].append(DynamicApi(offset + load_offset, "hash", algorithm, value, api, dlls))
+        if len(constants.values):
+            variants = [(algorithm, algorithm, None, 0) for algorithm in algorithms]
+            self._findHits(results, constants, variants, binary, min_hits, REGION_GAP, load_offset, taken)
+        if keyed and self.indexes:
+            variants = [
+                (getKeyedLabel(algorithm, mode, key), algorithm, mode, key)
+                for (algorithm, mode), keys in self.findKeys(binary, algorithms, min_key_apis).items()
+                for key in keys
+            ]
+            if variants:
+                # the hashes without a key of these algorithms take part, they may be the real ones
+                variants += [(algorithm, algorithm, None, 0) for algorithm in dict.fromkeys(v[1] for v in variants)]
+                hashes = [
+                    index.getKeyedTable(algorithm, mode, key).hashes
+                    for index in self.indexes.values()
+                    for _, algorithm, mode, key in variants
+                ]
+                constants = _ConstantSet(np.concatenate(hashes))
+                self._findHits(
+                    results, constants, variants, binary, min_hits, KEYED_REGION_GAP, load_offset, taken, compete=True
+                )
         for hits in results.values():
             hits.sort(key=lambda hit: (hit.offset, hit.algorithm, hit.api))
         return results
+
+    def _findHits(self, results, constants, variants, binary, min_hits, gap, load_offset, taken, compete=False):
+        """adds the APIs of which the hashes (variants: (label, algorithm, mode, key)) are in regions of the binary to the results
+
+        compete: a constant is the hash of one API, so the variants that have it take turns, the one with the most hits first, and a
+        variant does not get the hits at the offsets that earlier variants, or the hashes searched before (taken), have. This is what
+        happens to a key that is a real key combined with the difference of the hashes of two names: CRC-32 (XOR) and the hashes that
+        add the last character (ADD) have the same difference for all names that end with A and W, so the two keys have many probe
+        APIs and many hits in common; the real key has more of both. The hashes without a key, the variant without a mode, take
+        part like the others but are not reported again, they were searched before (with the gap of unkeyed hashes)."""
+        offsets, values = constants.find(binary)
+        if not len(offsets):
+            return
+        for name, index in self.indexes.items():
+            found = []
+            for variant in variants:
+                table = index.getKeyedTable(variant[1], variant[2], variant[3])
+                left = np.searchsorted(table.hashes, values, side="left")
+                right = np.searchsorted(table.hashes, values, side="right")
+                member = np.flatnonzero(right > left)
+                if len(member):
+                    hits = list(zip(offsets[member].tolist(), values[member].tolist(), strict=True))
+                    found.append((variant, table, hits))
+            if compete:
+                found.sort(key=lambda entry: -len(entry[2]))
+            for (label, algorithm, mode, _), table, hits in found:
+                if compete:
+                    hits = [hit for hit in hits if hit[0] not in taken[name]]
+                # the hashes without key of a competition were reported before
+                report = mode is not None or not compete
+                needed = min_hits or getMinimumHits(index.getNumHashes(algorithm), len(binary), gap)
+                for offset, value in getRegions(hits, needed, gap):
+                    first = int(np.searchsorted(table.hashes, value, side="left"))
+                    last = int(np.searchsorted(table.hashes, value, side="right"))
+                    taken[name].add(offset)
+                    for row in range(first, last if report else first):
+                        api, dlls = index.resolve(algorithm, row, table)
+                        results[name].append(DynamicApi(offset + load_offset, "hash", label, value, api, dlls))
 
     def findStrings(self, binary, min_length=None, load_offset=0, min_run=None, gap=STRING_RUN_GAP):
         """APIs of which the name is a string in the binary, in runs of at least min_run different names (see getStringRuns), as
