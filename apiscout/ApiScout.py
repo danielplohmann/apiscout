@@ -58,8 +58,14 @@ class ApiScout:
     CONFIDENCE_UNALIGNED_MAX = 25
 
     def __init__(self, db_filepath=None):
+        # {name of the API map: {address: (DLL, API, bitness)}}. A map is replaced, not edited in place: what a scan
+        # searches for is cached by the identity and size of each map, which can not see an entry that was replaced.
+        # Put a new map under the name to change one.
         self.api_maps = {}
         self._api_map_sources = {}
+        # what loadDbFile() collected besides each map, valid for the map object in _loaded_maps, not for another one
+        # that was put under the same name
+        self._loaded_maps = {}
         self._other_bitness_maps = {}
         # (signature of the API maps, AddressSearch for them, the maps)
         self._address_search = None
@@ -170,6 +176,7 @@ class ApiScout:
             )
         api_map_name = self._getApiMapName(api_db["os_name"], db_filepath)
         self.api_maps[api_map_name] = api_map
+        self._loaded_maps[api_map_name] = api_map
         self._other_bitness_maps[api_map_name] = other_bitness_map
         self._export_entries[api_map_name] = export_entries
         self._dynamic_finder = None
@@ -206,9 +213,16 @@ class ApiScout:
 
     def _resolveApiByAddress(self, api_map_name, absolute_addr, bitness=None):
         api_entry = self.api_maps[api_map_name].get(absolute_addr, ("", "", ""))
-        if bitness is not None and api_entry[2] != bitness:
+        if bitness is not None and api_entry[2] != bitness and self._isLoadedMap(api_map_name):
             api_entry = self._other_bitness_maps.get(api_map_name, {}).get(absolute_addr, api_entry)
         return api_entry
+
+    def _isLoadedMap(self, name):
+        """whether the map under the name is the one that loadDbFile() built, with its other_bitness_map and entries"""
+        return self.api_maps.get(name) is self._loaded_maps.get(name)
+
+    def _getOtherBitnessMaps(self):
+        return {name: other for name, other in self._other_bitness_maps.items() if self._isLoadedMap(name)}
 
     def getNumApisLoaded(self):
         return sum([len(self.api_maps[api_map_name]) for api_map_name in self.api_maps])
@@ -262,7 +276,7 @@ class ApiScout:
         # api_maps is public, search for the addresses of the maps as they are now
         signature = tuple((name, id(api_map), len(api_map)) for name, api_map in self.api_maps.items())
         if self._address_search is None or self._address_search[0] != signature:
-            search = numpy_search.AddressSearch.fromApiMaps(self.api_maps, self._other_bitness_maps)
+            search = numpy_search.AddressSearch.fromApiMaps(self.api_maps, self._getOtherBitnessMaps())
             self._address_search = (signature, search, list(self.api_maps.values()))
         return self._address_search[1].find(binary, widths)
 
@@ -407,10 +421,13 @@ class ApiScout:
         key = tuple((name, id(api_map), len(api_map)) for name, api_map in self.api_maps.items())
         if self._dynamic_finder is None or self._dynamic_finder[0] != key:
             indexes = {
-                name: ApiNameIndex(self._export_entries.get(name) or api_map.values())
+                name: ApiNameIndex(
+                    (self._export_entries.get(name) if self._isLoadedMap(name) else None) or api_map.values()
+                )
                 for name, api_map in self.api_maps.items()
             }
-            self._dynamic_finder = (key, DynamicApiFinder(indexes))
+            # the maps are kept, so that the id of a map that was replaced is not given to another one
+            self._dynamic_finder = (key, DynamicApiFinder(indexes), list(self.api_maps.values()))
         return self._dynamic_finder[1]
 
     def findDynamicApis(
