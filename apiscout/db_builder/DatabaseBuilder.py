@@ -347,7 +347,8 @@ class DatabaseBuilder:
             filepath = "." + os.sep + ".".join(api_db["os_version"].split(".")[:2]) + filtered + ".json"
         if not filepath.endswith(".json"):
             filepath += ".json"
-        with open(filepath, "w") as f_out:
+        # the same bytes on every OS, as the DBs are shared and checked against SHA256SUMS
+        with open(filepath, "w", encoding="utf-8", newline="\n") as f_out:
             f_out.write(json.dumps(api_db, indent=1, sort_keys=True))
 
 
