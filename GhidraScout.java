@@ -46,12 +46,15 @@ import ghidra.program.model.data.FunctionDefinition;
 import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.symbol.ExternalLocation;
+import ghidra.program.model.symbol.ExternalManager;
+import ghidra.program.model.symbol.ExternalReference;
 import ghidra.program.model.data.DWordDataType;
 import ghidra.program.model.data.DataUtilities;
 import ghidra.program.model.data.DataUtilities.ClearDataMode;
 import ghidra.program.model.data.PointerDataType;
 import ghidra.program.model.data.QWordDataType;
 import ghidra.program.model.symbol.RefType;
+import ghidra.program.model.symbol.Reference;
 import ghidra.program.model.symbol.SourceType;
 import ghidra.program.model.symbol.Symbol;
 import ghidra.program.model.util.CodeUnitInsertionException;
@@ -304,16 +307,37 @@ public class GhidraScout extends GhidraScript {
 				return true;
 			}
 			String library = getLibraryName(entry);
-			ExternalLocation location = currentProgram.getExternalManager().addExtFunction(library, name, null,
-					SourceType.ANALYSIS);
+			ExternalLocation location = getExternalLocation(entry.address, library, name);
 			applyPrototype(location.getFunction(), entry.api);
-			currentProgram.getReferenceManager().addExternalReference(entry.address, library, name, null,
-					SourceType.ANALYSIS, 0, RefType.DATA);
+			currentProgram.getReferenceManager().addExternalReference(entry.address, 0, location,
+					SourceType.ANALYSIS, RefType.DATA);
 			return true;
 		} catch (Exception e) {
 			printerr("Could not annotate " + entry.address + " with " + entry.api + ": " + e.getMessage());
 			return false;
 		}
+	}
+
+	// Every pointer gets an external location of its own: the decompiler fails on a function that reaches
+	// one external function through two pointers, as with exports sharing an address (htons and ntohs).
+	private ExternalLocation getExternalLocation(Address pointer, String library, String name) throws Exception {
+		for (Reference reference : currentProgram.getReferenceManager().getReferencesFrom(pointer)) {
+			if (reference instanceof ExternalReference) {
+				ExternalLocation existing = ((ExternalReference) reference).getExternalLocation();
+				if (name.equals(existing.getLabel()) && library.equals(existing.getLibraryName())) {
+					// annotated before
+					return existing;
+				}
+			}
+		}
+		ExternalManager externalManager = currentProgram.getExternalManager();
+		ExternalLocation location = externalManager.addExtFunction(library, name, null, SourceType.ANALYSIS);
+		if (currentProgram.getReferenceManager().hasReferencesTo(location.getExternalSpaceAddress())) {
+			location = externalManager.addExtLocation(location.getParentNameSpace(), name, null,
+					SourceType.ANALYSIS, false);
+			location.createFunction();
+		}
+		return location;
 	}
 
 	// Prototypes are taken from the Windows data type archive shipped with Ghidra.
