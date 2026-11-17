@@ -209,6 +209,92 @@ class ApiScoutTestSuite(unittest.TestCase):
         # DLL names from old DBs without base address suffix are kept as they are
         old_db_results = {"db": [(0x10, 0x71AB1000, "ws2_32.dll", "connect", 32, None, 1, set())]}
         self.assertEqual("ws2_32.dll(32 bit)", cli.results_to_records(old_db_results)[0]["dll"])
+        self.assertNotIn("confidence", cli.results_to_records(old_db_results)[0])
+        self.assertEqual(42, cli.results_to_records(old_db_results, {"db": {(0x10, 32): 42}})[0]["confidence"])
+
+    def testConfidence(self):
+        def hit(offset, address=None, api="Api", bitness=32, in_import_table=None, ref_count=1, dll="a.dll_0x1000"):
+            return (offset, address or 0x7C000000 + offset, dll, api, bitness, in_import_table, ref_count, set())
+
+        scout = ApiScout()
+        scout.setBaseAddress(0x400000)
+        results = {
+            "db": [
+                hit(0x100),  # isolated, aligned
+                hit(0x201),  # isolated, unaligned
+                hit(0x300, ref_count=2),  # a call goes through it
+                hit(0x401, ref_count=2),  # unaligned, but with a call
+                hit(0x500),  # IAT of four, with a gap
+                hit(0x504),
+                hit(0x508),
+                hit(0x510),
+                hit(0x600, in_import_table=True),
+                hit(0x700, bitness=64),  # a QWORD next to a DWORD does not make a neighbour
+                hit(0x704),
+                hit(0x800, address=0x7C001234),  # the same address repeated is no table
+                hit(0x808, address=0x7C001234),
+                hit(0x810, address=0x7C001234),
+                hit(0x900),  # a pair, 24 bytes apart is too far
+                hit(0x918),
+                hit(0xA00),  # a pair, 16 bytes apart
+                hit(0xA10),
+                hit(0xB00, bitness=64),  # 64bit pair
+                hit(0xB08, bitness=64),
+            ]
+        }
+        confidences = scout.getConfidences(results)["db"]
+        scores = {offset: score for (offset, _), score in confidences.items() if offset not in (0x700, 0x704, 0xB00)}
+        self.assertEqual(10, scores[0x100])
+        self.assertEqual(0, scores[0x201])
+        self.assertEqual(50, scores[0x300])
+        self.assertEqual(25, scores[0x401])
+        self.assertEqual([70] * 4, [scores[offset] for offset in (0x500, 0x504, 0x508, 0x510)])
+        self.assertEqual(100, scores[0x600])
+        self.assertEqual(10, confidences[(0x700, 64)])
+        self.assertEqual(10, confidences[(0x704, 32)])
+        self.assertEqual([10, 10, 10], [scores[offset] for offset in (0x800, 0x808, 0x810)])
+        self.assertEqual([10, 10], [scores[0x900], scores[0x918]])
+        self.assertEqual([40, 40], [scores[0xA00], scores[0xA10]])
+        self.assertEqual(40, confidences[(0xB00, 64)])
+        # the sum is cut at 100
+        results = {"db": [hit(0x100, ref_count=3), hit(0x104), hit(0x108), hit(0x10C)]}
+        self.assertEqual(100, scout.getConfidences(results)["db"][(0x100, 32)])
+
+    def testConfidenceAgreement(self):
+        scout = ApiScout()
+        entry = (0x100, 0x7C000100, "kernel32.dll_0x7c000000", "Sleep", 32, None, 1, set())
+        same = (0x100, 0x7C000100, "KERNEL32.dll_0x7c000000", "Sleep", 32, None, 1, set())
+        other = (0x100, 0x7D000100, "user32.dll_0x7d000000", "MessageBoxA", 32, None, 1, set())
+        confidences = scout.getConfidences({"a": [entry], "b": [same], "c": [other]})
+        self.assertEqual(
+            (20, 20, 10), (confidences["a"][(0x100, 32)], confidences["b"][(0x100, 32)], confidences["c"][(0x100, 32)])
+        )
+        self.assertEqual(10, scout.getConfidences({"a": [entry]})["a"][(0x100, 32)])
+
+    def testFilterByConfidence(self):
+        scout = ApiScout()
+        iat = [(0x500 + 4 * i, 0x7C000000 + i, "a.dll_0x1000", f"Api{i}", 32, None, 1, set()) for i in range(3)]
+        lone = (0x100, 0x7C001000, "a.dll_0x1000", "Lone", 32, None, 1, set())
+        results = {"db": [lone, *iat], "empty": []}
+        self.assertEqual(results, scout.filterByConfidence(results, 0))
+        self.assertEqual({"db": iat, "empty": []}, scout.filterByConfidence(results, 11))
+        self.assertEqual({"db": [], "empty": []}, scout.filterByConfidence(results, 100))
+        # scores of the complete results keep the neighbours of hits that were filtered since
+        confidences = scout.getConfidences(results)
+        self.assertEqual({"db": iat[:1]}, {"db": scout.filterByConfidence({"db": iat[:1]}, 50, confidences)["db"]})
+        self.assertEqual({"db": []}, {"db": scout.filterByConfidence({"db": iat[:1]}, 50)["db"]})
+
+    def testConfidenceOfRealScan(self):
+        """an IAT of three APIs found in a scan scores high, the hit far away from it does not"""
+        scout = ApiScout()
+        scout.setBaseAddress(0x1000)
+        scout.api_maps["db"] = {0x7C000000 + i * 0x100: ("a.dll", f"Api{i}", 32) for i in range(4)}
+        binary = bytearray(0x200)
+        for offset, index in ((0x40, 0), (0x44, 1), (0x48, 2), (0x180, 3)):
+            binary[offset : offset + 4] = struct.pack("<I", 0x7C000000 + index * 0x100)
+        results = scout.crawl(bytes(binary))
+        confidences = scout.getConfidences(results)["db"]
+        self.assertEqual({(0x40, 32): 60, (0x44, 32): 60, (0x48, 32): 60, (0x180, 32): 10}, confidences)
 
     def testCompleteCoverage(self):
         scout = ApiScout()

@@ -35,6 +35,24 @@ class ApiScout:
     # share of exports overwriting another DLL's address above which loading an API DB issues a warning
     COLLISION_WARNING_RATIO = 0.01
 
+    # Confidence of a hit, 0 to 100: how likely it is a pointer to an API and not bytes that happen to equal an API
+    # address (about 1 in 40,000 DWORDs does, so a megabyte of anything holds dozens). getConfidences() adds up the
+    # evidence the scan already has. A hit found in the import table of the image is certain (100), otherwise:
+    #   neighbours  0 / 30 / 50 / 60: no / one / two / three or more other APIs of the same width in its cluster, the
+    #               hits that are at most CONFIDENCE_NEIGHBOUR_DISTANCE bytes apart (an IAT, a table of resolved APIs,
+    #               a table with a stride), see CONFIDENCE_NEIGHBOURS
+    #   references  +40: a call or jmp through it was found
+    #   agreement   +10: another API DB resolves the location to the same API of the same DLL
+    #   alignment   +10 for an offset aligned to the pointer size, tables are. Other hits count at most
+    #               CONFIDENCE_UNALIGNED_MAX, they are chance hits nearly without exception.
+    # The sum is cut at 100. Weights and thresholds were calibrated on Malpedia memory dumps, see the commit message.
+    CONFIDENCE_NEIGHBOUR_DISTANCE = 16
+    CONFIDENCE_NEIGHBOURS = (0, 30, 50, 60)
+    CONFIDENCE_REFERENCES = 40
+    CONFIDENCE_AGREEMENT = 10
+    CONFIDENCE_ALIGNED = 10
+    CONFIDENCE_UNALIGNED_MAX = 25
+
     def __init__(self, db_filepath=None):
         self.api_maps = {}
         self._api_map_sources = {}
@@ -411,6 +429,68 @@ class ApiScout:
                 filtered_list = [] if len(filtered_list) < 2 else self._getFilteredList(distance, filtered_list)
             filtered_result[key] = filtered_list
         return filtered_result
+
+    def _getNeighbourCounts(self, entries):
+        """for each (offset, bitness) of the hits of one API map: the number of other APIs in its cluster. Hits at least
+        one pointer and at most CONFIDENCE_NEIGHBOUR_DISTANCE bytes apart form a cluster, and the same address repeated
+        is one API, as in code that happens to repeat the bytes of an address (a table lists different APIs)."""
+        counts = {}
+        for bitness in {entry[4] for entry in entries}:
+            width = bitness // 8
+            hits = sorted({(entry[0], entry[1]) for entry in entries if entry[4] == bitness})
+            cluster = hits[:1]
+            for hit in [*hits[1:], None]:
+                if hit is not None and width <= hit[0] - cluster[-1][0] <= self.CONFIDENCE_NEIGHBOUR_DISTANCE:
+                    cluster.append(hit)
+                    continue
+                num_apis = len({address for _, address in cluster})
+                for member_offset, _ in cluster:
+                    counts[(member_offset, bitness)] = num_apis - 1
+                cluster = [] if hit is None else [hit]
+        return counts
+
+    def getConfidences(self, results):
+        """confidence from 0 to 100 of every hit of the results of crawl() or evaluateImportTable(), see CONFIDENCE_*.
+        Returns {api_map_name: {(offset, bitness): confidence}}. Neighbours and agreement are taken from the given
+        results, so score the complete results of a scan, before filtering them."""
+        located_apis = {}
+        for api_map_name, entries in results.items():
+            for entry in entries:
+                api_key = (entry[2].lower().rsplit("_0x", 1)[0], entry[3])
+                located_apis.setdefault((entry[0], entry[4], api_key), set()).add(api_map_name)
+        confidences = {}
+        for api_map_name, entries in results.items():
+            neighbour_counts = self._getNeighbourCounts(entries)
+            confidences[api_map_name] = {}
+            for entry in entries:
+                offset, bitness = entry[0], entry[4]
+                if entry[5]:
+                    score = 100
+                else:
+                    score = self.CONFIDENCE_NEIGHBOURS[min(neighbour_counts[(offset, bitness)], 3)]
+                    if entry[6] > 1:
+                        score += self.CONFIDENCE_REFERENCES
+                    api_key = (entry[2].lower().rsplit("_0x", 1)[0], entry[3])
+                    if located_apis[(offset, bitness, api_key)] - {api_map_name}:
+                        score += self.CONFIDENCE_AGREEMENT
+                    if (self.base_address + offset) % (bitness // 8) == 0:
+                        score = min(score + self.CONFIDENCE_ALIGNED, 100)
+                    else:
+                        score = min(score, self.CONFIDENCE_UNALIGNED_MAX)
+                confidences[api_map_name][(offset, bitness)] = score
+        return confidences
+
+    def filterByConfidence(self, results, min_confidence, confidences=None):
+        """the hits of the results with a confidence of at least min_confidence, in the shape of the results. Give the
+        confidences of getConfidences() for the complete results, otherwise they are computed from these results."""
+        if confidences is None:
+            confidences = self.getConfidences(results)
+        return {
+            api_map_name: [
+                entry for entry in entries if confidences[api_map_name][(entry[0], entry[4])] >= min_confidence
+            ]
+            for api_map_name, entries in results.items()
+        }
 
     def getWinApi1024Vectors(self, results):
         return self._apivector.getApiVectors(results)

@@ -52,6 +52,8 @@ A Windows minidump (`MDMP` signature, e.g. `crash.dmp`) is scanned as it is, ran
 
 A single API far away from all others, like the first row, is usually a chance hit: bytes that happen to equal an API address. `--filter 32` drops APIs that have no other API within 32 bytes.
 
+`--min-confidence 30` is the finer tool: every hit gets a confidence from 0 to 100 (`confidence` in `--json`) from its neighbours, calls through it, the import table, its alignment and agreeing API DBs, and hits below N are dropped (`apiscout scan --help` has the formula).
+
 `Confidence` (0 to 100) says how much a vector is worth as a fingerprint. It is low when only few or only very common APIs were found.
 
 </details>
