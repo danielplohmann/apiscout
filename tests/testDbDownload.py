@@ -38,7 +38,7 @@ class DbDownloadTestSuite(unittest.TestCase):
     def setUp(self):
         self.repository = FakeRepository({"a.json": b'{"os_name": "A"}', "b.csv": b"family;sample;1;1;x\n"})
         patches = [
-            unittest.mock.patch.object(db_index.urllib.request, "urlopen", self.repository.urlopen),
+            unittest.mock.patch("urllib.request.urlopen", self.repository.urlopen),
             unittest.mock.patch.object(cli, "get_version", return_value="1.0"),
             unittest.mock.patch.dict(os.environ, {cli.DB_DIR_VARIABLE: ""}),
         ]
@@ -118,7 +118,7 @@ class DbDownloadTestSuite(unittest.TestCase):
         def offline(request, timeout=None):
             raise urllib.error.URLError("Name or service not known")
 
-        with unittest.mock.patch.object(db_index.urllib.request, "urlopen", offline):
+        with unittest.mock.patch("urllib.request.urlopen", offline):
             code, _, errors = run("dbs", "download", "--db-dir", self.directory)
         self.assertEqual(1, code)
         self.assertIn("Name or service not known", errors)

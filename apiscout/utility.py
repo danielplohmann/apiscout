@@ -1,3 +1,6 @@
+import contextlib
+import gc
+import json
 import struct
 
 MAX_STRING_LENGTH = 512
@@ -29,3 +32,21 @@ def get_string(buf, start_offset):
     # names of DLLs and APIs are short, garbage is cut off instead of being copied over and over
     candidate = bytes(buf[start_offset : start_offset + MAX_STRING_LENGTH])
     return candidate.split(b"\x00", 1)[0].decode("latin-1")
+
+
+@contextlib.contextmanager
+def paused_garbage_collection():
+    """An API DB is parsed into a million containers, the garbage collections they trigger take as long as the parsing."""
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            gc.enable()
+
+
+def read_json(path):
+    """the content of a JSON file, read as bytes and decoded at once, which is several times faster than text mode"""
+    with open(path, "rb") as f_json:
+        return json.loads(f_json.read().decode("utf-8"))

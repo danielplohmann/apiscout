@@ -10,9 +10,11 @@
 #
 ########################################################################
 
+import json
 import logging
 import os
 import struct
+import tempfile
 import unittest
 
 from apiscout.ApiScout import ApiScout
@@ -92,6 +94,61 @@ class ApiScoutTestSuite(unittest.TestCase):
         self.assertEqual(expected_maps, scout.api_maps)
         with self.assertRaises(ValueError):
             scout.loadDbFile("Error")
+
+    def testLoadDbNamesAndCollisions(self):
+        """exports without a name, repeated addresses, DLLs sharing an address and DLLs without exports"""
+        db = {
+            "os_name": "Test Windows",
+            "dlls": {
+                "32_1.0_a.dll_0x1000": {
+                    "aslr_offset": 0x10,
+                    "base_address": 0x1000,
+                    "bitness": 32,
+                    "exports": [
+                        {"address": 0x10, "name": "A1", "ordinal": 1},
+                        {"address": 0x20, "name": None, "ordinal": 7},
+                        {"address": 0x10, "name": "A2", "ordinal": 2},
+                        {"address": 0x30, "name": "None", "ordinal": 8},
+                    ],
+                },
+                "64_1.0_B.dll_0x1000": {
+                    "aslr_offset": 0x10,
+                    "base_address": 0x1000,
+                    "bitness": 64,
+                    "exports": [{"address": 0x10, "name": "B", "ordinal": 1}],
+                },
+                "32_1.0_empty.dll_0x2000": {"base_address": 0x2000, "bitness": 32, "exports": []},
+            },
+        }
+        a_entries = [
+            ("a.dll_0x1000", "A1", 32),
+            ("a.dll_0x1000", "None<7>", 32),
+            ("a.dll_0x1000", "A2", 32),
+            ("a.dll_0x1000", "None<8>", 32),
+        ]
+        b_entry = ("B.dll_0x1000", "B", 64)
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = os.path.join(directory, "db.json")
+            with open(db_path, "w", encoding="utf-8") as f_db:
+                json.dump(db, f_db)
+            scout = ApiScout()
+            with self.assertLogs("apiscout.ApiScout", logging.WARNING):
+                scout.loadDbFile(db_path)
+            self.assertEqual(
+                {0x1000: b_entry, 0x1010: a_entries[1], 0x1020: a_entries[3]}, scout.api_maps["Test Windows"]
+            )
+            # the order of the addresses is the one of their first export
+            self.assertEqual([0x1000, 0x1010, 0x1020], list(scout.api_maps["Test Windows"]))
+            self.assertEqual({0x1000: a_entries[2]}, scout._other_bitness_maps["Test Windows"])
+            self.assertEqual(a_entries + [b_entry], scout._export_entries["Test Windows"])
+            self.assertEqual({"a.dll", "b.dll"}, scout._dll_file_names)
+            self.assertTrue(scout.has_64bit)
+            scout = ApiScout()
+            scout.ignoreAslrOffsets(True)
+            scout.loadDbFile(db_path)
+            self.assertEqual(
+                {0x1010: b_entry, 0x1020: a_entries[1], 0x1030: a_entries[3]}, scout.api_maps["Test Windows"]
+            )
 
     def testCrawlToyData(self):
         test_binary = (

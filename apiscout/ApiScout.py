@@ -11,11 +11,12 @@
 ########################################################################
 
 import itertools
-import json
 import logging
 import os
 import re
 import struct
+from itertools import repeat
+from operator import itemgetter
 
 try:
     import numpy as np
@@ -25,6 +26,7 @@ except ImportError:  # pragma: no cover - numpy is a dependency, the plain loop 
 from .ApiVector import ApiVector
 from .ImportTableLoader import ImportTableLoader
 from .PeTools import PeTools
+from .utility import paused_garbage_collection, read_json
 
 LOG = logging.getLogger(__name__)
 
@@ -34,6 +36,8 @@ class ApiScout:
     SEARCH_CHUNK_SIZE = 1 << 22
     # share of exports overwriting another DLL's address above which loading an API DB issues a warning
     COLLISION_WARNING_RATIO = 0.01
+    # DLL keys of API DBs end in the address they were loaded at: 32_6.1.7601.17514_kernel32.dll_0x76d10000
+    DLL_ADDRESS_SUFFIX = re.compile(r"_0x[0-9a-fA-F]+$")
 
     # Confidence of a hit, 0 to 100: how likely it is a pointer to an API and not bytes that happen to equal an API
     # address (about 1 in 40,000 DWORDs does, so a megabyte of anything holds dozens). getConfidences() adds up the
@@ -78,47 +82,49 @@ class ApiScout:
     def loadDbFile(self, db_filepath, place=None):
         """load an API DB. place(api_db) can return {DLL key: load address} to put DLLs at the addresses they are really
         loaded at (see LoadAddresses.DllPlacer), the other DLLs keep the addresses of the DB."""
-        api_db = {}
-        if os.path.isfile(db_filepath):
-            with open(db_filepath) as f_json:
-                api_db = json.loads(f_json.read())
-        else:
+        with paused_garbage_collection():
+            self._loadDbFile(db_filepath, place)
+
+    def _loadDbFile(self, db_filepath, place):
+        if not os.path.isfile(db_filepath):
             LOG.error("Not a file: %s!", db_filepath)
             raise ValueError
+        api_db = read_json(db_filepath)
         placements = place(api_db) if place else {}
         num_apis_loaded = 0
         num_collisions = 0
         api_map = {}
         other_bitness_map = {}
         export_entries = []
+        # one dict per DLL is built by C iterators over the lists of its exports, the Python loop runs per DLL
         for dll_entry in api_db["dlls"]:
             LOG.debug("  building address map for: %s", dll_entry)
-            aslr_offset = 0
-            if not self.ignore_aslr_offsets:
-                aslr_offset = api_db["dlls"][dll_entry].get("aslr_offset", 0)
-            for export in api_db["dlls"][dll_entry]["exports"]:
-                num_apis_loaded += 1
-                api_name = "{}".format(export["name"])
-                if api_name == "None":
-                    api_name = "None<{}>".format(export["ordinal"])
-                dll_name = "_".join(dll_entry.split("_")[2:])
-                self._dll_file_names.add(re.sub(r"_0x[0-9a-fA-F]+$", "", dll_name).lower())
-                bitness = api_db["dlls"][dll_entry]["bitness"]
-                self.has_64bit |= bitness == 64
-                base_address = api_db["dlls"][dll_entry]["base_address"]
-                if dll_entry in placements:
-                    virtual_address = placements[dll_entry] + export["address"]
-                else:
-                    virtual_address = base_address + export["address"] - aslr_offset
-                if virtual_address in api_map:
-                    if api_map[virtual_address][0].lower() != dll_name.lower():
+            dll = api_db["dlls"][dll_entry]
+            aslr_offset = 0 if self.ignore_aslr_offsets else dll.get("aslr_offset", 0)
+            exports = dll["exports"]
+            if not len(exports):
+                LOG.debug("loaded %d exports", num_apis_loaded)
+                continue
+            num_apis_loaded += len(exports)
+            dll_name = "_".join(dll_entry.split("_")[2:])
+            self._dll_file_names.add(self.DLL_ADDRESS_SUFFIX.sub("", dll_name).lower())
+            bitness = dll["bitness"]
+            self.has_64bit |= bitness == 64
+            load_offset = placements[dll_entry] if dll_entry in placements else dll["base_address"] - aslr_offset
+            entries = list(zip(repeat(dll_name), self._getApiNames(exports), repeat(bitness), strict=False))
+            addresses = [load_offset + export["address"] for export in exports]
+            if not api_map.keys().isdisjoint(addresses):
+                # an address in the map already is overwritten by this DLL, repeats inside the DLL are no collisions
+                for virtual_address in dict.fromkeys(filter(api_map.__contains__, addresses)):
+                    other = api_map[virtual_address]
+                    if other[0].lower() != dll_name.lower():
                         num_collisions += 1
-                    if api_map[virtual_address][2] != bitness:
+                    if other[2] != bitness:
                         # a 32bit and a 64bit DLL can share an address, both stay resolvable for their pointer size
-                        other_bitness_map[virtual_address] = api_map[virtual_address]
-                api_map[virtual_address] = (dll_name, api_name, bitness)
-                # the map keeps one export per address, the names of all of them are needed to find APIs by name
-                export_entries.append(api_map[virtual_address])
+                        other_bitness_map[virtual_address] = other
+            api_map.update(zip(addresses, entries, strict=True))
+            # the map keeps one export per address, the names of all of them are needed to find APIs by name
+            export_entries.extend(entries)
             LOG.debug("loaded %d exports", num_apis_loaded)
         LOG.debug(
             "loaded %d exports from %d DLLs (%s) with %d potential collisions.",
@@ -143,6 +149,17 @@ class ApiScout:
         self._other_bitness_maps[api_map_name] = other_bitness_map
         self._export_entries[api_map_name] = export_entries
         self._dynamic_finder = None
+
+    @staticmethod
+    def _getApiNames(exports):
+        """the names of exports, one that has none is called None<ordinal>"""
+        names = list(map(str, map(itemgetter("name"), exports)))
+        if "None" in names:
+            names = [
+                f"None<{export['ordinal']}>" if name == "None" else name
+                for name, export in zip(names, exports, strict=True)
+            ]
+        return names
 
     def _getApiMapName(self, os_name, db_filepath):
         """API maps are named by the OS they were built on. Several DBs for the same OS (e.g. one per boot with ASLR) must not replace each other."""
