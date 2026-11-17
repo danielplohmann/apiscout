@@ -110,12 +110,19 @@ class FingerprintCrawlerTestSuite(unittest.TestCase):
             )
 
     def testCollectSkipsAslrDbsByDefault(self):
-        import collect
+        import contextlib
+        import io
+
+        from apiscout import cli
 
         minimal_db_path = os.path.join(THIS_DIR, "minimal_db.json")
-        db_paths = [self._aslr_db_path, minimal_db_path]
-        self.assertEqual([minimal_db_path], collect.select_db_files(db_paths))
-        self.assertEqual(db_paths, collect.select_db_files(db_paths, use_aslr_dbs=True))
+        target = os.path.join(self._tmp_dir, "collection.csv")
+        arguments = ["collect", self._root_path, "--db", self._aslr_db_path, "--db", minimal_db_path, "-o", target]
+        for extra, is_skipped in (([], True), (["--use-aslr-dbs"], False), (["--ignore-aslr"], False)):
+            messages = io.StringIO()
+            with contextlib.redirect_stderr(messages):
+                self.assertEqual(0, cli.main(arguments + extra))
+            self.assertEqual(is_skipped, "Skipping API DB with ASLR offsets" in messages.getvalue())
 
     def testCrawlerAppliesAslrOffsetsOnRequest(self):
         crawler = FingerprintCrawler(
