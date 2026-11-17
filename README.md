@@ -262,7 +262,22 @@ uv run python -m unittest discover -s tests -p "test*.py" -t .
 uv run ruff check && uv run ruff format --check && uv run ty check
 ```
 
-Changes are listed in the [changelog](CHANGELOG.md). A release published on GitHub is uploaded to PyPI by a workflow that uses [trusted publishing](https://docs.pypi.org/trusted-publishers/), set up once in the PyPI project for the workflow `release.yml` and the environment `pypi`.
+Changes are listed in the [changelog](CHANGELOG.md).
+
+<details>
+<summary>Releasing</summary>
+
+1. Set the version in `pyproject.toml`, run `uv lock` and add the changelog entry.
+2. Publish a GitHub release whose tag is the version, with or without a leading `v`.
+
+The workflow `release.yml` then checks that the tag names the version, runs the tests, builds the wheel and the source distribution, tries both in a clean environment and uploads them to PyPI together with their attestations.
+
+It uses [trusted publishing](https://docs.pypi.org/trusted-publishers/), so no token is stored. This needs two settings, once:
+
+- On PyPI, a trusted publisher for the project with this repository, the workflow `release.yml` and the environment `pypi`.
+- On GitHub, an environment named `pypi`, ideally with required reviewers, so that an upload has to be approved.
+
+</details>
 
 Questions, bug reports and pull requests are welcome on [GitHub](https://github.com/danielplohmann/apiscout/issues). ApiScout is licensed under the [BSD 2-Clause License](LICENSE).
 

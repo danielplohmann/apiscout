@@ -6,16 +6,17 @@ on:
 
 permissions: {}
 
+concurrency:
+  group: pypi-release
+  cancel-in-progress: false
+
 jobs:
-  publish:
-    name: Publish to PyPI
+  build:
+    name: Build and test the distributions
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    environment: pypi
+    timeout-minutes: 15
     permissions:
-      contents: read
-      # trusted publishing: PyPI accepts the identity of this workflow, no token is stored
-      id-token: write
+      contents: read # checkout
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -24,7 +25,37 @@ jobs:
         with:
           version: "0.13.8"
           enable-cache: false
+      - name: The tag has to name the version of the package
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: test "${RELEASE_TAG#v}" = "$(uv version --short)"
       - run: uv sync --locked
       - run: uv run python -m unittest discover -s tests -p "test*.py" -t .
-      - run: uv build
-      - run: uv publish --trusted-publishing always
+      - run: uv build --no-sources
+      - name: The wheel installs and runs on its own
+        run: uv run --isolated --no-project --with dist/*.whl -- apiscout --version
+      - name: The source distribution installs and runs on its own
+        run: uv run --isolated --no-project --with dist/*.tar.gz -- apiscout --version
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: distributions
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: [build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/p/apiscout
+    permissions:
+      id-token: write # trusted publishing: PyPI accepts the identity of this workflow, no token is stored
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: distributions
+          path: dist/
+      # uploads the files together with their attestations (PEP 740)
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
