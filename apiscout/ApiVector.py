@@ -10,11 +10,12 @@
 #
 ########################################################################
 
+import contextlib
 import logging
 import math
 import os
 import re
-from itertools import groupby
+from operator import and_, itemgetter, or_
 
 LOG = logging.getLogger(__name__)
 
@@ -46,6 +47,8 @@ class ApiVector:
         self._base64chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz@}]^+-*/?,._"
         self._bin2base64 = {f"{i:06b}": base64char for i, base64char in enumerate(self._base64chars)}
         self._base642bin = {v: k for k, v in self._bin2base64.items()}
+        self._bit_chars = bytes.maketrans(bytes(range(256)), b"01" + b"x" * 254)
+        self._b64_to_bits = str.maketrans({ord(char): bits for char, bits in self._base642bin.items()})
 
     def _loadWinApi1024(self, winapi1024_filepath):
         winapi1024 = []
@@ -97,20 +100,15 @@ class ApiVector:
         return self._uniquify_api_name(dll_name, api_name) in self._dllapi_set
 
     def getApiVectors(self, results):
-        unique_results = self._get_uniquified_results(results)
-        api_vectors = self._vectorize(results)
         coverage = {}
-        for api_map_name in unique_results:
-            percentage = (
-                100.0 * sum(api_vectors[api_map_name]) / len(unique_results[api_map_name])
-                if len(unique_results[api_map_name])
-                else 0
-            )
+        for api_map_name, unique_apis in self._get_uniquified_results(results).items():
+            api_vector = self._vectorize(unique_apis)
+            in_api_vector = sum(api_vector)
             coverage[api_map_name] = {
-                "vector": self.compress(api_vectors[api_map_name]),
-                "num_unique_apis": len(unique_results[api_map_name]),
-                "in_api_vector": sum(api_vectors[api_map_name]),
-                "percentage": percentage,
+                "vector": self.compress(api_vector),
+                "num_unique_apis": len(unique_apis),
+                "in_api_vector": in_api_vector,
+                "percentage": 100.0 * in_api_vector / len(unique_apis) if len(unique_apis) else 0,
             }
         return coverage
 
@@ -183,33 +181,46 @@ class ApiVector:
         return score
 
     def compress(self, api_vector):
-        bin_vector_string = "".join([f"{bit:d}" for bit in api_vector]) + "0" * (-len(api_vector) % 6)
-        uncompressed_b64 = "".join(self._bin2base64[chunk] for chunk in self._chunks(bin_vector_string, 6))
-        compressed_b64 = "".join(self._compress_rep(c, r) for c, r in groupby(uncompressed_b64))
-        return compressed_b64
+        bin_vector_string = None
+        if isinstance(api_vector, list | tuple):
+            # the common case, a list of 0 and 1, is much faster as bytes
+            with contextlib.suppress(TypeError, ValueError):
+                bin_vector_string = bytes(api_vector).translate(self._bit_chars).decode()
+        if bin_vector_string is None or "x" in bin_vector_string:
+            bin_vector_string = "".join([f"{bit:d}" for bit in api_vector])
+        bin_vector_string += "0" * (-len(api_vector) % 6)
+        uncompressed_b64 = "".join([self._bin2base64[chunk] for chunk in self._chunks(bin_vector_string, 6)])
+        # runs of three or more characters are written as the character and the length of the run
+        return re.sub(r"(.)\1{2,}", lambda run: f"{run[1]}{len(run[0])}", uncompressed_b64, flags=re.DOTALL)
 
     def decompress(self, compressed_vector):
-        as_binary = [int(bit) for bit in self._getBitString(compressed_vector)]
+        bits = self._getBitString(compressed_vector)
         if NUMPY_AVAILABLE:
-            return np.array(as_binary, dtype=int)
-        return as_binary
+            return self.n_decompress(compressed_vector, bits)
+        return [int(bit) for bit in bits]
 
-    def n_decompress(self, compressed_vector):
-        return np.array([int(bit) for bit in self._getBitString(compressed_vector)], dtype=int)
+    def n_decompress(self, compressed_vector, bits=None):
+        if bits is None:
+            bits = self._getBitString(compressed_vector)
+        return np.frombuffer(bits.encode("ascii"), dtype=np.uint8).astype(int) - ord("0")
 
     def _getBitString(self, compressed_vector):
         """decompressed vector as string of bits, raises ValueError if this is not a valid compressed vector"""
         num_chars = -(-self._getVectorLength() // 6)
-        if not isinstance(compressed_vector, str) or not re.fullmatch(r"(\D\d*)*", compressed_vector, re.DOTALL):
+        if not isinstance(compressed_vector, str) or not re.fullmatch(r"(?:\D\d*)*", compressed_vector):
             raise ValueError(f"Not a valid ApiVector: {compressed_vector!r:.64}")
-        decompressed_b64 = ""
-        for char, count in self._decompress_get(compressed_vector):
-            if char not in self._base642bin or len(decompressed_b64) + count > num_chars:
+
+        def expand(run):
+            if int(run[2]) > num_chars:
                 raise ValueError(f"Not a valid ApiVector: {compressed_vector[:64]}")
-            decompressed_b64 += char * count
-        if len(decompressed_b64) != num_chars:
+            return run[1] * int(run[2])
+
+        decompressed_b64 = re.sub(r"(\D)(\d+)", expand, compressed_vector)
+        bits = decompressed_b64.translate(self._b64_to_bits)
+        # every character of the alphabet became 6 bits, anything else is still one character
+        if len(decompressed_b64) != num_chars or len(bits) != 6 * num_chars:
             raise ValueError(f"Not a valid ApiVector: {compressed_vector[:64]}")
-        return "".join(self._base642bin[c] for c in decompressed_b64)[: self._getVectorLength()]
+        return bits[: self._getVectorLength()]
 
     def _getVectorLength(self):
         return len(self._winapi1024) if self._winapi1024 else 1024
@@ -231,15 +242,11 @@ class ApiVector:
             if not maxPQ:
                 return 0.0
             return float(1.0 * np.sum(np.minimum(vector_a, vector_b)) / maxPQ)
-        intersection_score = 0
-        union_score = 0
-        jaccard_index = 0
-        for offset in range(len(vector_a)):
-            intersection_score += vector_a[offset] & vector_b[offset]
-            union_score += vector_a[offset] | vector_b[offset]
+        intersection_score = sum(map(and_, vector_a, vector_b))
+        union_score = sum(map(or_, vector_a, vector_b))
         if union_score > 0:
-            jaccard_index = 1.0 * intersection_score / union_score
-        return jaccard_index
+            return 1.0 * intersection_score / union_score
+        return 0
 
     def explainMatch(self, vector_a, vector_b):
         """why two vectors match: the score of matchVectors, and the APIs found in both vectors or in only one of them,
@@ -290,48 +297,112 @@ class ApiVector:
             "families_in_collection": len(collection_data),
             "vectors_in_collection": sum([len(samples) for family, samples in collection_data.items()]),
         }
-        vector_collection_results = []
         decompressed_vector = vector
         if not self._isDecompressed(vector):
             decompressed_vector = self.decompress(vector)
-        for family, samples in collection_data.items():
-            for sample, sample_vector in samples.items():
+        names = [(family, sample) for family, samples in collection_data.items() for sample in samples]
+        sample_vectors = [sample_vector for samples in collection_data.values() for sample_vector in samples.values()]
+        scores = self._matchAll(decompressed_vector, sample_vectors)
+        vector_collection_results = []
+        for (family, sample), sample_vector, score in zip(names, sample_vectors, scores, strict=True):
+            if score is None:
                 try:
                     score = self.matchVectors(decompressed_vector, sample_vector)
                 except ValueError:
                     LOG.warning("Skipping invalid ApiVector of %s / %s in collection.", family, sample)
                     continue
-                vector_collection_results.append((family, sample, score))
-        results["match_results"] = sorted(vector_collection_results, key=lambda tup: tup[2], reverse=True)
+            vector_collection_results.append((family, sample, score))
+        results["match_results"] = sorted(vector_collection_results, key=itemgetter(2), reverse=True)
         return results
+
+    def _matchAll(self, vector, compressed_vectors):
+        """the scores of matchVectors() of a vector with each of the compressed vectors, None where they are not
+        computed here: the vectors that are not plain compressed vectors, or all of them for unusual weights or vectors"""
+        scores = [None] * len(compressed_vectors)
+        if not NUMPY_AVAILABLE or not compressed_vectors:
+            return scores
+        length = self._getVectorLength()
+        ranks = np.asarray(self._n_vector_ranks_only)
+        if ranks.shape != (length,) or ranks.dtype.kind != "i" or ranks.min() < 0 or ranks.sum() >= 2**30:
+            return scores
+        bits = np.asarray(vector)
+        if bits.shape != (length,) or bits.dtype.kind not in "biuf" or not np.isin(bits, (0, 1)).all():
+            return scores
+        # The weight of the APIs of a vector, and of those it shares with the vector, is the sum over its characters
+        # of a table of 64 entries per character. All weights are integers, so are the sums, and the scores are those
+        # of matchVectors(). The sums are kept in one number: the shared weight above the 32 bits of the total.
+        padding = -length % 6
+        bit_values = (np.arange(64)[:, None] >> np.arange(5, -1, -1)) & 1
+        weights = np.append(ranks, np.zeros(padding, dtype=ranks.dtype)).reshape(-1, 6)
+        shared = weights * np.append(bits, np.zeros(padding, dtype=bits.dtype)).reshape(-1, 6).astype(bool)
+        tables = ((shared @ bit_values.T) << 32) + weights @ bit_values.T
+        # in chunks, which keep the memory in check for a very large collection
+        for start in range(0, len(compressed_vectors), 32768):
+            values, found = self._unpackVectors(compressed_vectors[start : start + 32768], len(tables))
+            sums = np.zeros(len(values), dtype=np.int64)
+            for column, table in zip(np.ascontiguousarray(values.T), tables, strict=True):
+                sums += table.take(column)
+            both = sums >> 32
+            union = int(shared.sum()) + (sums & 0xFFFFFFFF) - both
+            found_scores = np.zeros(len(both))
+            np.divide(1.0 * both, union, out=found_scores, where=union != 0)
+            for index, score in zip(np.flatnonzero(found).tolist(), found_scores.tolist(), strict=True):
+                scores[start + index] = score
+        return scores
+
+    def _unpackVectors(self, compressed_vectors, num_chars):
+        """the characters of the compressed vectors as numbers from 0 to 63, a row for each vector that is a valid
+        compressed vector of ASCII characters, and a mask which of the vectors these are. Whether the others are
+        valid is for decompress() to decide."""
+        # characters of the alphabet are translated to their value, digits to 64 + digit, line ends to 74
+        alphabet = bytearray(b"\xff" * 256)
+        for char, bits in self._base642bin.items():
+            alphabet[ord(char)] = int(bits, 2)
+        alphabet[48:58] = range(64, 74)
+        alphabet[10] = 74
+        # one line per vector, with a line end before the first as well
+        raw = ("\n" + "\n".join(compressed_vectors) + "\n").encode("utf-8", "surrogateescape")
+        codes = np.frombuffer(raw.translate(bytes(alphabet)), np.uint8)
+        others = np.flatnonzero(codes > 63)
+        kinds = codes[others]
+        line_ends = others[kinds == 74]
+        digits = others[kinds < 74]
+        # the digits after a character are the number of times it is repeated
+        first = np.flatnonzero(np.diff(digits, prepend=-2) != 1)
+        starts = digits[first]
+        lengths = np.diff(first, append=len(digits))
+        counts = np.zeros(len(starts), dtype=np.int32)
+        for place in range(4):
+            long_enough = lengths > place
+            counts[long_enough] = counts[long_enough] * 10 + codes[starts[long_enough] + place] - 64
+        # characters that are not of the alphabet, digits that do not follow one, and numbers of more than 4 digits
+        misplaced = (codes[starts - 1] > 63) | (lengths > 4)
+        counts[misplaced] = 0
+        run_lines = np.searchsorted(line_ends, starts) - 1
+        # a run of digits and its character are the number of characters long, and these many bytes
+        changes = np.bincount(run_lines, counts - 1 - lengths, len(line_ends) - 1)
+        found = np.diff(line_ends) - 1 + changes == num_chars
+        found[np.searchsorted(line_ends, others[kinds == 255]) - 1] = False
+        found[run_lines[misplaced]] = False
+        repeats = (codes < 64).astype(np.int32)
+        repeats[starts - 1] = np.minimum(counts, num_chars + 1)
+        if not found.all():
+            repeats[1:] *= np.repeat(found, np.diff(line_ends))
+        return np.repeat(codes, repeats).reshape(-1, num_chars), found
 
     def _chunks(self, sequence, n):
         for i in range(0, len(sequence), n):
             yield sequence[i : i + n]
 
-    def _compress_rep(self, char, reps):
-        size = len(list(reps))
-        if size <= 2:
-            return char * size
-        return f"{char}{size:d}"
-
-    def _decompress_get(self, data):
-        for match in re.finditer(r"(?P<char>\D)(?P<count>\d*)", data, re.DOTALL):
-            yield match.group("char"), int(match.group("count") or 1)
-
-    def _vectorize(self, results):
-        unique_results = self._get_uniquified_results(results)
-        vectors = {}
-        for api_map_name, unique_apis in unique_results.items():
-            vectors[api_map_name] = [1 if entry in unique_apis else 0 for entry in self._dllapi_only]
-        return vectors
+    def _vectorize(self, unique_apis):
+        return list(map(unique_apis.__contains__, self._dllapi_only))
 
     def _get_uniquified_results(self, results):
         uniquified = {}
         for api_map_name, map_results in results.items():
             # imports by ordinal that could not be resolved to a name carry no information about the API
             uniquified[api_map_name] = set(
-                self._uniquify_api_name("_".join(t[2].split("_")[:-1]), t[3]) for t in map_results if t[3]
+                self._uniquify_api_name(t[2].rpartition("_")[0], t[3]) for t in map_results if t[3]
             )
         return uniquified
 

@@ -15,7 +15,6 @@ import operator
 import os
 
 import numpy as np
-from PIL import Image
 
 from .ApiQRContext import ApiQRContext
 from .ApiVector import ApiVector
@@ -58,6 +57,9 @@ class ApiQR:
         return result
 
     def getPng(self, destination_path, scale_factor=5):
+        # Pillow takes as long to import as numpy, and most commands draw nothing
+        from PIL import Image
+
         # colored_vector = list(map(self.__mapColor, self.vector_unsorted, self.context.colors))
         colored_vector = []
         vector = self.vector_unsorted
