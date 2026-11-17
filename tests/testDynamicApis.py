@@ -361,6 +361,33 @@ class SearchTestSuite(unittest.TestCase):
         self.assertEqual([], getRegions([], 1))
         self.assertEqual([(0, 1), (128, 2)], getRegions([(0, 1), (128, 2), (257, 3)], 2))
 
+    def testRegionsAreThoseOfAChainOfHitsAtATime(self):
+        """the regions the search finds (getRegions() is the function that it uses, for lists) are those of the simple rule: a chain
+        of hits goes on while the next one is at most gap bytes away from the last one, hits that overlap the last one do not count"""
+
+        def reference(hits, min_hits, gap):
+            kept, chain = [], []
+            for offset, value in [*hits, (None, None)]:
+                if chain and (offset is None or offset - chain[-1][0] > gap):
+                    if len({value for _, value in chain}) >= min_hits:
+                        kept.extend(chain)
+                    chain = []
+                if offset is not None and not (chain and offset < chain[-1][0] + 4):
+                    chain.append((offset, value))
+            return kept
+
+        rng = random.Random(7)
+        found = 0
+        for _ in range(1500):
+            span = rng.choice([20, 60, 400, 5000])
+            offsets = sorted(rng.randrange(span) for _ in range(rng.choice([0, 1, 2, 3, 6, 12, 30])))
+            hits = [(offset, rng.randrange(rng.choice([2, 3, 6, 2**32]))) for offset in offsets]
+            min_hits, gap = rng.choice([1, 2, 3, 4]), rng.choice([4, 8, 16, 128, 4096])
+            expected = reference(hits, min_hits, gap)
+            found += bool(expected)
+            self.assertEqual(expected, getRegions(hits, min_hits, gap), (hits, min_hits, gap))
+        self.assertGreater(found, 100)
+
     def testMinimumHits(self):
         # 100,000 hashes make some 24 hits of chance per MB
         self.assertAlmostEqual(24.41, DynamicApis.getExpectedChanceHits(100000, 1 << 20), places=2)

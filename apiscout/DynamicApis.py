@@ -527,27 +527,14 @@ def _getRepeated(values):
 def getRegions(hits, min_hits, gap=REGION_GAP):
     """the hits ((offset, value) in ascending order of the offsets) that are in a chain of at least min_hits distinct values, in which
     each hit is at most gap bytes behind the previous one; a hit that overlaps the previous one is skipped, constants do not overlap"""
-    regions = []
-    chain = []
-
-    def close():
-        if len({value for _, value in chain}) >= min_hits:
-            regions.extend(chain)
-        chain.clear()
-
-    for offset, value in hits:
-        if chain:
-            if offset < chain[-1][0] + 4:
-                continue
-            if offset - chain[-1][0] > gap:
-                close()
-        chain.append((offset, value))
-    close()
-    return regions
+    offsets = np.array([offset for offset, _ in hits], dtype=np.int64)
+    values = np.array([value for _, value in hits], dtype=np.int64)
+    return [hits[index] for index in _getRegionIndices(offsets, values, min_hits, gap).tolist()]
 
 
 def _getRegionIndices(offsets, values, min_hits, gap=REGION_GAP):
-    """the indices of the hits that getRegions() keeps, for the arrays of the offsets (ascending) and values of the hits"""
+    """the indices of the hits that getRegions() keeps, for the arrays of the offsets (ascending) and values of the hits; the
+    search for hashes finds its regions with this"""
     indices = np.arange(len(offsets))
     if len(offsets) > 1 and (np.diff(offsets) < 4).any():
         # hits that overlap the previous hit are skipped
