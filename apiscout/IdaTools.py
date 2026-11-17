@@ -315,6 +315,7 @@ class IdaTools:
             if api_dbs:
                 parameters["api_dbs"] = api_dbs
                 parameters["ignore_aslr_offset"] = form.rAslr.checked
+                parameters["modules"] = form.iModules.value.strip() or None
             else:
                 print("No API DB selected, nothing to do.")
         form.Free()

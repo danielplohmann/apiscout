@@ -10,6 +10,8 @@ import re
 import ida_kernwin
 from ida_kernwin import Choose, Form
 
+from apiscout.LoadAddresses import ModuleListError
+
 ICONS = {}
 
 
@@ -95,10 +97,13 @@ ApiScout
 Select the API DBs of the system the memory dump was taken from (found in apiscout/dbs):
 <:{cApiDbChooser}>
 <Other API DB file:{iFileOpen}>
+Module list with the load addresses of the DLLs (optional, lines of hex address and DLL path):
+<Module list file:{iModules}>
 <Ignore the ASLR offsets stored in the API DBs:{rAslr}>{cGroup1}>
 """,
             {
                 "iFileOpen": Form.FileInput(swidth=46, open=True, value=""),
+                "iModules": Form.FileInput(swidth=46, open=True, value=""),
                 "cGroup1": Form.ChkGroupControl(("rAslr",)),
                 "FormChangeCb": Form.FormChangeCb(self.OnFormChange),
                 "cApiDbChooser": Form.EmbeddedChooserControl(self.apiDbChooser, swidth=64),
@@ -167,7 +172,11 @@ class ApiResultsChooser(Choose):
         if self._keep_rows:
             self._keep_rows = False
         else:
-            self.all_rows = self.rescan()
+            try:
+                self.all_rows = self.rescan()
+            except ModuleListError as exc:
+                # e.g. the module list was deleted since the scan before, the rows of that scan stay
+                print(f"ApiScout: {exc}.")
             self._applyFilter()
             # annotations can be undone or replaced in the database in the meantime
             found = {tuple(row[:4]) for row in self.all_rows}

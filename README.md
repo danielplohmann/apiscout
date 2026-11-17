@@ -164,11 +164,13 @@ Without a machine of the build, `python DllDownloader.py --windows 11-24H2 --upd
 
 Annotated APIs are named, typed as pointers to their prototype, and the calls through them get the prototype too.
 
+The DLLs of the API DBs are placed at the load addresses of the module list file you give in the form (optional, lines of `<hex load address> <DLL path>` as for `apiscout scan --modules`), so one DB fits the dumps of every boot.
+
 <details>
 <summary>Batch mode</summary>
 
 ```bash
-idat -A -TBinary -b<dump address / 16, hex> -pmetapc -S"ida_scout.py <API DB> [<API DB> ...]" <dump>
+idat -A -TBinary -b<dump address / 16, hex> -pmetapc -S"ida_scout.py <API DB> [<API DB> ...] [--modules <module list>]" <dump>
 ```
 
 Annotates everything and saves the database. The segment base from `-b` is reset to 0. DBs in the plugin's `dbs` folder or the download folder can be given by name. idat creates 64bit databases for binary files, so prepare 32bit dumps as database first.
