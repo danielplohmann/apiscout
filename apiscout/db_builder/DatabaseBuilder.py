@@ -284,11 +284,13 @@ class DatabaseBuilder:
             if dll_path not in used_paths:
                 unused_addresses.setdefault(dll_path.rsplit("/", 1)[-1], set()).add(load_address)
         for filename, dlls in unmatched_dlls.items():
-            if len(dlls) == 1 and len(unused_addresses.get(filename, ())) == 1:
-                load_address = next(iter(unused_addresses[filename]))
-                if dlls[0].get("bitness") == 32 and load_address >= 0x100000000:
-                    continue
-                dlls[0]["aslr_offset"] = dlls[0]["base_address"] - load_address
+            if len(unused_addresses.get(filename, ())) != 1:
+                continue
+            load_address = next(iter(unused_addresses[filename]))
+            # an address above 4 GB can only belong to a 64bit DLL
+            candidates = [dll for dll in dlls if load_address < 0x100000000 or dll.get("bitness") != 32]
+            if len(candidates) == 1:
+                candidates[0]["aslr_offset"] = candidates[0]["base_address"] - load_address
                 num_offsets += 1
         log = LOG.warning if load_addresses and not num_offsets else LOG.info
         log("Applied load addresses to %d of %d DLLs.", num_offsets, len(api_db["dlls"]))
