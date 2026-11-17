@@ -692,6 +692,13 @@ def init_worker(log_level, *crawler_arguments):
     # what loading the API DBs has to say was reported by the main process already
     package_log = logging.getLogger("apiscout")
     package_log.setLevel(logging.ERROR)
+    # the processes keep every core busy already, search threads in each of them would only compete for the cores
+    try:
+        from . import numpy_search
+    except ImportError:
+        pass
+    else:
+        numpy_search.MAX_THREADS = 1
     try:
         WORKER_CRAWLER = create_crawler(*crawler_arguments)
     except Exception as exc:
