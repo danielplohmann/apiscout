@@ -267,6 +267,20 @@ class ApiQrTestSuite(unittest.TestCase):
 
 
 class DatabaseBuilderTestSuite(unittest.TestCase):
+    def testSystemInfoOfWindowsServer(self):
+        import platform
+        import unittest.mock
+
+        import DatabaseBuilder
+
+        uname = platform.uname_result("Windows", "host", "2022Server", "10.0.20348", "AMD64")
+        version = unittest.mock.Mock(service_pack="")
+        with (
+            unittest.mock.patch.object(DatabaseBuilder.platform, "uname", return_value=uname),
+            unittest.mock.patch.object(DatabaseBuilder.sys, "getwindowsversion", return_value=version, create=True),
+        ):
+            self.assertEqual(("Windows 2022 Server (AMD64)", "10.0.20348"), DatabaseBuilder.get_system_info())
+
     def testLoadAddresses(self):
         import DatabaseBuilder
 
