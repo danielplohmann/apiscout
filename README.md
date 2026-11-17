@@ -149,6 +149,8 @@ python DatabaseBuilder.py --auto
 
 `--paths` and `--filter` choose folders and DLLs, `--os_name` and `--os_version` build a DB from a copy of the DLLs on another system, and `--load_addresses` then takes the load addresses from a module list.
 
+Without a machine of the build, `python DllDownloader.py --windows 11-24H2 --update KB5046617 --out win11` downloads the DLLs of the filter from Microsoft's symbol server, finds them with [Winbindex](https://github.com/m417z/winbindex), checks each against its SHA-256 and builds the DB (standard library only, no ASLR offsets, so scan with `--modules` or a minidump). `--update` also takes a build such as `26100.2605`, `--list` shows the Windows versions and updates, `--windows 11-24H2 --list` the updates of one.
+
 ## IDA Pro
 
 `ida_scout.py` works as plugin (`hcli plugin install <clone>`, then Edit > Plugins > ApiScout, <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>A</kbd>) or as script, with IDA 9.0 and newer. Load the dump as binary file with its address as loading offset and 0 as loading segment, choose the API DBs, and work in the ApiScout view:

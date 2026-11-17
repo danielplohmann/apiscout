@@ -194,7 +194,7 @@ DLL_FILTER = [
     "RpcRtRemote.dll",
     "rsaenh.dll",
     "rstrtmgr.dll",
-    "rtutils.ddll",
+    "rtutils.dll",
     "samcli.dll",
     "samlib.dll",
     "scrrun.dll",

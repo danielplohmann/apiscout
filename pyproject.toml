@@ -48,10 +48,10 @@ select = ["E", "F", "UP", "B", "SIM", "I"]
 ignore = ["E501"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["apiscout", "config", "pefile", "ThreadedCommand", "DatabaseBuilder"]
+known-first-party = ["apiscout", "config", "pefile", "ThreadedCommand", "DatabaseBuilder", "DllDownloader"]
 
 [tool.ty.src]
 exclude = ["apiscout/db_builder"]
 
 [tool.ty.analysis]
-allowed-unresolved-imports = ["idaapi", "idc", "idautils", "ida_*", "binaryninja", "binaryninja.*", "config", "DatabaseBuilder", "ghidra.**", "java.**", "jpype"]
+allowed-unresolved-imports = ["idaapi", "idc", "idautils", "ida_*", "binaryninja", "binaryninja.*", "config", "DatabaseBuilder", "DllDownloader", "ghidra.**", "java.**", "jpype"]
