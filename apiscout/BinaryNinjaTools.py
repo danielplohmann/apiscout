@@ -192,7 +192,9 @@ def _check_location(bv, address, size):
     for location in range(address, address + size):
         for block in bv.get_basic_blocks_at(location):
             functions[block.function.start] = block.function
-    if any(_is_referenced(bv, function) for function in functions.values()):
+    # only a pointer the view's code can call through is worth removing code for, a value of the other bitness
+    # in a 64bit view is mostly a chance hit
+    if any(_is_referenced(bv, function) for function in functions.values()) or (functions and size != bv.address_size):
         return "part of an instruction", []
     return None, [functions[start] for start in sorted(functions)]
 

@@ -806,6 +806,15 @@ class AnnotationTest(unittest.TestCase):
         self.assertEqual("skipped: part of an instruction", status[tuple(rows[0][:4])])
         self.assertEqual([], view.removed_functions)
 
+    def testCodeIsKeptForValuesOfTheOtherBitness(self):
+        view = self.makeView(8)
+        view.add_function_code(0x1010, 0x1018)
+        status = {}
+        rows = [[0x1010, 0x7000, "a.dll (32bit)", "A", 0]]
+        self.assertEqual((0, 1), tools.annotate(view, rows, status))
+        self.assertEqual("skipped: part of an instruction", status[tuple(rows[0][:4])])
+        self.assertEqual([], view.removed_functions)
+
     def testZwPrototypeOfNtName(self):
         library = FakeTypeLibrary("ntdll.dll", {"NtDelayExecution": function_type("NtDelayExecution")})
         view = self.makeView(4, [library])
