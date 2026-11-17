@@ -26,8 +26,10 @@ import logging
 import os
 import re
 
+import ida_bytes
 import ida_idp
 import ida_nalt
+import ida_netnode
 import ida_typeinf
 import ida_ua
 import ida_xref
@@ -41,6 +43,10 @@ LOG = logging.getLogger(__name__)
 
 
 class IdaTools:
+    # the locations and call sites annotated by ApiScout, so that names and types set by an analyst are kept
+    ANNOTATIONS_NODE = "$ apiscout annotations"
+    TAG_LOCATION = "L"
+    TAG_CALL = "C"
     TYPE_LIBRARIES = {
         32: ["wdk8_um", "mssdk_win7", "ntapi_win7"],
         64: ["mssdk64_win7", "ntapi64_win7"],
@@ -111,6 +117,29 @@ class IdaTools:
     def makeNameAndStructure(self, api):
         return self.ida_proxy.MakeName(api[0], self.getApiName(api))
 
+    def _annotations(self):
+        return ida_netnode.netnode(self.ANNOTATIONS_NODE, 0, True)
+
+    def _isMarked(self, address, tag):
+        return self._annotations().altval(address, tag) == 1
+
+    def _mark(self, address, tag):
+        self._annotations().altset(address, 1, tag)
+
+    def getAnalystName(self, api):
+        """the name an analyst gave the location, None if it has none or the name is one ApiScout set"""
+        if not ida_bytes.has_user_name(ida_bytes.get_flags(api[0])):
+            return None
+        if self._isMarked(api[0], self.TAG_LOCATION) or self.isAnnotated(api):
+            return None
+        return self.ida_proxy.getName(api[0])
+
+    def _hasAnalystCallType(self, address):
+        """an analyst set the type of the call, e.g. with "Set call type" of the decompiler"""
+        if self._isMarked(address, self.TAG_CALL):
+            return False
+        return ida_nalt.get_op_tinfo(ida_typeinf.tinfo_t(), address, 0)
+
     def importTypeLibraries(self):
         """load the type libraries matching the bitness of the database, returns True if all of them are available"""
         bitness = 64 if self.ida_proxy.is64bit() else 32
@@ -147,9 +176,14 @@ class IdaTools:
         if self.ida_proxy.hasIndexRegister(instruction, operand):
             # e.g. call table[reg*4], which only uses the location as start of a table
             return False
+        if self._hasAnalystCallType(address):
+            return False
         ida_typeinf.apply_callee_tinfo(address, tinfo)
         # the operand type makes the decompiler use the prototype for this indirect call
-        return bool(ida_nalt.set_op_tinfo(address, 0, tinfo))
+        if not ida_nalt.set_op_tinfo(address, 0, tinfo):
+            return False
+        self._mark(address, self.TAG_CALL)
+        return True
 
     def setPointerType(self, tinfo, address):
         """type the location of the API address as pointer to the API's prototype"""
@@ -220,7 +254,14 @@ class IdaTools:
                 for location in range(api[0] - 7, api[0] + size)
                 if location != api[0] and location in pointers and location + pointers[location][1] > api[0]
             ]
-            reason = "overlapping " + overlapped[0] if overlapped else self.makeDQWord(api, in_table)
+            analyst_name = self.getAnalystName(api)
+            if overlapped:
+                reason = "overlapping " + overlapped[0]
+            elif analyst_name:
+                # the name and type an analyst gave the location are kept
+                reason = f"named {analyst_name} by hand"
+            else:
+                reason = self.makeDQWord(api, in_table)
             if reason:
                 num_skipped += 1
                 status[tuple(api[:4])] = "skipped: " + reason
@@ -232,6 +273,7 @@ class IdaTools:
                 print(f"Skipping 0x{api[0]:x}: could not set name {self.getApiName(api)}.")
                 continue
             num_renamed += 1
+            self._mark(api[0], self.TAG_LOCATION)
             annotated_locations[api[0]] = self.getApiName(api)
             if api[0] in pointers and pointers[api[0]][2] != tuple(api[:4]):
                 # another row of this location was annotated before, its name is replaced now
