@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -996,6 +997,52 @@ class KeyedHashesTestSuite(unittest.TestCase):
             [hit._replace(offset=hit.offset + at) for hit in expected],
             self.find(dump),
         )
+
+    def testKeyGroupsStayWithinTheirLimits(self):
+        """the windows are searched together in groups, and a group stays within the limits of different values and of values, however
+        many windows are read at once (the search for keys takes memory for every different value); the keys do not depend on it"""
+        window = 1 << 14
+        batch = 2 * DynamicApis._getThreads()
+        # code-like bytes, a window of which has about as many different values as bytes, and hardly any that other windows have
+        dump = bytearray(np.random.default_rng(5).integers(1, 200, 4 * batch * window, dtype=np.uint8).tobytes())
+        self.assertGreaterEqual(len(DynamicApis._getKeyWindows(len(dump), window)), 3 * batch)
+        for algorithm, mode, key, at in (
+            ("crc32", "xor", 0x218FE95B, 0x1234),
+            ("sdbm", "add", 0x9A3F0C51, len(dump) // 2),
+        ):
+            table, _ = build_keyed_dump(algorithm, mode, key, KEYED_NAMES, first=0, step=40, size=0x800)
+            dump[at : at + 0x800] = table
+        dump = bytes(dump)
+        expected = DynamicApis.findKeys(dump, window=window, parallel=True)
+        self.assertIn(0x218FE95B, expected[("crc32", "xor")])
+        self.assertIn(0x9A3F0C51, expected[("sdbm", "add")])
+        original = DynamicApis._findKeysInGroup
+        groups = []
+
+        def spy(window_values, *args):
+            groups.append(window_values)
+            return original(window_values, *args)
+
+        # (limit of different values, limit of values): the different values of a batch of windows (a quarter of a window is shared with
+        # the previous one), and its values, are more than that
+        for different, values in (
+            (0.9 * (3 * (batch - 1) + 1) / 4 * window, 1 << 40),
+            (1 << 40, (batch - 0.5) * window),
+            (1, 1),
+        ):
+            with (
+                self.subTest(different=different, values=values),
+                mock.patch.object(DynamicApis, "KEY_GROUP_DIFFERENT", int(different)),
+                mock.patch.object(DynamicApis, "KEY_GROUP_VALUES", int(values)),
+                mock.patch.object(DynamicApis, "_findKeysInGroup", spy),
+            ):
+                groups.clear()
+                self.assertEqual(expected, DynamicApis.findKeys(dump, window=window, parallel=True))
+                self.assertGreater(len(groups), 2)
+                for group in groups:
+                    # (the number of different values of a group is estimated from a sample, and a group is a window at least)
+                    self.assertLessEqual(len(np.unique(np.concatenate(group))), max(window, different * 1.05))
+                    self.assertLessEqual(sum(map(len, group)), max(window, values))
 
     def testRenderAlignsKeys(self):
         hits = [

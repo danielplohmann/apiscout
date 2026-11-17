@@ -883,20 +883,26 @@ def findKeys(binary, algorithms=None, min_apis=None, window=None, skip_random=Tr
         return values, _getSample(values)
 
     group, sample, size = [], np.zeros(0, dtype=np.uint32), 0
+
+    def searchGroup(windows_values):
+        for variant, keys in _findKeysInGroup(windows_values, min_apis, trials, variants, parallel).items():
+            found.setdefault(variant, set()).update(keys)
+
     batch_size = 2 * _getThreads() if parallel_windows else 1
     for first in range(0, len(windows), batch_size):
         for values, part in _map(getValues, windows[first : first + batch_size], parallel_windows):
+            joined = _getDifferent(np.concatenate((sample, part)))
+            # the windows are searched together until they have many different values (as many as the sample suggests), or hold many
+            # values: a window that would take the group over a limit starts the next group (the search for keys takes memory for
+            # every different value, so the limits are checked for each window and not for each batch)
+            if group and (size + len(values) > KEY_GROUP_VALUES or len(joined) << SAMPLE_BITS > KEY_GROUP_DIFFERENT):
+                searchGroup(group)
+                group, size, joined = [], 0, part
             group.append(values)
             size += len(values)
-            sample = _getDifferent(np.concatenate((sample, part)))
-        # the windows are searched together until they have many different values (as many as the sample suggests), or hold many values
-        if size >= KEY_GROUP_VALUES or len(sample) << SAMPLE_BITS >= KEY_GROUP_DIFFERENT:
-            for variant, keys in _findKeysInGroup(group, min_apis, trials, variants, parallel).items():
-                found.setdefault(variant, set()).update(keys)
-            group, sample, size = [], np.zeros(0, dtype=np.uint32), 0
+            sample = joined
     if group:
-        for variant, keys in _findKeysInGroup(group, min_apis, trials, variants, parallel).items():
-            found.setdefault(variant, set()).update(keys)
+        searchGroup(group)
     return {variant: sorted(keys) for variant, keys in found.items()}
 
 
