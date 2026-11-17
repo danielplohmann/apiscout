@@ -222,6 +222,7 @@ All references are annotated and the database is saved:
 idat -A -TBinary -b<dump address / 16, hex> -pmetapc -S"ida_scout.py <API DB> [<API DB> ...]" <dump>
 ```
 
+- An API DB can be given by its file name when it is in the plugin's `dbs` folder or was downloaded with `apiscout dbs download`; the options dialog lists the DBs of that folder, too.
 - The segment base that `-b` sets is reset to 0 so that calls reference the API pointers.
 - Without `-TBinary`, IDA loads a dump that starts with a PE header as file instead of as memory image.
 - idat creates a 64bit database for binary files, so 32bit dumps are best prepared as database first.
