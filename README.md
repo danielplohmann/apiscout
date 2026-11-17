@@ -1,89 +1,291 @@
 # ApiScout
 
-This project aims at simplifying Windows API import recovery.
-As input, arbitrary memory dumps for a known environment can be processed (please note: a reference DB has to be built first, using apiscout/db_builder).  
-The output is an ordered list of identified Windows API references with some meta information, and an ApiVector fingerprint.  
+ApiScout recovers the Windows API calls of malware from memory dumps.
 
-* scout.py -- should give a good outline on how to work with the library.  
-* ida_scout.py -- is the plugin for IDA Pro (see below).  
-* GhidraScout.java -- is a Ghidra script for ApiScout (contributed by @mari-mari, see below).  
-* match.py -- demonstrates how ApiVectors can be matched against each other and collections of fingerprints.  
-* collect.py -- builds a database of WinAPI fingerprints (ApiVectors) that can be used for matching.  
-* export.py -- generates ApiQR diagrams that visualize ApiVectors.  
-* update.py -- pull the most recent ApiVector DB from Malpedia (requires Malpedia account / API token).  
+A dumped process has no usable import table any more, but it still holds the addresses of the API functions it calls. ApiScout checks every pointer-sized value of a dump against a database of the API addresses of the system the dump was taken from. The result is the list of APIs the code uses, where it references them, and an **ApiVector**: a compact fingerprint of API usage that can be compared with those of other samples to find the malware family.
 
-ApiScout requires Python 3.10 or newer (`pip install apiscout`), the DB builder alone also runs with Python 3.8, the last version for Windows 7, the IDA plugin requires IDA 9.0 or newer (tested with all releases from 9.0 to 9.5), the Ghidra script is tested with Ghidra 12.2.  
-For development, [uv](https://docs.astral.sh/uv/) sets up the environment: `uv sync`, then `uv run python -m unittest discover -s tests -p "test*.py" -t .`, `uv run ruff check`, `uv run ruff format` and `uv run ty check`.  
-There is a blog post describing ApiScout in more detail: http://byte-atlas.blogspot.com/2017/04/apiscout.html.  
-Also, another blog post explaining how ApiVectors are constructed and stored: https://byte-atlas.blogspot.com/2018/04/apivectors.html.  
-We also presented a paper at Botconf 2018 that describes the ApiScout methodology in-depth, including an evaluation over Malpedia: https://cyberjournal.cecyf.fr/index.php/cybin/en/article/download/20/15/50  
+It comes as a command line tool, a Python library, a plugin for IDA Pro and a script for Ghidra.
+
+![IDA Pro listing the API references ApiScout found in a memory dump](https://raw.githubusercontent.com/danielplohmann/apiscout/master/docs/images/ida.png)
+
+## Quick start
+
+```bash
+pip install apiscout
+```
+
+ApiScout needs Python 3.10 or newer, a memory dump and an API DB, which describes one Windows installation: which DLL exports which function at which address. The repository has example DBs for Windows XP SP3 and Windows 7 SP1. Most dumps of [Malpedia](https://malpedia.caad.fkie.fraunhofer.de) were taken on these systems, so the example DBs fit them:
+
+```bash
+curl -LO https://raw.githubusercontent.com/danielplohmann/apiscout/master/dbs/win7_prof-n_sp1_example.json
+apiscout scan trickbot_dump_0x00400000 --db win7_prof-n_sp1_example.json
+```
+
+```text
+Results for API DB: Microsoft Windows 7 Professional N
+idx: offset    ; VA                ; IT?; #ref;DLL                                     ; API
+  1: 0x00409aef;         0x10006839; err;    1; devrtl.dll_0x10000000 (32bit)           ; NdxTableAddObjectToList
+---------------------------------------------------------------------------------------------------
+  2: 0x00420000;         0x41ac4b1b; err;    4; ws2_32.dll_0x41ac0000 (32bit)           ; freeaddrinfo
+  3: 0x00420004;         0x41ac4296; err;    3; ws2_32.dll_0x41ac0000 (32bit)           ; getaddrinfo
+  4: 0x00420008;         0x41aca05b; err;    2; ws2_32.dll_0x41ac0000 (32bit)           ; gethostname
+  [...]
+DLLs: 15, APIs: 183, references: 496
+
+WinApi1024 Vector Results:
+Microsoft Windows 7 Professional N: 154 / 181 (85.08%) APIs covered in WinApi1024 vector.
+    Vector:     A22gQAAgABA6QACA9EAACA9gAIA9oCA4kAgRAABAAwA7CEARBADCggIAEAAJAIB.gBAEEIoAjEBIACTGgwdjTATJnJCCHpAgwNKeAJ^BFJuYAgCYQEYdn_^?
+    Confidence: 89.37009000226523
+```
+
+The base address of the dump is read from a file name that ends in `0x` and 8 to 16 hex digits. For any other name, pass it with `--base-addr 0x400000`.
+
+No dump at hand? A Windows program will do for a first try. Its import table is read, and no API DB is needed. Programs that ship with Windows itself import through API sets (`api-ms-win-...`), which the vector does not cover, so pick a third-party one:
+
+```bash
+apiscout scan sample.exe --import-table
+```
+
+<details>
+<summary>How to read the listing</summary>
+
+| Column | Meaning |
+| :--- | :--- |
+| `offset` | Where the API address is stored in the dump. |
+| `VA` | The API address found there. |
+| `IT?` | Whether the location lies in the import table of the dump: `yes`, `no`, or `err` if the dump has no import table that can be read, which is normal for dumped code. |
+| `#ref` | The location itself plus the `call` and `jmp` instructions that go through it. |
+| `DLL` | The DLL, the address it is loaded at according to the DB, and whether it is the 32bit or 64bit one. |
+
+A single API far away from all others, like the first row, is usually a chance hit: bytes that happen to equal an API address. `--filter 32` drops APIs that have no other API within 32 bytes.
+
+`Confidence` (0 to 100) says how much a vector is worth as a fingerprint. It is low when only few or only very common APIs were found.
+
+</details>
+
+> [!IMPORTANT]
+> A scan only finds APIs if the DB describes the system the dump was taken on: same DLL versions, same DLL load addresses. The example DBs for Windows XP and Windows 7 come from analysis machines with ASLR switched off, where DLLs are always loaded at the same addresses. With ASLR, the addresses change with every boot, and a DB has to be built on the machine during the boot the dump is taken in. See [API DBs](#api-dbs).
+
+## Features
+
+### Name the malware family of a dump
+
+An ApiVector records which of 1024 selected APIs a sample uses. Malpedia publishes the vectors of its samples as a collection, and a scan can list the families whose API usage is most similar:
+
+```bash
+apiscout scan trickbot_dump_0x00400000 --db win7_prof-n_sp1_example.json --collection 2026-11-09-apivectors-v26649.csv
+```
+
+```text
+[...]
+Top 5 individual matches
+win.trickbot    - 2021-10-05-v2000035/97b489b8[...]  - 1.000
+win.trickbot    - 2017-07-24/2ebeef90[...]           - 0.492
+```
+
+`apiscout match` does the same for a vector you already have, and `apiscout collect` builds a collection from your own dumps.
+
+<details>
+<summary>Getting the collection from Malpedia</summary>
+
+This needs a Malpedia account, the `requests` package and the API token of the account in a file:
+
+```bash
+pip install 'apiscout[update]'
+mkdir -p ~/.config/apiscout
+# store the API token as the only line of ~/.config/apiscout/malpedia-token
+apiscout update --db-dir .
+```
+
+The collection is stored as `<date>-apivectors-v<version>.csv` in the folder given. The token is read from that file or from one given with `--token-file`, never from the command line or the environment.
+
+</details>
+
+### See what a sample is about
+
+`apiscout export` draws a vector as an ApiQR diagram. Each of the 1024 APIs has a fixed place and a colour for its topic, among them GUI, system, execution, strings, network, files, devices, crypto, memory and registry. Samples with similar capabilities look alike. The HTML version names each API when the mouse is over it.
+
+<img src="https://raw.githubusercontent.com/danielplohmann/apiscout/master/docs/images/apiqr.png" alt="ApiQR diagram of a TrickBot dump" width="256">
+
+```bash
+VECTOR=$(apiscout scan trickbot_dump_0x00400000 --db win7_prof-n_sp1_example.json --json | jq -r .apivector)
+apiscout export "$VECTOR" --png vector.png --html vector.html
+```
+
+Vectors contain characters that are special to the shell. Quote them, or keep them in a variable as here.
+
+### Annotate a dump in IDA Pro or Ghidra
+
+Both integrations name the API pointers, type them and apply the prototypes to the calls. The disassembly and the decompiler then read like those of a file with an intact import table. See [IDA Pro](#ida-pro) and [Ghidra](#ghidra).
+
+### Use the results in your own tools
+
+`--json` prints machine-readable results. `-` reads the dump or the vector from standard input and writes a result to standard output, so commands can be chained ([jq](https://jqlang.org) picks values from JSON):
+
+```bash
+export APISCOUT_DB_DIR=~/apiscout-dbs    # the folder with your API DBs, instead of --db
+apiscout scan dump_0x00400000 --json | jq -r '.apis[].api' | sort -u
+apiscout scan dump_0x00400000 --json | apiscout match - --collection apivectors.csv
+```
+
+From Python:
+
+```python
+from apiscout.ApiScout import ApiScout
+
+scout = ApiScout("win7_prof-n_sp1_example.json")
+scout.setBaseAddress(0x400000)
+with open("trickbot_dump_0x00400000", "rb") as f_dump:
+    results = scout.crawl(f_dump.read())
+for apis in results.values():
+    for offset, api_address, dll, api, bitness, in_import_table, references, callers in apis:
+        print(hex(0x400000 + offset), dll, api, references)
+vector = scout.getPrimaryVector(scout.getWinApi1024Vectors(results))[1]["vector"]
+```
+
+## Commands
+
+| Command | Purpose |
+| :--- | :--- |
+| `apiscout scan <dump>` | List the APIs referenced in a memory dump, with its ApiVector |
+| `apiscout match <vector>` | Compare a vector with a second one or with a collection |
+| `apiscout export <vector>` | Draw a vector as an ApiQR diagram |
+| `apiscout collect <folder>` | Build a collection of ApiVectors from a folder of dumps |
+| `apiscout update` | Download the current collection from Malpedia |
+| `apiscout dbs` | Show the API DBs that are available |
+
+`apiscout <command> --help` lists the options with examples.
+
+- API DBs are given with `--db`, which can be repeated. Without it, all DBs of one folder are used: `--db-dir`, else `$APISCOUT_DB_DIR`, else `./dbs`.
+- Results go to standard output, progress and errors to standard error. `-q` leaves only results and errors.
+- The exit code is 0 on success, 1 on an error and 2 for a wrong command line.
+
+## API DBs
+
+| File in [`dbs`](https://github.com/danielplohmann/apiscout/tree/master/dbs) | System | ASLR offsets |
+| :--- | :--- | :---: |
+| `winxp_prof_sp3_example.json` | Windows XP Professional SP3, 32bit DLLs | no |
+| `win7_prof-n_sp1_example.json` | Windows 7 Professional N SP1, 32bit and 64bit DLLs | no |
+| `win10_prof_1803_example.json` | Windows 10 Pro 1803, 32bit and 64bit DLLs | yes |
+| `win2022_server_21h2_example.json` | Windows Server 2022 21H2, 32bit and 64bit DLLs | yes |
+
+The DBs with ASLR offsets carry the load addresses of the boot they were built in. They show the format and serve the tests, but do not fit dumps from other machines.
+
+To build a DB for your own analysis system, run the DB builder on it. It is part of the repository, needs nothing but Python 3.8 or newer and writes the DB as a JSON file into the current folder:
+
+```bash
+git clone https://github.com/danielplohmann/apiscout
+cd apiscout/apiscout/db_builder
+python DatabaseBuilder.py --auto
+```
+
+<details>
+<summary>More options of the DB builder</summary>
+
+- `--auto` takes the commonly used DLLs of the system folders and their ASLR offsets.
+- `--paths` and `--filter` choose folders and DLLs.
+- `--os_name` and `--os_version` build a DB from a copy of the DLLs on any operating system. This is the way for systems without a recent Python, such as Windows XP.
+- `--load_addresses` then takes the load addresses from the module list of a process on the target system, a file with lines of `<hex load address> <DLL path>`.
+
+</details>
 
 ## IDA Pro
 
-`ida_scout.py` works as plugin and as script (File > Script file...). To use it as plugin, install it with the plugin manager (`hcli plugin install <path to apiscout>`) or link the repository into `$IDAUSR/plugins`; it is then available as Edit > Plugins > ApiScout (Ctrl-Alt-A).
-After choosing the API DBs, the API references found are listed in the dockable ApiScout view. Enter or a double click jumps to a reference. The context menu annotates the selected APIs or all APIs of the view (A / Shift-A, IDA's quick filter only hides rows) and filters the view to APIs with a neighbour within a given distance (F), Refresh (Ctrl-U) scans the database again.
-Annotating an API names its location, types it as pointer to the API's prototype and applies the prototype to the calls referencing it. Memory dumps should be loaded as binary file at the address they were dumped from.
-In batch mode, all references are annotated: `idat -A -TBinary -b<dump address / 16, hex> -pmetapc -S"ida_scout.py <API DB> [<API DB> ...]" <dump>`. The segment base that `-b` sets is reset to 0 so that calls reference the API pointers, and the database is saved when the script is done. A database that was analysed with such a base before is repaired as far as possible; functions that IDA split under the base stay split, switches it missed there are not recovered, and `noreturn` flags are determined again, so the batch command is best run on the dump itself. Without `-TBinary`, IDA loads a dump that starts with a PE header as file instead of as memory image, and idat creates a 64bit database for binary files, so 32bit dumps are best prepared as database first.
+`ida_scout.py` from the repository works as a plugin and as a script with IDA 9.0 and newer.
+
+- **Plugin:** install it with `hcli plugin install <path to the cloned repository>` or link the repository into `$IDAUSR/plugins`. It is then available as Edit > Plugins > ApiScout (<kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>A</kbd>).
+- **Script:** File > Script file...
+
+Load a memory dump as a binary file, with the address it was dumped from as loading offset and 0 as loading segment. After choosing the API DBs, the references found are listed in the dockable ApiScout view, as in the screenshot at the top of this page.
+
+| Key | Action |
+| :--- | :--- |
+| <kbd>Enter</kbd> or double click | Jump to the reference |
+| <kbd>A</kbd> | Annotate the selected APIs |
+| <kbd>Shift</kbd>+<kbd>A</kbd> | Annotate all APIs of the view |
+| <kbd>F</kbd> | Only show APIs with a neighbour within a given distance |
+| <kbd>Ctrl</kbd>+<kbd>U</kbd> | Scan the database again |
+
+Annotating an API names its location, types it as a pointer to the API's prototype and applies the prototype to the calls referencing it.
+
+<details>
+<summary>Batch mode</summary>
+
+All references are annotated and the database is saved:
+
+```bash
+idat -A -TBinary -b<dump address / 16, hex> -pmetapc -S"ida_scout.py <API DB> [<API DB> ...]" <dump>
+```
+
+- The segment base that `-b` sets is reset to 0 so that calls reference the API pointers.
+- Without `-TBinary`, IDA loads a dump that starts with a PE header as file instead of as memory image.
+- idat creates a 64bit database for binary files, so 32bit dumps are best prepared as database first.
+- A database that was analysed with a segment base before is repaired as far as possible: functions that IDA split under the base stay split, switches it missed there are not recovered, and `noreturn` flags are determined again. The command is best run on the dump itself.
+
+</details>
 
 ## Ghidra
 
-Copy `GhidraScout.java` into a script directory of Ghidra and run it from the Script Manager (ticking its "In Tool" checkbox adds it as Tools > ApiScout). It asks for the location of `scout.py` once and runs it on the memory of the current program, so `python3` needs to be able to run `scout.py`.
-The table lists the API references found, the selected ones are annotated like imports: a pointer with an external reference to the function of its library, with the prototype of Ghidra's Windows data type archive.
-Headless: `analyzeHeadless <project> <name> -import <dump> -loader BinaryLoader -loader-baseAddr <address> -processor x86:LE:64:default -postScript GhidraScout.java <path to scout.py> [<API DB> ...]`.
+1. Install ApiScout for the Python on the `PATH` (`python3`; on Windows `py` or `python`): `pip install apiscout`
+2. Copy `GhidraScout.java` from the repository into a script directory of Ghidra.
+3. Run it from the Script Manager. Ticking its "In Tool" checkbox adds it as Tools > ApiScout.
 
-## Version History
+The script asks once for the folder with the API DBs, for example `dbs` of the repository, and scans the memory of the current program. The references you select in its table are annotated like imports: a pointer with an external reference to the function of its library, with the prototype of Ghidra's Windows data type archive. Tested with Ghidra 12.2.
 
- * 2026-11-16: Added a Windows Server 2022 (21H2, build 20348) 64bit import DB (`dbs/win2022_server_21h2_example.json`, 343 DLLs, built with `DatabaseBuilder.py --filter` on a fresh installation). Like the Windows 10 DB, it carries the ASLR offsets of the boot it was built in and serves as example and for tests, not for dumps of other systems.
- * 2026-11-16: v3.0.0 - (BREAKING) Python 2 and IDA before 9.0 are no longer supported. Packaging moved to `pyproject.toml` (with `uv.lock`), code is linted and formatted with ruff and type checked with ty, CI runs on GitHub Actions.
-   * Library: fixed a crash when a buffer ends in `FF 15`/`FF 25`, import tables (`scout.py -t`) are read by the own parser only, which gave the same imports as LIEF on all files tested and is bounded for crafted files, so LIEF is no longer a dependency, import descriptors without import name table, PE mapping of truncated or unusual files, matching of vectors given as lists, `NaN` when matching empty vectors, and API DBs of the same OS replacing each other. Crawl results are now ordered by offset. Imports by ordinal are resolved for `ws2_32.dll`, `wsock32.dll` and `oleaut32.dll`, compressed ApiVectors are validated, and a 32bit and a 64bit export at the same address are both resolved.
-   * `export.py` (ApiQR) works again, `update.py` works from any directory, `collect.py -u` no longer writes a second file.
-   * IDA: `ida_scout.py` is a plugin now (see above) with a dockable results view instead of a modal dialog, a batch mode and `ida-plugin.json` for the plugin manager. APIs are also annotated when their location was defined as something else before, type libraries match the bitness of the database and include ntapi, API locations are typed as function pointers, and the decompiler shows the API names for dumps loaded as binary file.
-   * Ghidra: the script scans the program's memory instead of the imported file, keeps all references to an API, annotates them like imports (external references and prototypes) and can be run headless.
-   * DB Builder: `--os_name`/`--os_version` build a DB from a copy of the DLLs on any OS, `--load_addresses` takes the ASLR offsets from a module list (lines of `<hex load address> <DLL path>`) instead of loading each DLL; DLLs are matched by folder and file name, or by file name alone where it is unique. The DLL filter covers DLLs of current Windows versions.
- * 2026-11-16: Follow-ups for the Windows 10 DB: `collect.py` now skips API DBs with ASLR offsets unless `--use_aslr_dbs` or `--ignore_aslr` is given (`FingerprintCrawler` got an `ignore_aslr_offsets` parameter) and loading a DB warns about many colliding addresses. ApiVector now matches DLL names case-insensitively (e.g. `IPHLPAPI.DLL`). Fixed `ws2_32.dll` being truncated in the JSON output of `scout.py`, missed references of 64bit `jmp [rip+x]` thunks, the base address of PE32+ headers and 64bit imports by ordinal. Tests now run with `unittest` instead of nose.
- * 2026-11-01: Added Windows 10 Pro 1803 (build 17134.1) 64bit import DB, including the ASLR offsets of the boot it was built in (as all 64bit system DLLs share the file ImageBase 0x180000000). These offsets are only valid for memory dumps from that very boot; for other dumps, use import table parsing (`scout.py -t`) or rebuild the DB on the system the dump was taken from. `scout.py --ignore_aslr` (`ApiScout.ignoreAslrOffsets(True)`) is only meaningful for systems without ASLR and not usable for this DB's 64bit DLLs, as they then overlap at 0x180000000. Also note that the offsets of several rarely loaded DLLs in this DB (mostly 32bit ones, e.g. iphlpapi.dll, wininet.dll) put them at overlapping addresses, so APIs of these DLLs may be resolved incorrectly. Also fixed two DB Builder bugs: version 0.0.0.0 was written for all DLLs, and ordinal-only exports were truncated for DLLs mapping many ordinals to one address (e.g. mfc42.dll lost ~90% of its exports).
- * 2023-03-27: v2.0.2 - Bugfix for IdaScout and handling of sets, contributed by @7a6570 (THX!!)
- * 2023-01-02: v2.0.1 - Bugfix for lief-based import table parsing with Python 3.10, contributed by @malware-kitten (THX!!)
- * 2022-08-01: v1.2.0 - Added plugin for Ghidra, contributed by @mari-mari (THX!!)
- * 2022-09-20: v2.0.0 - (potentially BREAKING) crawl results now have one additional output field with a set of calling references for a given WinAPI. This is also included in the JSON output of `scout.py`, contributed by @renzhexigua (THX!!)
- * 2022-08-01: v1.2.0 - Added plugin for Ghidra, contributed by @mari-mari (THX!!)
- * 2022-01-17: v1.1.9 - Fixed `ida_scout.py` to work with IDA 7.5+ when apiscout is also installed as a Python package.
- * 2021-10-04: v1.1.8 - Extension of winapi contexts based on observations provided by @blattm (THX!).
- * 2021-08-30: v1.1.7 - Fixed deprecation warning in ApiQR as raised by numpy.
- * 2021-07-31: v1.1.6 - It's no longer required to keep a fixed LIEF version. (THX to @cccs-rs!)
- * 2021-01-10: v1.1.5 - Python3 LIEF package fixed to version 0.10.1 (THX to @akhribfarouk!)
- * 2020-12-09: v1.1.4 - Python3 fixes on DatabaseBuilder (THX to @Dump-GUY!)
- * 2020-07-13: v1.1.3 - Added "install_requires" to setup.py to ensure dependencies are installed.
- * 2020-06-30: v1.1.0 - Now using LIEF for import table parsing. Fixed bug which would not produce ApiVectors when using import table parsing. ApiScout is now also available through PyPI.
- * 2020-03-03: Added a script to pull the most recent ApiVector DB from Malpedia (requires Malpedia account / API token).
- * 2020-03-02: Ported to IDA 7.4 (THX to @jenfrie).
- * 2020-02-18: DB Builder is now compatible up to Python 3.7 (THX to @elanfer).
- * 2019-10-08: Workaround for broken filtering of the API view in IDA 7.3 (THX to @enzok for pointing this out).
- * 2019-08-22: Fixed a bug where missing type info in IDA would lead to a crash (now gives an error message instead).
- * 2019-08-20: Added self-filter to eliminate pointers to own memory image that could be mistakenly treated as API references.
- * 2019-06-06: Added support for proper type reconstruction for annotated APIs in IDA Pro (THX to @FlxP0c)
- * 2019-05-15: Added numpy support for vector calculations (based on implementation provided by @garanews - THX!)
- * 2019-05-15: Fixed a bug in PE mapper where buffer would be shortened because of misinterpretation of section sizes.
- * 2019-01-23: QoL improvements: automated data folder deployment when used as module, logger initialization (THX to @jdval)
- * 2018-08-23: Fixed a bug in PE mapper where the PE header would be overwritten by (empty) section data.
- * 2018-08-21: Added functionality that allows to use import table information instead of crawling for references.
- * 2018-07-31: Fixed convenience functions to create/export vectors from/to lists and dicts, added test coverage.
- * 2018-07-23: WARNING: Change in Apivector format -- Introduced sorted ApiVectors which are even more space efficient (20%+).
- * 2018-06-25: Fixed incompatibility with IDA Pro 7.0+ (THX to @nazywam!)
- * 2018-05-23: Added further semantic context groups (THX to Quoscient.io)
- * 2018-03-27: Heuristic estimation of Windows API reference counts added
- * 2018-03-06: ApiQR visualization of vector results (C-1024)
- * 2017-11-28: Added own import table parser to enrich result information
- * 2017-08-24: Multi-Segment support in IDA Pro (THX to @nazywam!)
- * 2017-05-31: Added Windows 7 SP1 64bit import DB (compatible to Malpedia)
+![Ghidra listing with API pointers annotated as external functions](https://raw.githubusercontent.com/danielplohmann/apiscout/master/docs/images/ghidra.png)
+
+<details>
+<summary>Headless</summary>
+
+```bash
+analyzeHeadless <project> <name> -import <dump> -loader BinaryLoader -loader-baseAddr <address> \
+    -processor x86:LE:64:default -postScript GhidraScout.java <API DB> [<API DB> ...]
+```
+
+A 32bit dump needs `-processor x86:LE:32:default`.
+
+</details>
+
+## Background
+
+- [ApiScout: Painless Windows API information recovery](http://byte-atlas.blogspot.com/2017/04/apiscout.html) describes the method.
+- [ApiVectors](https://byte-atlas.blogspot.com/2018/04/apivectors.html) explains how the fingerprints are built and stored.
+- [ApiScout: Robust Windows API Usage Recovery for Malware Characterization and Similarity Analysis](https://cyberjournal.cecyf.fr/index.php/cybin/en/article/download/20/15/50) (Botconf 2018) evaluates it over Malpedia.
+
+## Development
+
+[uv](https://docs.astral.sh/uv/) sets up the environment:
+
+```bash
+uv sync
+uv run python -m unittest discover -s tests -p "test*.py" -t .
+uv run ruff check && uv run ruff format --check && uv run ty check
+```
+
+Changes are listed in the [changelog](https://github.com/danielplohmann/apiscout/blob/master/CHANGELOG.md).
+
+<details>
+<summary>Releasing</summary>
+
+1. Set the version in `pyproject.toml`, run `uv lock` and add the changelog entry.
+2. Publish a GitHub release whose tag is the version, with or without a leading `v`.
+
+The workflow `release.yml` then checks that the tag names the version, runs the tests, builds the wheel and the source distribution, tries both in a clean environment and uploads them to PyPI together with their attestations.
+
+It uses [trusted publishing](https://docs.pypi.org/trusted-publishers/), so no token is stored. This needs two settings, once:
+
+- On PyPI, a trusted publisher for the project with this repository, the workflow `release.yml` and the environment `pypi`.
+- On GitHub, an environment named `pypi`, ideally with required reviewers, so that an upload has to be approved.
+
+</details>
+
+Questions, bug reports and pull requests are welcome on [GitHub](https://github.com/danielplohmann/apiscout/issues). ApiScout is licensed under the [BSD 2-Clause License](https://github.com/danielplohmann/apiscout/blob/master/LICENSE).
 
 ## Credits
 
-The idea has previously gone through multiple iterations until reaching this refactored release.  
-Thanks to Thorsten Jenke and Steffen Enders for their previous endeavours and evaluating a proof-of-concept of this method.  
-More thanks to Steffen Enders for his work on the visualization of ApiQR diagrams.  
-Also thanks to Ero Carrera for pefile and Elias Bachaalany for the IDA Python AskUsingForm template. :)  
-Additionally many thanks to Andrea Garavaglia for his performance benchmarks that lead to drastic speedups in the applied matching!  
+ApiScout is written by Daniel Plohmann and [contributors](https://github.com/danielplohmann/apiscout/graphs/contributors). The idea has gone through multiple iterations until reaching this release.
 
-
-Pull requests welcome! :)
+- Thorsten Jenke and Steffen Enders for their previous endeavours and for evaluating a proof of concept of this method.
+- Steffen Enders for his work on the visualization of ApiQR diagrams.
+- Ero Carrera for pefile and Elias Bachaalany for the IDA Python AskUsingForm template.
+- Andrea Garavaglia for the performance benchmarks that led to drastic speedups of the matching.

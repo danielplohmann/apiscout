@@ -165,10 +165,7 @@ class ApiScoutTestSuite(unittest.TestCase):
         self.assertEqual(expected, scout.crawl(bytes(test_binary)))
 
     def testJsonOutputDllName(self):
-        import json
-        import tempfile
-
-        import scout as scout_script
+        from apiscout import cli
 
         results = {
             "db": [
@@ -177,21 +174,15 @@ class ApiScoutTestSuite(unittest.TestCase):
                 (0x20, 0xFFFFFFFF, "msvcp120_clr0400.dll_0x0", "_Cnd_wait", 64, True, 1, set()),
             ]
         }
-        file_handle, json_path = tempfile.mkstemp(suffix=".json")
-        os.close(file_handle)
-        try:
-            scout_script.write_results_to_json(json_path, results)
-            with open(json_path) as f_json:
-                json_results = json.loads(f_json.read())
-        finally:
-            os.remove(json_path)
+        json_results = cli.results_to_records(results)
         self.assertEqual(
             ["ws2_32.dll(32 bit)", "kernel32.dll(64 bit)", "msvcp120_clr0400.dll(64 bit)"],
             [entry["dll"] for entry in json_results],
         )
         self.assertEqual([2, 4], json_results[0]["references"])
         # DLL names from old DBs without base address suffix are kept as they are
-        self.assertEqual("ws2_32.dll", scout_script.get_dll_name("ws2_32.dll"))
+        old_db_results = {"db": [(0x10, 0x71AB1000, "ws2_32.dll", "connect", 32, None, 1, set())]}
+        self.assertEqual("ws2_32.dll(32 bit)", cli.results_to_records(old_db_results)[0]["dll"])
 
     def testCompleteCoverage(self):
         scout = ApiScout()

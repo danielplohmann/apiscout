@@ -23,8 +23,12 @@ dependencies = ["numpy", "Pillow"]
 [project.optional-dependencies]
 update = ["requests"]
 
+[project.scripts]
+apiscout = "apiscout.cli:main"
+
 [project.urls]
 Repository = "https://github.com/danielplohmann/apiscout"
+Changelog = "https://github.com/danielplohmann/apiscout/blob/master/CHANGELOG.md"
 
 [dependency-groups]
 dev = ["ruff==0.17.5", "ty==0.0.104", "requests"]

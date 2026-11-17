@@ -4,6 +4,7 @@ import struct
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 from apiscout.ApiQR import ApiQR
 from apiscout.ApiScout import ApiScout
@@ -479,6 +480,14 @@ class SecondAuditTestSuite(unittest.TestCase):
 
         crawler = FingerprintCrawler([], WINAPI1024_PATH, "/root")
         self.assertEqual(("fam", "a_b_dump"), crawler._getFamilyAndPath("/root/fam/a;b_dump"))
+        self.assertEqual(("fam", "sub/x_dump"), crawler._getFamilyAndPath("/root/fam/sub/x_dump"))
+        # Windows paths, as os.walk gives them, are stored with / as well
+        windows = FingerprintCrawler([], WINAPI1024_PATH, "C:/root")
+        with (
+            unittest.mock.patch("apiscout.FingerprintCrawler.os.sep", "\\"),
+            unittest.mock.patch("apiscout.FingerprintCrawler.os.altsep", "/"),
+        ):
+            self.assertEqual(("fam", "sub/x_dump"), windows._getFamilyAndPath("C:/root\\fam\\sub\\x_dump"))
         with tempfile.TemporaryDirectory() as directory:
             target = os.path.join(directory, "real.csv")
             link = os.path.join(directory, "link.csv")
