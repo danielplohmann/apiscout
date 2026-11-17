@@ -449,7 +449,7 @@ class BinaryNinjaImportTest(unittest.TestCase):
             self.assertIn(f'version = "{metadata["version"]}"', f_project.read())
         self.assertTrue(os.path.isfile(os.path.join(REPO_DIR, metadata["subdir"], "__init__.py")))
         self.assertEqual(["python3"], metadata["api"])
-        self.assertEqual(["apiscout"], metadata["dependencies"]["pip"])
+        self.assertEqual(["apiscout>=3.0.0"], metadata["dependencies"]["pip"])
 
 
 class MemoryTest(unittest.TestCase):

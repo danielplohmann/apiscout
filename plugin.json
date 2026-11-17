@@ -19,13 +19,13 @@
     "Windows"
   ],
   "installinstructions": {
-    "Darwin": "Install ApiScout for the Python of Binary Ninja: pip install apiscout",
-    "Linux": "Install ApiScout for the Python of Binary Ninja: pip install apiscout",
-    "Windows": "Install ApiScout for the Python of Binary Ninja: pip install apiscout"
+    "Darwin": "Install ApiScout for the Python of Binary Ninja: pip install 'apiscout>=3.0.0'",
+    "Linux": "Install ApiScout for the Python of Binary Ninja: pip install 'apiscout>=3.0.0'",
+    "Windows": "Install ApiScout for the Python of Binary Ninja: pip install 'apiscout>=3.0.0'"
   },
   "dependencies": {
     "pip": [
-      "apiscout"
+      "apiscout>=3.0.0"
     ]
   },
   "subdir": "binja_scout",

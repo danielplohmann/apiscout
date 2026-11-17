@@ -1,1 +1,1 @@
-apiscout
+apiscout>=3.0.0
