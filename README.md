@@ -12,7 +12,7 @@ The output is an ordered list of identified Windows API references with some met
 * export.py -- generates ApiQR diagrams that visualize ApiVectors.  
 * update.py -- pull the most recent ApiVector DB from Malpedia (requires Malpedia account / API token).  
 
-ApiScout requires Python 3.10 or newer (`pip install apiscout`), the IDA plugin requires IDA 9.0 or newer (tested with all releases from 9.0 to 9.5), the Ghidra script is tested with Ghidra 12.2.  
+ApiScout requires Python 3.10 or newer (`pip install apiscout`), the DB builder alone also runs with Python 3.8, the last version for Windows 7, the IDA plugin requires IDA 9.0 or newer (tested with all releases from 9.0 to 9.5), the Ghidra script is tested with Ghidra 12.2.  
 For development, [uv](https://docs.astral.sh/uv/) sets up the environment: `uv sync`, then `uv run python -m unittest discover -s tests -p "test*.py" -t .`, `uv run ruff check`, `uv run ruff format` and `uv run ty check`.  
 There is a blog post describing ApiScout in more detail: http://byte-atlas.blogspot.com/2017/04/apiscout.html.  
 Also, another blog post explaining how ApiVectors are constructed and stored: https://byte-atlas.blogspot.com/2018/04/apivectors.html.  
