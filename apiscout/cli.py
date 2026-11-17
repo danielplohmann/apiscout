@@ -1136,24 +1136,37 @@ def build_parser():
     return parser, commands
 
 
+def read_version(metadata_dir):
+    """the Version in the METADATA (of a dist-info folder) or the PKG-INFO (of an egg-info folder), None if there is none"""
+    for filename in ("METADATA", "PKG-INFO"):
+        try:
+            with open(os.path.join(metadata_dir, filename), encoding="utf-8") as f_metadata:
+                headers = f_metadata.read().split("\n\n", 1)[0]
+        except OSError:
+            continue
+        match = re.search(r"^Version: *(\S+)", headers, re.MULTILINE)
+        if match:
+            return match.group(1)
+    return None
+
+
 def get_version():
-    """the installed version. The METADATA of the installation is read directly: importlib.metadata takes 30 ms to
-    import and to find it, as much as numpy, and every command looks the version up for its help."""
+    """the installed version, which is the one importlib.metadata.version() finds. The metadata of the installation is read
+    directly: importlib.metadata takes 30 ms to import and to find it, as much as numpy, and every command looks the
+    version up for its help."""
     for folder in sys.path:
         try:
             names = os.listdir(folder or ".")
         except OSError:
             continue
         for name in names:
-            if name.startswith("apiscout-") and name.endswith(".dist-info"):
-                try:
-                    with open(os.path.join(folder, name, "METADATA"), encoding="utf-8") as f_metadata:
-                        headers = f_metadata.read().split("\n\n", 1)[0]
-                except OSError:
-                    continue
-                match = re.search(r"^Version: *(\S+)", headers, re.MULTILINE)
-                if match:
-                    return match.group(1)
+            # importlib.metadata takes the first one in the first folder of sys.path that has metadata of apiscout: the
+            # dist-info of an installation, or the egg-info of a checkout that was built in place
+            lower = name.lower()
+            if lower.endswith((".dist-info", ".egg-info")) and lower.rpartition(".")[0].partition("-")[0] == "apiscout":
+                version = read_version(os.path.join(folder, name))
+                if version:
+                    return version
     import importlib.metadata
 
     try:
