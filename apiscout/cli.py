@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import sys
 import tempfile
 import traceback
@@ -38,9 +39,9 @@ EXAMPLES = {
       take the APIs of a PE file from its import table, no API DB needed
   apiscout scan dump_0x00400000 --collection apivectors.csv
       also name the malware families with the most similar ApiVectors
-  apiscout match 'A171' --collection apivectors.csv
+  apiscout match 'WDBCAgBBAAgCA159' --collection apivectors.csv
       compare a vector with a collection, or with another vector
-  apiscout export 'A171' --png vector.png
+  apiscout export 'WDBCAgBBAAgCA159' --png vector.png
       draw a vector as ApiQR diagram
   apiscout dbs
       show the API DBs that are used when --db is not given
@@ -55,15 +56,15 @@ are part of the repository: {PROJECT_URL}
   cat dump.bin | apiscout scan - --base-addr 0x400000
 """,
     "match": """examples:
-  apiscout match 'A171' 'A170BA'
-  apiscout match 'A171' --collection apivectors.csv -n 10
+  apiscout match 'WDBCAgBBAAgCA159' 'WDBCABBACAgAEAAgA155'
+  apiscout match 'WDBCAgBBAAgCA159' --collection apivectors.csv -n 10
   apiscout scan dump_0x00400000 --json | apiscout match - -c apivectors.csv
 
 Quote vectors, they contain characters that are special to the shell.
 """,
     "export": """examples:
-  apiscout export 'A171' --png vector.png --html vector.html
-  apiscout export 'A171' --png - > vector.png
+  apiscout export 'WDBCAgBBAAgCA159' --png vector.png --html vector.html
+  apiscout export 'WDBCAgBBAAgCA159' --png - > vector.png
 """,
     "collect": """examples:
   apiscout collect malpedia/ --require _dump -o apivectors.csv
@@ -121,8 +122,7 @@ def resolve_db_files(args):
     """the API DBs to use: those given with --db, otherwise all of the DB folder"""
     db_paths = list(args.db) if args.db else get_db_files(args.db_dir or get_default_db_dir())
     for db_path in db_paths:
-        if not os.path.isfile(db_path):
-            raise CliError(f"API DB not found: {db_path}")
+        check_file(db_path, "API DB")
     if not db_paths:
         raise CliError(
             f"no API DB found in {args.db_dir or get_default_db_dir()}. Pass one with --db, or point --db-dir or "
@@ -135,9 +135,24 @@ def not_an_api_db(db_path):
     return CliError(f"not an API DB: {db_path}. API DBs are built with the DB builder, see {PROJECT_URL}#api-dbs")
 
 
-def check_collection(path):
-    if path and not os.path.isfile(path):
-        raise CliError(f"collection not found: {path}")
+def check_file(path, what):
+    if os.path.isdir(path):
+        raise CliError(f"{path} is a folder, the {what} has to be a file.")
+    if not os.path.isfile(path):
+        raise CliError(f"{what} not found: {path}")
+
+
+def check_output(path):
+    """found out before the work, not after it"""
+    if not path or path == "-":
+        return
+    if os.path.isdir(path):
+        raise CliError(f"{path} is a folder, a file is expected.")
+    folder = os.path.dirname(os.path.abspath(path))
+    if not os.path.isdir(folder):
+        raise CliError(f"folder not found: {folder}. Create it or choose another file with --output.")
+    if not os.access(folder, os.W_OK):
+        raise CliError(f"can not write to the folder of {path}.")
 
 
 def match_collection(scout, vector, collection_path):
@@ -145,7 +160,7 @@ def match_collection(scout, vector, collection_path):
         result = scout.matchVectorCollection(vector, collection_path)
     except ValueError as exc:
         raise CliError(str(exc) or f"can not match against {collection_path}") from None
-    if not result["vectors_in_collection"]:
+    if not result["match_results"]:
         raise CliError(f"no ApiVectors in {collection_path}. A collection has lines of family;sample;...;vector.")
     return result
 
@@ -191,10 +206,12 @@ def read_input(path):
         if not binary:
             raise CliError("no data on standard input.")
         return binary
-    if not os.path.isfile(path):
-        raise CliError(f"file not found: {path}")
+    check_file(path, "dump")
     with open(path, "rb") as f_binary:
-        return f_binary.read()
+        binary = f_binary.read()
+    if not binary:
+        raise CliError(f"file is empty: {path}")
+    return binary
 
 
 def read_vector(value):
@@ -261,9 +278,17 @@ def report(args, message):
 
 
 def cmd_scan(args):
-    check_collection(args.collection)
+    check_output(args.output)
     binary = read_input(args.dump)
     scout = ApiScout()
+    if args.collection:
+        check_file(args.collection, "collection")
+        # a file that is no collection is found out before the scan, without the warnings for each of its lines
+        logging.disable(logging.WARNING)
+        try:
+            match_collection(scout, scout.getPrimaryVector({})[1]["vector"], args.collection)
+        finally:
+            logging.disable(logging.NOTSET)
     base_address = args.base_addr
     if base_address is None:
         # memory dumps are commonly named after the address they were taken from
@@ -299,12 +324,13 @@ def cmd_scan(args):
             "apis_in_vector": vector["in_api_vector"],
         }
         if matches:
+            matches["match_results"] = matches["match_results"][: args.max_results]
             document["collection_matches"] = matches
         write_output(json.dumps(document, indent=1, default=list) + "\n", args.output)
         return EXIT_OK
     lines = [scout.render(results), scout.renderVectorResults(results)]
     if matches:
-        lines.append(scout.renderVectorCollectionResults(matches))
+        lines.append(scout.renderVectorCollectionResults(matches, args.max_results))
     write_output("\n".join(lines) + "\n", args.output)
     return EXIT_OK
 
@@ -312,7 +338,9 @@ def cmd_scan(args):
 def cmd_match(args):
     if bool(args.other) == bool(args.collection):
         raise CliError("give either a second vector or --collection to match against.")
-    check_collection(args.collection)
+    check_output(args.output)
+    if args.collection:
+        check_file(args.collection, "collection")
     vector = read_vector(args.vector)
     scout = ApiScout()
     scout.loadWinApi1024()
@@ -341,6 +369,10 @@ def cmd_export(args):
         raise CliError("nothing to write, give --png and/or --html.")
     if args.html == "-" and args.png == "-":
         raise CliError("only one of --png and --html can go to standard output.")
+    if args.png == "-" and sys.stdout.isatty():
+        raise CliError("a PNG image is not written to the terminal. Redirect standard output or give a file.")
+    for path in (args.html, args.png):
+        check_output(path)
     apiqr = ApiQR(os.path.join(os.path.dirname(__file__), "data", "winapi1024v1.txt"))
     try:
         apiqr.setVector(read_vector(args.vector))
@@ -363,16 +395,10 @@ def cmd_collect(args):
     if not destinations:
         db_dir = args.db_dir or get_default_db_dir()
         destinations = [os.path.join(db_dir, f"{datetime.date.today().isoformat()}-winapi1024.csv")]
+    if args.update and args.output and os.path.realpath(args.update) == os.path.realpath(args.output):
+        raise CliError("--update and --output name the same file, leave out --output.")
     for destination in destinations:
-        if destination == "-":
-            continue
-        if os.path.isdir(destination):
-            raise CliError(f"{destination} is a folder, a file is expected.")
-        folder = os.path.dirname(os.path.abspath(destination))
-        if not os.path.isdir(folder):
-            raise CliError(f"folder not found: {folder}. Create it or choose another file with --output.")
-        if not os.access(folder, os.W_OK):
-            raise CliError(f"can not write to the folder of {destination}.")
+        check_output(destination)
     db_paths = []
     for db_path in resolve_db_files(args):
         try:
@@ -402,7 +428,8 @@ def cmd_collect(args):
     report(args, f"Fingerprinting {num_crawlable} of {len(file_list)} files with {cpu_count()} processes...")
     fingerprints = []
     show_progress = not args.quiet and sys.stderr.isatty()
-    with Pool(cpu_count()) as pool:
+    # Ctrl-C is handled by this process, which then ends its workers
+    with Pool(cpu_count(), initializer=signal.signal, initargs=(signal.SIGINT, signal.SIG_IGN)) as pool:
         for fingerprint in pool.imap(crawler.getFingerprint, file_list, chunksize=4):
             fingerprints.append(fingerprint)
             if show_progress:
@@ -494,6 +521,7 @@ def cmd_update(args):
 
 
 def cmd_dbs(args):
+    check_output(args.output)
     db_dir = args.db_dir or get_default_db_dir()
     if not os.path.isdir(db_dir):
         raise CliError(
@@ -560,7 +588,8 @@ def add_output_options(parser):
 
 
 def build_parser():
-    common = Parser(add_help=False)
+    # accepted before and after the command; the value given in front of it is kept
+    common = Parser(add_help=False, argument_default=argparse.SUPPRESS)
     common.add_argument("-q", "--quiet", action="store_true", help="only print results and errors")
     common.add_argument("--verbose", action="store_true", help="print what the library logs while it works")
     parser = Parser(
@@ -570,6 +599,8 @@ def build_parser():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"apiscout {get_version()}")
+    parser.add_argument("-q", "--quiet", action="store_true", help="only print results and errors")
+    parser.add_argument("--verbose", action="store_true", help="print what the library logs while it works")
     commands = parser.add_subparsers(dest="command", metavar="command", parser_class=Parser)
 
     def add_command(name, **kwargs):
@@ -606,6 +637,14 @@ def build_parser():
     )
     scan.add_argument("--ignore-aslr", action="store_true", help="do not apply the ASLR offsets stored in an API DB")
     scan.add_argument("-c", "--collection", metavar="FILE", help="also match the ApiVector against this collection")
+    scan.add_argument(
+        "-n",
+        "--max-results",
+        type=parse_count(1),
+        default=5,
+        metavar="N",
+        help="matches of the collection to list (default: 5)",
+    )
     add_output_options(scan)
     scan.set_defaults(run=cmd_scan)
 

@@ -10,7 +10,8 @@ from apiscout import cli
 THIS_DIR = os.path.abspath(os.path.dirname(__file__))
 DB_PATH = os.path.join(THIS_DIR, "minimal_db.json")
 DUMP_PATH = os.path.join(THIS_DIR, "example_dump.bin")
-VECTOR = "A171"
+VECTOR = "WDBCAgBBAAgCA159"
+OTHER_VECTOR = "WDBCABBACAgAEAAgA155"
 
 
 def run(*arguments):
@@ -66,7 +67,7 @@ class CliTestSuite(unittest.TestCase):
     def testScanErrors(self):
         code, output, errors = run("scan", "no_such_file", "--db", DB_PATH)
         self.assertEqual((1, ""), (code, output))
-        self.assertIn("file not found: no_such_file", errors)
+        self.assertIn("dump not found: no_such_file", errors)
         self.assertIn("API DB not found", run("scan", DUMP_PATH, "--db", "no_such_db.json")[2])
         with tempfile.TemporaryDirectory() as directory:
             code, _, errors = run("scan", DUMP_PATH, "--db-dir", directory)
@@ -166,7 +167,7 @@ class CliTestSuite(unittest.TestCase):
         # match reads a vector, or the JSON result of scan, from standard input
         for piped in (VECTOR.encode() + b"\n", output.encode()):
             with unittest.mock.patch.object(sys, "stdin", Input(piped)):
-                self.assertEqual(0.0, json.loads(run("match", "-", VECTOR, "--json")[1])["score"])
+                self.assertIn("score", json.loads(run("match", "-", VECTOR, "--json")[1]))
 
     def testDbs(self):
         code, output, _ = run("dbs", "--db-dir", THIS_DIR, "--json")
@@ -182,7 +183,8 @@ class CliTestSuite(unittest.TestCase):
     def testMatch(self):
         code, output, _ = run("match", VECTOR, VECTOR, "--json")
         self.assertEqual(0, code)
-        self.assertEqual({"vector_a": VECTOR, "vector_b": VECTOR, "score": 0.0}, json.loads(output))
+        self.assertEqual({"vector_a": VECTOR, "vector_b": VECTOR, "score": 1.0}, json.loads(output))
+        self.assertAlmostEqual(0.572, json.loads(run("match", VECTOR, OTHER_VECTOR, "--json")[1])["score"], places=3)
         with tempfile.TemporaryDirectory() as directory:
             collection = os.path.join(directory, "collection.csv")
             with open(collection, "w") as f_collection:
@@ -231,6 +233,132 @@ class CliTestSuite(unittest.TestCase):
             self.assertEqual(
                 1, run("collect", directory, "--db", DB_PATH, "-o", os.path.join(directory, "no", "x.csv"))[0]
             )
+
+    def testExamplesOfTheHelpWork(self):
+        import re
+        import shlex
+
+        with tempfile.TemporaryDirectory() as directory:
+            collection = os.path.join(directory, "apivectors.csv")
+            with open(collection, "w") as f_collection:
+                f_collection.write(f"family;sample;1;1;{OTHER_VECTOR}\n")
+            lines = [line.strip() for text in cli.EXAMPLES.values() for line in text.splitlines()]
+            commands = [line for line in lines if re.match(r"apiscout (match|export) '", line) and "|" not in line]
+            self.assertGreaterEqual(len(commands), 4)
+            for command in commands:
+                arguments = shlex.split(command.split(" > ")[0])[1:]
+                arguments = [collection if argument == "apivectors.csv" else argument for argument in arguments]
+                arguments = [
+                    os.path.join(directory, argument) if argument.startswith("vector.") else argument
+                    for argument in arguments
+                ]
+                if "-" in arguments:
+                    continue
+                self.assertEqual(0, run(*arguments)[0], command)
+
+    def testQuietBeforeAndAfterTheCommand(self):
+        for arguments in (["-q", "scan", DUMP_PATH, "--db", DB_PATH], ["scan", "-q", DUMP_PATH, "--db", DB_PATH]):
+            code, _, errors = run(*arguments)
+            self.assertEqual((0, ""), (code, errors))
+
+    def testFoldersAndEmptyFiles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            empty = os.path.join(directory, "empty")
+            open(empty, "w").close()
+            self.assertIn("file is empty", run("scan", empty, "--db", DB_PATH)[2])
+            self.assertIn("is a folder", run("scan", directory, "--db", DB_PATH)[2])
+            self.assertIn("is a folder", run("scan", DUMP_PATH, "--db", directory)[2])
+            # the output file is checked before the scan
+            code, _, errors = run("scan", DUMP_PATH, "--db", DB_PATH, "-o", os.path.join(directory, "no", "result"))
+            self.assertEqual(1, code)
+            self.assertNotIn("Scanned", errors)
+            same = os.path.join(directory, "c.csv")
+            self.assertIn("same file", run("collect", directory, "--db", DB_PATH, "-u", same, "-o", same)[2])
+
+    def testOutputToStandardOutput(self):
+        import sys
+        import unittest.mock
+
+        class Output:
+            def __init__(self):
+                self.buffer = io.BytesIO()
+
+            def flush(self):
+                pass
+
+            def isatty(self):
+                return False
+
+        for arguments, start in (
+            (["export", VECTOR, "--png", "-"], b"\x89PNG"),
+            (["export", VECTOR, "--html", "-"], b"<"),
+        ):
+            output = Output()
+            with unittest.mock.patch.object(sys, "stdout", output):
+                self.assertEqual(0, cli.main(arguments))
+            self.assertTrue(output.buffer.getvalue().lstrip().startswith(start))
+        self.assertEqual(1, run("export", VECTOR, "--png", "-", "--html", "-")[0])
+
+    def testDbFolderResolution(self):
+        import unittest.mock
+
+        variable = cli.DB_DIR_VARIABLE
+        with tempfile.TemporaryDirectory() as directory, unittest.mock.patch.dict(os.environ, {variable: directory}):
+            self.assertEqual(directory, cli.get_default_db_dir())
+            self.assertIn(directory, run("dbs")[1])
+            # the option wins over the variable
+            self.assertIn("minimal_db.json", run("dbs", "--db-dir", THIS_DIR)[1])
+
+    def testUpdate(self):
+        import unittest.mock
+
+        class Response:
+            def __init__(self, status_code=200, version=None, content=b"", headers=None):
+                self.status_code, self.content, self.headers, self._version = (
+                    status_code,
+                    content,
+                    headers or {},
+                    version,
+                )
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"version": self._version}
+
+        try:
+            import requests  # noqa: F401
+        except ImportError:
+            self.skipTest("requests is not installed")
+        with tempfile.TemporaryDirectory() as directory:
+            token, db_dir = os.path.join(directory, "token"), os.path.join(directory, "dbs")
+            with open(token, "w") as f_token:
+                f_token.write("secret\n")
+            os.mkdir(db_dir)
+            old_collection = os.path.join(db_dir, "2020-01-01-apivectors-v5.csv")
+            open(old_collection, "w").close()
+            name = "2026-01-01-apivectors-v7.csv"
+            download = Response(
+                content=b"family;sample;1;1;A171\n", headers={"Content-Disposition": f"filename={name}"}
+            )
+            arguments = ["update", "--db-dir", db_dir, "--token-file", token]
+            with unittest.mock.patch("requests.get", side_effect=[Response(version=7), download]) as get:
+                code, _, errors = run(*arguments)
+            self.assertEqual(0, code)
+            self.assertEqual("apitoken secret", get.call_args.kwargs["headers"]["Authorization"])
+            self.assertEqual([name], os.listdir(db_dir))
+            self.assertIn("removed 1 older", errors)
+            self.assertNotIn("secret", errors)
+            with unittest.mock.patch("requests.get", side_effect=[Response(version=7)]):
+                self.assertIn("most recent", run(*arguments)[2])
+            with unittest.mock.patch("requests.get", side_effect=[Response(version=8), Response(status_code=403)]):
+                code, _, errors = run(*arguments)
+            self.assertEqual(1, code)
+            self.assertIn("rejected the API token", errors)
+            self.assertNotIn("Traceback", errors)
+            with unittest.mock.patch("requests.get", side_effect=[Response(version="x")]):
+                self.assertIn("not understood", run(*arguments)[2])
 
     def testUpdateNeedsToken(self):
         with tempfile.TemporaryDirectory() as directory:
