@@ -155,8 +155,21 @@ class IdaProxy:
 
     def undefine(self, ea, size):
         # also releases an item that starts in front of ea and reaches into the range
-        ida_bytes.del_items(ida_bytes.get_item_head(ea), ida_bytes.DELIT_SIMPLE)
-        return ida_bytes.del_items(ea, ida_bytes.DELIT_SIMPLE, size)
+        head = ida_bytes.get_item_head(ea)
+        flags = ida_bytes.get_full_flags(head)
+        item_end = ida_bytes.get_item_end(head)
+        element_size = ida_bytes.get_data_elsize(head, flags) if ida_bytes.is_data(flags) else 0
+        ida_bytes.del_items(head, ida_bytes.DELIT_SIMPLE)
+        result = ida_bytes.del_items(ea, ida_bytes.DELIT_SIMPLE, size)
+        if 0 < element_size < item_end - head and not ida_bytes.is_struct(flags):
+            # an array: its elements in front of and behind the range stay an array each
+            data_type = flags & ida_bytes.DT_TYPE
+            for start, end in ((head, ea), (ea + size, item_end)):
+                start += -(start - head) % element_size
+                length = (end - start) // element_size * element_size
+                if length > 0:
+                    ida_bytes.create_data(start, data_type, length, ida_idaapi.BADADDR)
+        return result
 
     def isData(self, ea, size):
         flags = ida_bytes.get_full_flags(ea)
