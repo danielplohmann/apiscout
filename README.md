@@ -57,7 +57,7 @@ A single API far away from all others, like the first row, is usually a chance h
 </details>
 
 > [!IMPORTANT]
-> The DB has to describe the system the dump was taken on: same DLL versions, same load addresses. With ASLR, load addresses change at every boot, so the DB has to be built in the boot the dump is taken in. See [API DBs](#api-dbs).
+> The DB has to describe the system the dump was taken on: same DLL versions. With ASLR, the load addresses change at every boot, so `scan` places the DLLs where the dump has them: by the module list of a minidump, by `--modules FILE` (lines of `<hex load address> <DLL path>`, as `DatabaseBuilder.py --load_addresses` reads them) or by DLL images it finds in the dump (`placed_dlls` in the JSON output). DLLs it does not find keep the addresses of the DB. See [API DBs](#api-dbs).
 
 ## Features
 
@@ -131,7 +131,7 @@ vector = scout.getPrimaryVector(scout.getWinApi1024Vectors(results))[1]["vector"
 | `win2022_server_21h2_example.json` | Windows Server 2022 21H2, 32 and 64bit | yes |
 | `win11_pro_26h2_example.json` | Windows 11 Pro 26H2, 32 and 64bit | yes |
 
-`apiscout dbs download` checks them against [`dbs/SHA256SUMS`](https://github.com/danielplohmann/apiscout/blob/master/dbs/SHA256SUMS) and stores them in `~/.local/share/apiscout/dbs`, `~/Library/Application Support/apiscout/dbs` or `%LOCALAPPDATA%\apiscout\dbs`. DBs with ASLR offsets only fit dumps of the boot they were built in.
+`apiscout dbs download` checks them against [`dbs/SHA256SUMS`](https://github.com/danielplohmann/apiscout/blob/master/dbs/SHA256SUMS) and stores them in `~/.local/share/apiscout/dbs`, `~/Library/Application Support/apiscout/dbs` or `%LOCALAPPDATA%\apiscout\dbs`. DBs with ASLR offsets fit dumps of the boot they were built in, and those of other boots when the load addresses are given as described above.
 
 For your own analysis system, run the DB builder on it (Python 3.8 or newer):
 

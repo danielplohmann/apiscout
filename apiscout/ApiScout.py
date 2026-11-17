@@ -55,7 +55,9 @@ class ApiScout:
         self._apivector = ApiVector()
         self.loadWinApi1024()
 
-    def loadDbFile(self, db_filepath):
+    def loadDbFile(self, db_filepath, place=None):
+        """load an API DB. place(api_db) can return {DLL key: load address} to put DLLs at the addresses they are really
+        loaded at (see LoadAddresses.DllPlacer), the other DLLs keep the addresses of the DB."""
         api_db = {}
         if os.path.isfile(db_filepath):
             with open(db_filepath) as f_json:
@@ -63,6 +65,7 @@ class ApiScout:
         else:
             LOG.error("Not a file: %s!", db_filepath)
             raise ValueError
+        placements = place(api_db) if place else {}
         num_apis_loaded = 0
         num_collisions = 0
         api_map = {}
@@ -82,7 +85,10 @@ class ApiScout:
                 bitness = api_db["dlls"][dll_entry]["bitness"]
                 self.has_64bit |= bitness == 64
                 base_address = api_db["dlls"][dll_entry]["base_address"]
-                virtual_address = base_address + export["address"] - aslr_offset
+                if dll_entry in placements:
+                    virtual_address = placements[dll_entry] + export["address"]
+                else:
+                    virtual_address = base_address + export["address"] - aslr_offset
                 if virtual_address in api_map:
                     if api_map[virtual_address][0].lower() != dll_name.lower():
                         num_collisions += 1
