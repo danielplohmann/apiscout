@@ -1079,10 +1079,12 @@ def build_parser():
         help="drop APIs without another API within N bytes (default: 32)",
     )
     collect.add_argument("--skip-empty", action="store_true", help="leave out dumps without any API")
-    collect.add_argument(
+    # the two ways to use a DB with ASLR offsets exclude each other, one of them would silently win
+    aslr_options = collect.add_mutually_exclusive_group()
+    aslr_options.add_argument(
         "--use-aslr-dbs", action="store_true", help="also use API DBs with ASLR offsets and apply the offsets"
     )
-    collect.add_argument(
+    aslr_options.add_argument(
         "--ignore-aslr", action="store_true", help="also use API DBs with ASLR offsets, without the offsets"
     )
     collect.set_defaults(run=cmd_collect)

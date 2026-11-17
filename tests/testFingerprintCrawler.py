@@ -124,6 +124,20 @@ class FingerprintCrawlerTestSuite(unittest.TestCase):
                 self.assertEqual(0, cli.main(arguments + extra))
             self.assertEqual(is_skipped, "Skipping API DB with ASLR offsets" in messages.getvalue())
 
+    def testCollectAslrOptionsExcludeEachOther(self):
+        import contextlib
+        import io
+
+        from apiscout import cli
+
+        arguments = ["collect", self._root_path, "--db", self._aslr_db_path, "-o", os.path.join(self._tmp_dir, "c.csv")]
+        messages = io.StringIO()
+        with contextlib.redirect_stderr(messages), self.assertRaises(SystemExit) as exit_request:
+            cli.main(arguments + ["--use-aslr-dbs", "--ignore-aslr"])
+        self.assertEqual(2, exit_request.exception.code)
+        self.assertIn("not allowed with", messages.getvalue())
+        self.assertFalse(os.path.exists(os.path.join(self._tmp_dir, "c.csv")))
+
     def testCollectParsesEachDbOnceInTheMainProcess(self):
         import contextlib
         import io
