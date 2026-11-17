@@ -330,8 +330,8 @@ class HostileInputTestSuite(unittest.TestCase):
         parsed = []
         original_parse = ImportDescriptor.parse
 
-        def counting_parse(self, buf, max_imports=None, max_name_bytes=None):
-            original_parse(self, buf, max_imports, max_name_bytes)
+        def counting_parse(self, buf, max_imports=None, max_name_bytes=None, names=None):
+            original_parse(self, buf, max_imports, max_name_bytes, names)
             parsed.append(len(self.imports))
 
         ImportDescriptor.parse = counting_parse
@@ -748,6 +748,18 @@ class SixthAuditTestSuite(unittest.TestCase):
         struct.pack_into("<I", pe, 0x58 + 56, 0x101000)
         entries = ApiScout().evaluateImportTable(bytes(pe))["import_table"]
         self.assertLessEqual(sum(len(entry[3]) for entry in entries), 2 * len(pe))
+
+    def testDescriptorsSharingTheirNamesAreNotLimited(self):
+        pe = bytearray(build_pe32()) + bytearray(0x1000)
+        struct.pack_into("<IIII", pe, 0x58 + 0xE0 + 8, 0x1200, 0x1000, 0x1200, 0x200)
+        # 40 descriptors with one import name table of 30 names, each with an address table of its own
+        for index in range(30):
+            pe[0x600 + 0x20 * index + 2 : 0x600 + 0x20 * index + 0x1E] = b"ImportedFunctionWithLongName"
+            struct.pack_into("<I", pe, 0x400 + 4 * index, 0x1400 + 0x20 * index)
+        for index in range(40):
+            struct.pack_into("<IIIII", pe, 0xA00 + 20 * index, 0x1200, 0, 0, 0x1100, 0x1C00 + 0x80 * index)
+        struct.pack_into("<II", pe, 0x58 + 104, 0x1800, 20 * 41)
+        self.assertEqual(40 * 30, len(ApiScout().evaluateImportTable(bytes(pe))["import_table"]))
 
     def testImportsByOrdinalAreNotLimitedByTheirNames(self):
         pe = bytearray(build_pe32()) + bytearray(0x400)

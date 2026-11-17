@@ -18,9 +18,11 @@ class ImportDescriptor:
         self.lib_name = lib_name
         self._is_64bit = is_64bit
 
-    def parse(self, buf, max_imports=None, max_name_bytes=None):
+    def parse(self, buf, max_imports=None, max_name_bytes=None, names=None):
+        """names: the names read so far by their offset, shared by the descriptors of a table"""
         self.imports = {}
         self.name_bytes = 0
+        names = {} if names is None else names
         imp_offset = 0
         # some linkers and most packers leave the import name table (OriginalFirstThunk) empty.
         # In this case, the import address table still carries the name references as long as the file was not loaded.
@@ -35,10 +37,7 @@ class ImportDescriptor:
         while imp != 0 and (max_imports is None or len(self.imports) < max_imports):
             thunk = self.load_table_offset + imp_offset
             if imp not in parsed:
-                parsed[imp] = self._parse_import(buf, name_table_offset + imp_offset)
-                # names of ordinals are not read from the buffer
-                is_ordinal_import = imp & (0x8000000000000000 if self._is_64bit else 0x80000000)
-                self.name_bytes += 0 if is_ordinal_import else len(parsed[imp]["name"])
+                parsed[imp] = self._parse_import(buf, name_table_offset + imp_offset, names)
                 if max_name_bytes is not None and self.name_bytes > max_name_bytes:
                     # names overlapping each other, which a file can only hold in a crafted table
                     break
@@ -49,7 +48,7 @@ class ImportDescriptor:
             else:
                 imp = get_dword(buf, name_table_offset + imp_offset)
 
-    def _parse_import(self, buf, offset):
+    def _parse_import(self, buf, offset, names):
         import_offset = get_dword(buf, offset)
         # import by ordinal: flagged in the highest bit of the thunk, which is a QWORD for PE32+
         if self._is_64bit:
@@ -60,9 +59,13 @@ class ImportDescriptor:
             ordinal = get_word(buf, offset)
             name_by_ordinal = OrdinalHelper.resolveOrdinal(self.lib_name, ordinal, 64 if self._is_64bit else 32)
             return {"ordinal": ordinal, "name": name_by_ordinal, "dll_name": self.lib_name}
+        if import_offset not in names:
+            # a name is read once and counted once, however many thunks and descriptors refer to it
+            names[import_offset] = get_string(buf, import_offset + 2)
+            self.name_bytes += len(names[import_offset])
         return {
             "ordinal": get_word(buf, import_offset),
-            "name": get_string(buf, import_offset + 2),
+            "name": names[import_offset],
             "dll_name": self.lib_name,
         }
 
@@ -127,10 +130,11 @@ class ImportTableLoader:
                 descriptor = self._parse_descriptor(it_rva + it_offset, descriptor_size)
                 # names can not take more space than the buffer has
                 name_bytes_left = len(self._buffer)
+                names = {}
                 if self._max_name_bytes is not None:
                     name_bytes_left = min(name_bytes_left, self._max_name_bytes)
                 while descriptor.load_table_offset and thunks_left > 0 and name_bytes_left >= 0:
-                    descriptor.parse(self._buffer, thunks_left, name_bytes_left)
+                    descriptor.parse(self._buffer, thunks_left, name_bytes_left, names)
                     thunks_left -= len(descriptor.imports) + 1
                     name_bytes_left -= descriptor.name_bytes
                     import_address_table.update(descriptor.imports)

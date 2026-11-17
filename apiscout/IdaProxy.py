@@ -188,7 +188,8 @@ class IdaProxy:
         refinfo = ida_nalt.refinfo_t()
         for operand in range(ida_ida.UA_MAXOP):
             is_offset = ida_bytes.is_off(flags, operand) and ida_nalt.get_refinfo(refinfo, head, operand)
-            if is_offset and refinfo.base in bases:
+            # offsets relative to the image base (e.g. of jump tables) are meant to have that base
+            if is_offset and refinfo.base in bases and not refinfo.flags & ida_nalt.REFINFO_NOBASE:
                 refinfo.base = 0
                 ida_offset.op_offset_ex(head, operand, refinfo)
 
