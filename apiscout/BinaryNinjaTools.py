@@ -13,6 +13,7 @@ Headless (Binary Ninja's Python API):
 The commands of the plugin (binja_scout) are registered with register_commands().
 """
 
+import functools
 import os
 import re
 
@@ -23,6 +24,7 @@ from binaryninja.plugin import BackgroundTaskThread, PluginCommand
 from binaryninja.types import Symbol, Type
 
 from apiscout.ApiScout import ApiScout
+from apiscout.LoadAddresses import describe_placements, placed_image_ranges, placer_for_modules, read_from_regions
 
 LOGGER = "ApiScout"
 SESSION_KEY = "apiscout"
@@ -100,15 +102,21 @@ def get_result_rows(bv, results):
     return [list(key) + [max(references, _count_references(bv, key[0]))] for key, references in sorted(rows.items())]
 
 
-def scan(bv, db_paths, ignore_aslr_offsets=False, task=None):
-    """the API references found in the view's memory with the given API DBs as rows, see get_result_rows()"""
+def scan(bv, db_paths, ignore_aslr_offsets=False, task=None, modules=None):
+    """the API references found in the view's memory with the given API DBs as rows, see get_result_rows().
+    The DLLs of the API DBs are placed where the module list in the file `modules` has them, as `apiscout scan
+    --modules` does; raises ModuleListError if it can not be used."""
+    placer = placer_for_modules(modules)
     scout = ApiScout()
     scout.ignoreAslrOffsets(ignore_aslr_offsets)
     for path in db_paths:
-        scout.loadDbFile(path)
+        scout.loadDbFile(path, placer.forDb(path))
+    for line in describe_placements(placer):
+        _info(line)
     bitness_string = "32bit and 64bit" if scout.has_64bit else "32bit"
+    memory = sorted(get_memory(bv).items())
     results = {}
-    for segment_address, binary in sorted(get_memory(bv).items()):
+    for segment_address, binary in memory:
         if task is not None and task.cancelled:
             break
         if task is not None:
@@ -118,6 +126,11 @@ def scan(bv, db_paths, ignore_aslr_offsets=False, task=None):
         scout.setBaseAddress(segment_address)
         _info(f"Scanning {len(binary)} bytes @0x{segment_address:x} in {bitness_string} mode.")
         _merge_results(results, scout.crawl(binary))
+    # the images of the DLLs in the memory hold their export tables and import address tables, not references
+    ranges = placed_image_ranges(placer, functools.partial(read_from_regions, memory))
+    if ranges:
+        scout.setBaseAddress(bv.start)
+        results = scout.filter(results, 0, 0, 0, own_image=False, exclude_ranges=ranges)
     return get_result_rows(bv, results)
 
 
@@ -316,14 +329,16 @@ def get_state(bv):
     return bv.session_data.get(SESSION_KEY)
 
 
-def scan_and_annotate(bv, db_paths, ignore_aslr_offsets=False, distance=0, task=None):
+def scan_and_annotate(bv, db_paths, ignore_aslr_offsets=False, distance=0, task=None, modules=None):
     """
     scan the view with the given API DBs and annotate all references found, with distance > 0 only those with
-    another reference within this many bytes. Returns the state also kept in bv.session_data["apiscout"]:
+    another reference within this many bytes. modules is the file with the module list that gives the load addresses
+    of the DLLs (lines of hex load address and DLL path, as `apiscout scan --modules`).
+    Returns the state also kept in bv.session_data["apiscout"]:
     {"rows": rows found, "status": {row[:4]: outcome}, "annotated": number, "skipped": number}.
     A scan cancelled with the task annotates nothing and keeps the state of the last scan.
     """
-    rows = scan(bv, db_paths, ignore_aslr_offsets, task)
+    rows = scan(bv, db_paths, ignore_aslr_offsets, task, modules)
     state = {"rows": rows, "status": {}, "db_paths": list(db_paths), "annotated": 0, "skipped": 0}
     if task is not None and task.cancelled:
         _info("ApiScout: the scan was cancelled, nothing annotated.")
@@ -370,9 +385,10 @@ def ask_parameters():
     fields = ["API DBs of the system the memory dump was taken from:"]
     checkboxes = [interaction.CheckboxField(os.path.basename(path), False) for path in db_files]
     other_db = interaction.OpenFileNameField("Other API DB file", "*.json")
+    modules = interaction.OpenFileNameField("Module list with the load addresses of the DLLs (optional)")
     ignore_aslr = interaction.CheckboxField("Ignore the ASLR offsets stored in the API DBs", False)
     fields.extend(checkboxes)
-    fields.extend([None, other_db, ignore_aslr])
+    fields.extend([None, other_db, modules, ignore_aslr])
     if not interaction.get_form_input(fields, "ApiScout"):
         return None
     db_paths = [path for path, checkbox in zip(db_files, checkboxes, strict=True) if checkbox.result]
@@ -382,7 +398,11 @@ def ask_parameters():
     if not db_paths:
         log_warn("No API DB selected, nothing to do.", LOGGER)
         return None
-    return {"db_paths": db_paths, "ignore_aslr_offsets": bool(ignore_aslr.result)}
+    return {
+        "db_paths": db_paths,
+        "ignore_aslr_offsets": bool(ignore_aslr.result),
+        "modules": _as_text(modules.result) or None,
+    }
 
 
 def render_markdown(rows, status):
@@ -427,7 +447,13 @@ class ScanTask(BackgroundTaskThread):
 
     def run(self):
         try:
-            rows = scan(self.bv, self.parameters["db_paths"], self.parameters["ignore_aslr_offsets"], self)
+            rows = scan(
+                self.bv,
+                self.parameters["db_paths"],
+                self.parameters["ignore_aslr_offsets"],
+                self,
+                self.parameters.get("modules"),
+            )
         except (OSError, ValueError, KeyError, TypeError) as exc:
             log_error(f"ApiScout: the scan failed: {exc!r}", LOGGER)
             return
@@ -460,7 +486,13 @@ class ScanAndAnnotateTask(BackgroundTaskThread):
 
     def run(self):
         try:
-            scan_and_annotate(self.bv, self.parameters["db_paths"], self.parameters["ignore_aslr_offsets"], task=self)
+            scan_and_annotate(
+                self.bv,
+                self.parameters["db_paths"],
+                self.parameters["ignore_aslr_offsets"],
+                task=self,
+                modules=self.parameters.get("modules"),
+            )
         except (OSError, ValueError, KeyError, TypeError) as exc:
             log_error(f"ApiScout: the scan failed: {exc!r}", LOGGER)
             return
