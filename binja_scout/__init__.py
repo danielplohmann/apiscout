@@ -14,8 +14,7 @@ except ImportError:
     # the plugin folder is used from a checkout of the repository
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
-from apiscout.BinaryNinjaTools import register_commands, scan_and_annotate  # noqa: E402
+# registers the commands, once, also when the extension manager imports apiscout.binja_scout itself
+from apiscout.binja_scout import scan_and_annotate  # noqa: E402
 
 __all__ = ["scan_and_annotate"]
-
-register_commands()

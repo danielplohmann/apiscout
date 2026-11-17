@@ -42,6 +42,9 @@ def get_memory(bv):
     block_start = None
     block_end = None
     for segment in sorted(bv.segments, key=lambda segment: segment.start):
+        if segment.data_length == 0:
+            # no bytes of the dump, e.g. the section Binary Ninja adds for its synthetic builtins
+            continue
         # read returns at most the bytes requested, fewer where the segment has no data
         content = bv.read(segment.start, segment.end - segment.start)
         if not content:
@@ -144,36 +147,54 @@ class PrototypeResolver:
         return self._all_libraries
 
     def resolve(self, dll_name, api_name):
-        """(function type, type library) of the API or None"""
+        """(function type, type library, name of the object in the library) of the API or None"""
         key = (dll_name.lower(), api_name)
         if key not in self._cache:
             self._cache[key] = self._resolve(dll_name, api_name)
         return self._cache[key]
 
     def _resolve(self, dll_name, api_name):
-        for library in self._candidates(dll_name):
-            if library.get_named_object(api_name) is None:
-                continue
-            if self.bv.get_type_library(library.name) is None:
-                self.bv.add_type_library(library)
-            object_type = self.bv.import_library_object(api_name, library)
-            if object_type is not None and object_type.type_class == TypeClass.FunctionTypeClass:
-                return object_type, library
+        names = [api_name]
+        if api_name.startswith("Zw"):
+            # the type libraries describe the system calls of ntdll by their Nt names only, Zw* has the same prototype
+            names.append("Nt" + api_name[2:])
+        for name in names:
+            for library in self._candidates(dll_name):
+                if library.get_named_object(name) is None:
+                    continue
+                if self.bv.get_type_library(library.name) is None:
+                    self.bv.add_type_library(library)
+                object_type = self.bv.import_library_object(name, library)
+                if object_type is not None and object_type.type_class == TypeClass.FunctionTypeClass:
+                    return object_type, library, name
         return None
 
 
+def _is_referenced(bv, function):
+    if function.start == bv.entry_point or any(entry.start == function.start for entry in bv.entry_functions):
+        return True
+    return any(True for _ in bv.get_code_refs(function.start)) or any(True for _ in bv.get_data_refs(function.start))
+
+
 def _check_location(bv, address, size):
-    """the reason why no pointer can be defined at the location, None if it can"""
+    """
+    (the reason why no pointer can be defined at the location or None, the functions in the way of the pointer).
+    Functions in the way are those that nothing refers to, e.g. found by the linear sweep in a table of pointers.
+    """
     if size not in (4, 8):
-        return "of unknown pointer size"
+        return "of unknown pointer size", []
     segment = bv.get_segment_at(address)
     if segment is None:
-        return "not in a segment"
+        return "not in a segment", []
     if segment.end < address + size:
-        return "at the end of its segment"
-    if any(bv.get_basic_blocks_at(location) for location in range(address, address + size)):
-        return "part of an instruction"
-    return None
+        return "at the end of its segment", []
+    functions = {}
+    for location in range(address, address + size):
+        for block in bv.get_basic_blocks_at(location):
+            functions[block.function.start] = block.function
+    if any(_is_referenced(bv, function) for function in functions.values()):
+        return "part of an instruction", []
+    return None, [functions[start] for start in sorted(functions)]
 
 
 def _set_name(bv, address, name, symbol_type):
@@ -209,7 +230,7 @@ def _apply(bv, row, resolver):
     bv.define_user_data_var(address, Type.pointer_of_width(size, target))
     if not prototype:
         return "annotated (no type information)"
-    bv.record_imported_object_library(prototype[1], str(row[3]), address)
+    bv.record_imported_object_library(prototype[1], prototype[2], address)
     return "annotated"
 
 
@@ -250,12 +271,18 @@ def annotate(bv, rows, status=None, task=None):
                 for location in range(row[0] - 7, row[0] + size)
                 if location != row[0] and location in pointers and location + pointers[location][1] > row[0]
             ]
-            reason = "overlapping " + overlapped[0] if overlapped else _check_location(bv, row[0], size)
+            if overlapped:
+                reason, in_the_way = "overlapping " + overlapped[0], []
+            else:
+                reason, in_the_way = _check_location(bv, row[0], size)
             if reason:
                 num_skipped += 1
                 status[key] = "skipped: " + reason
                 log_warn(f"Skipping 0x{row[0]:x}: location of {get_api_name(row)} is {reason}.", LOGGER)
                 continue
+            for function in in_the_way:
+                _info(f"Removing the function at 0x{function.start:x} without references, it overlaps 0x{row[0]:x}.")
+                bv.remove_user_function(function)
             outcome = _apply(bv, row, resolver)
             num_annotated += 1
             annotated_locations[row[0]] = get_api_name(row)
@@ -286,10 +313,14 @@ def scan_and_annotate(bv, db_paths, ignore_aslr_offsets=False, distance=0, task=
     """
     scan the view with the given API DBs and annotate all references found, with distance > 0 only those with
     another reference within this many bytes. Returns the state also kept in bv.session_data["apiscout"]:
-    {"rows": rows found, "status": {row[:4]: outcome}, "annotated": number, "skipped": number}
+    {"rows": rows found, "status": {row[:4]: outcome}, "annotated": number, "skipped": number}.
+    A scan cancelled with the task annotates nothing and keeps the state of the last scan.
     """
     rows = scan(bv, db_paths, ignore_aslr_offsets, task)
     state = {"rows": rows, "status": {}, "db_paths": list(db_paths), "annotated": 0, "skipped": 0}
+    if task is not None and task.cancelled:
+        _info("ApiScout: the scan was cancelled, nothing annotated.")
+        return state
     bv.session_data[SESSION_KEY] = state
     selected = filter_by_distance(rows, distance)
     state["annotated"], state["skipped"] = annotate(bv, selected, state["status"], task)

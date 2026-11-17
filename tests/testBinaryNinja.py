@@ -203,7 +203,7 @@ def fake_binaryninja_modules():
 def fake_binaryninja():
     """the stand-in is only visible while the plugin modules are imported"""
     fakes = fake_binaryninja_modules()
-    names = list(fakes) + ["apiscout.BinaryNinjaTools", "binja_scout"]
+    names = list(fakes) + ["apiscout.BinaryNinjaTools", "apiscout.binja_scout", "binja_scout"]
     previous = {name: sys.modules.get(name) for name in names}
     for name in names:
         sys.modules.pop(name, None)
@@ -229,6 +229,7 @@ class FakeSegment:
         self.length = length
         # bytes backed by data, the rest of the segment reads as nothing here
         self.content = content
+        self.data_length = len(content)
 
     def __contains__(self, address):
         return self.start <= address < self.end
@@ -264,6 +265,19 @@ class FakeRef:
         self.arch = None
 
 
+class FakeFunction:
+    def __init__(self, start):
+        self.start = start
+
+    def __repr__(self):
+        return f"<func 0x{self.start:x}>"
+
+
+class FakeBasicBlock:
+    def __init__(self, function):
+        self.function = function
+
+
 class FakeBinaryView:
     def __init__(self, segments, address_size=4, platform=None):
         self.segments = segments
@@ -277,7 +291,14 @@ class FakeBinaryView:
         self.recorded = {}
         self.code_refs = {}
         self.data_refs = {}
+        # addresses of instructions of the entry function, which always counts as referenced
         self.code = set()
+        self.entry_point = 0
+        self.entry_function = FakeFunction(0)
+        self.entry_functions = [self.entry_function]
+        # addresses of instructions of other functions: {address: function}
+        self.function_code = {}
+        self.removed_functions = []
         self.calls = []
         self.undo = []
         self.reports = []
@@ -304,7 +325,22 @@ class FakeBinaryView:
         return result
 
     def get_basic_blocks_at(self, addr):
-        return ["block"] if addr in self.code else []
+        blocks = [FakeBasicBlock(self.entry_function)] if addr in self.code else []
+        if addr in self.function_code:
+            blocks.append(FakeBasicBlock(self.function_code[addr]))
+        return blocks
+
+    def add_function_code(self, start, end):
+        """a function without references at start with instructions up to end"""
+        function = FakeFunction(start)
+        for address in range(start, end):
+            self.function_code[address] = function
+        return function
+
+    def remove_user_function(self, func):
+        self.calls.append(("remove_user_function", func.start))
+        self.removed_functions.append(func.start)
+        self.function_code = {addr: function for addr, function in self.function_code.items() if function is not func}
 
     def get_code_refs(self, addr, length=None, max_items=None):
         yield from (FakeRef(address) for address in self.code_refs.get(addr, []))
@@ -433,6 +469,13 @@ class BinaryNinjaImportTest(unittest.TestCase):
             ],
             names,
         )
+        # the module the extension manager imports for the plugin installed as "apiscout" registers them once
+        self.assertEqual(len(names), len(set(names)))
+        FakePluginCommand.registered.clear()
+        with fake_binaryninja():
+            module = importlib.import_module("apiscout.binja_scout")
+        self.assertEqual("apiscout.BinaryNinjaTools", module.scan_and_annotate.__module__)
+        self.assertEqual(names, [entry[0] for entry in FakePluginCommand.registered])
         view = FakeBinaryView([FakeSegment(0x1000, 0x10, b"\0" * 0x10)])
         is_valid = {entry[0]: entry[3] for entry in FakePluginCommand.registered}
         self.assertIsNone(is_valid["ApiScout\\Scan for API references..."])
@@ -467,6 +510,10 @@ class MemoryTest(unittest.TestCase):
                 FakeSegment(0x8000, 0x10, b""),
             ]
         )
+        # read as zeros by Binary Ninja, without bytes of the dump, e.g. its section of synthetic builtins
+        synthetic = FakeSegment(0x9000, 0x18, b"\0" * 0x18)
+        synthetic.data_length = 0
+        view.segments.append(synthetic)
         memory = tools.get_memory(view)
         self.assertEqual([0x1000, 0x3000, 0x5000, 0x6000], sorted(memory))
         self.assertEqual(b"a" * 0x1000 + b"b" * 0x800, memory[0x1000])
@@ -711,6 +758,85 @@ class AnnotationTest(unittest.TestCase):
         self.assertEqual([0x1010], list(view.symbols))
         # an annotation made before also blocks overlapping locations later
         self.assertEqual((0, 1), tools.annotate(view, [rows[1]], status))
+
+    def testFunctionsInTheWay(self):
+        # the linear sweep of Binary Ninja finds functions in a table of pointers, e.g. in a raw memory dump
+        view = self.makeView(4, [FakeTypeLibrary("kernel32.dll", {"ReadProcessMemory": function_type("RPM")})])
+        spurious = view.add_function_code(0x100E, 0x1018)
+        called = view.add_function_code(0x1040, 0x1048)
+        view.code_refs[0x1040] = [0x1000]
+        pointed_to = view.add_function_code(0x1060, 0x1068)
+        view.data_refs[0x1060] = [0x1080]
+        rows = [
+            [0x1010, 0x7000, "kernel32.dll (32bit)", "ReadProcessMemory", 1],
+            # the function is gone after the first row
+            [0x1014, 0x7004, "kernel32.dll (32bit)", "CreateFileA", 1],
+            [0x1044, 0x7008, "kernel32.dll (32bit)", "Called", 1],
+            [0x1060, 0x700C, "kernel32.dll (32bit)", "PointedTo", 1],
+        ]
+        status = {}
+        self.assertEqual((2, 2), tools.annotate(view, rows, status))
+        self.assertEqual([0x100E], view.removed_functions)
+        self.assertEqual(
+            [
+                "annotated",
+                "annotated (no type information)",
+                "skipped: part of an instruction",
+                "skipped: part of an instruction",
+            ],
+            [status[tuple(row[:4])] for row in rows],
+        )
+        self.assertEqual("RPM", view.data_vars[0x1010].target.name)
+        # the function is removed before the pointer is defined
+        self.assertLess(
+            view.calls.index(("remove_user_function", 0x100E)),
+            view.calls.index(("define_user_data_var", 0x1010, view.data_vars[0x1010])),
+        )
+        self.assertEqual({called, pointed_to}, set(view.function_code.values()))
+        self.assertNotIn(spurious, view.function_code.values())
+        self.assertTrue(any("Removing the function at 0x100e" in text for _, text in LOG))
+
+    def testEntryFunctionIsKept(self):
+        view = self.makeView(4)
+        view.entry_point = 0x1010
+        view.add_function_code(0x1010, 0x1014)
+        status = {}
+        rows = [[0x1010, 0x7000, "a.dll (32bit)", "A", 0]]
+        self.assertEqual((0, 1), tools.annotate(view, rows, status))
+        self.assertEqual("skipped: part of an instruction", status[tuple(rows[0][:4])])
+        self.assertEqual([], view.removed_functions)
+
+    def testZwPrototypeOfNtName(self):
+        library = FakeTypeLibrary("ntdll.dll", {"NtDelayExecution": function_type("NtDelayExecution")})
+        view = self.makeView(4, [library])
+        rows = [
+            [0x1000, 0x7000, "ntdll.dll_0x7de70000 (32bit)", "ZwDelayExecution", 1],
+            [0x1004, 0x7004, "ntdll.dll_0x7de70000 (32bit)", "ZwUnknown", 1],
+        ]
+        status = {}
+        self.assertEqual((2, 0), tools.annotate(view, rows, status))
+        self.assertEqual("ZwDelayExecution", view.get_symbol_at(0x1000).name)
+        self.assertEqual("NtDelayExecution", view.data_vars[0x1000].target.name)
+        self.assertEqual(("ntdll.dll", "NtDelayExecution"), view.recorded[0x1000])
+        self.assertEqual("annotated", status[tuple(rows[0][:4])])
+        self.assertEqual("annotated (no type information)", status[tuple(rows[1][:4])])
+
+    def testCancelledScanKeepsLastResults(self):
+        folder = tempfile.mkdtemp()
+        db_path = os.path.join(folder, "one.json")
+        write_db(db_path, {"kernel32.dll": (32, 0x7C800000, [("A", 1, 0x10)])})
+        try:
+            view = self.makeView(4)
+            last = {"rows": [[0x1000, 0x7000, "a.dll (32bit)", "A", 0]], "status": {}}
+            view.session_data["apiscout"] = last
+            task = FakeBackgroundTaskThread()
+            task.cancelled = True
+            state = tools.scan_and_annotate(view, [db_path], task=task)
+        finally:
+            shutil.rmtree(folder)
+        self.assertEqual((0, 0), (state["annotated"], state["skipped"]))
+        self.assertIs(last, view.session_data["apiscout"])
+        self.assertEqual({}, view.symbols)
 
     def testReannotationReplacesOwnName(self):
         view = self.makeView(4)
