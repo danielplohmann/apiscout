@@ -44,6 +44,45 @@ class ApiScoutTestSuite(unittest.TestCase):
         self.assertEqual([(0, 0), (1, 16777216), (2, 33619968)], result_dwords)
         self.assertEqual([(0, 2203318222848), (1, 8606711808)], result_qwords)
 
+    def testCandidateSearch(self):
+        """the numpy search finds the same DWORDs and QWORDs as reading every offset, across chunks and alignments"""
+        from apiscout import ApiScout as scout_module
+
+        scout = ApiScout()
+        api_map = {0x1000: ("a.dll", "A", 32), 0x7FFE0000: ("b.dll", "B", 32), 0x7FF812345678: ("c.dll", "C", 64)}
+        scout.api_maps["test_map"] = api_map
+        binary = bytearray(b"\x01" * 101)
+        for offset, value, fmt in (
+            (0, 0x1000, "<I"),
+            (5, 0x7FFE0000, "<I"),
+            (38, 0x7FF812345678, "<Q"),
+            (97, 0x1000, "<I"),
+        ):
+            binary[offset : offset + struct.calcsize(fmt)] = struct.pack(fmt, value)
+        binary = bytes(binary)
+        expected = {
+            width: [(offset, value) for offset, value in iterate(binary) if value in api_map]
+            for width, iterate in ((4, scout.iterateAllDwords), (8, scout.iterateAllQwords))
+        }
+        self.assertEqual([0, 5, 97], [offset for offset, _ in expected[4]])
+        self.assertEqual([38], [offset for offset, _ in expected[8]])
+        for chunk_size in (1, 3, 1 << 22):
+            scout.SEARCH_CHUNK_SIZE = chunk_size
+            for width in (4, 8):
+                self.assertEqual(expected[width], list(scout._iterateCandidates(binary, "test_map", width)))
+        # a map changed after a scan is searched with its new addresses
+        api_map[0x01010101] = ("d.dll", "D", 32)
+        expected_dwords = [(offset, value) for offset, value in scout.iterateAllDwords(binary) if value in api_map]
+        self.assertGreater(len(expected_dwords), len(expected[4]))
+        self.assertEqual(expected_dwords, list(scout._iterateCandidates(binary, "test_map", 4)))
+        self.assertEqual([], list(scout._iterateCandidates(b"\x00\x10\x00", "test_map", 4)))
+        numpy = scout_module.np
+        try:
+            scout_module.np = None
+            self.assertEqual(expected[8], list(scout._iterateCandidates(binary, "test_map", 8)))
+        finally:
+            scout_module.np = numpy
+
     def testResolveAddressCandidates(self):
         scout = ApiScout()
         scout.api_maps["test_map"] = {0x1000: ("test.dll", "TestApi", 32)}

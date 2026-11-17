@@ -30,6 +30,11 @@ import os
 import re
 import struct
 
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover - numpy is a dependency, the plain loop is kept for environments without it
+    np = None
+
 from .ApiVector import ApiVector
 from .ImportTableLoader import ImportTableLoader
 from .PeTools import PeTools
@@ -38,6 +43,8 @@ LOG = logging.getLogger(__name__)
 
 
 class ApiScout:
+    # number of DWORDs/QWORDs compared at once by the numpy search, bounds its memory use to some 100 MB
+    SEARCH_CHUNK_SIZE = 1 << 22
     # share of exports overwriting another DLL's address above which loading an API DB issues a warning
     COLLISION_WARNING_RATIO = 0.01
 
@@ -45,6 +52,7 @@ class ApiScout:
         self.api_maps = {}
         self._api_map_sources = {}
         self._other_bitness_maps = {}
+        self._sorted_addresses = {}
         self.has_64bit = False
         self.base_address = 0
         self._binary_length = 0
@@ -165,6 +173,55 @@ class ApiScout:
         for offset in range(len(binary) - 7):
             yield offset, unpack_from(binary, offset)[0]
 
+    def _getSortedAddresses(self, api_map_name):
+        assert np is not None
+        api_map = self.api_maps[api_map_name]
+        cached = self._sorted_addresses.get(api_map_name)
+        # api_maps is public, rebuild when a map was replaced or extended since the last scan
+        if cached is None or cached[0] is not api_map or len(cached[1]) != len(api_map):
+            cached = (api_map, np.array(sorted(api_map), dtype=np.uint64))
+            self._sorted_addresses[api_map_name] = cached
+        return cached[1]
+
+    def _iterateCandidates(self, binary, api_map_name, width):
+        """offsets and values of all DWORDs (width 4) or QWORDs (width 8) that are addresses in the API map, in the order of their offsets"""
+        if np is None:
+            values = self.iterateAllDwords(binary) if width == 4 else self.iterateAllQwords(binary)
+            api_map = self.api_maps[api_map_name]
+            yield from ((offset, value) for offset, value in values if value in api_map)
+            return
+        addresses = self._getSortedAddresses(api_map_name)
+        if width == 4:
+            addresses = addresses[addresses <= 0xFFFFFFFF].astype(np.uint32)
+        if not len(addresses) or len(binary) < width:
+            return
+        lowest, highest = addresses[0], addresses[-1]
+        dtype = np.dtype("<u4") if width == 4 else np.dtype("<u8")
+        hits = []
+        # one view per alignment, each one reads every width-th value starting at that offset
+        for alignment in range(width):
+            count = (len(binary) - alignment) // width
+            for start in range(0, count, self.SEARCH_CHUNK_SIZE):
+                values = np.frombuffer(
+                    binary,
+                    dtype=dtype,
+                    count=min(self.SEARCH_CHUNK_SIZE, count - start),
+                    offset=alignment + start * width,
+                )
+                indices = np.flatnonzero((values >= lowest) & (values <= highest))
+                if not len(indices):
+                    continue
+                in_range = values[indices]
+                positions = np.minimum(np.searchsorted(addresses, in_range), len(addresses) - 1)
+                indices = indices[addresses[positions] == in_range]
+                hits.append(alignment + (start + indices) * width)
+        if not hits:
+            return
+        offsets = np.sort(np.concatenate(hits))
+        unpack_from = struct.Struct("<I" if width == 4 else "<Q").unpack_from
+        for offset in offsets.tolist():
+            yield offset, unpack_from(binary, offset)[0]
+
     def _parseImportTable(self, binary):
         if self._import_table is None:
             it_loader = ImportTableLoader(binary)
@@ -255,7 +312,7 @@ class ApiScout:
         references = self._getCodeReferences(binary)
         for api_map_name in self.api_maps:
             recovered_apis = []
-            for offset, api_address in self.iterateAllDwords(binary):
+            for offset, api_address in self._iterateCandidates(binary, api_map_name, 4):
                 dll, api, bitness = self._resolveApiByAddress(api_map_name, api_address, 32)
                 if dll and api and bitness == 32:
                     ref_count = 1 + len(references[32][offset]) if offset in references[32] else 1
@@ -272,7 +329,7 @@ class ApiScout:
                         )
                     )
             if self.has_64bit:
-                for offset, api_address in self.iterateAllQwords(binary):
+                for offset, api_address in self._iterateCandidates(binary, api_map_name, 8):
                     dll, api, bitness = self._resolveApiByAddress(api_map_name, api_address, 64)
                     if dll and api and bitness == 64:
                         ref_count = 1 + len(references[64][offset]) if offset in references[64] else 1
