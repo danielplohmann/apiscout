@@ -55,8 +55,9 @@ MAX_INDEX_BYTES = 256 * 1024 * 1024
 READ_SIZE = 1 << 16
 INDEX_MAX_AGE = 24 * 3600
 PAGE_SIZE = 0x1000
-SHA256 = re.compile(r"^[0-9a-f]{64}$")
-SAFE_NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.+-]*$")
+# (used with fullmatch: $ would also match before a newline at the end)
+SHA256 = re.compile(r"[0-9a-f]{64}")
+SAFE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*")
 
 
 class DownloaderError(Exception):
@@ -256,7 +257,7 @@ def find_files(index, name, update, fallback=True):
     exact, earlier = {}, {}
     for sha256, info, names, kb, entry, update_info in iter_updates(index):
         # the key of the index is the SHA-256 of the file, without it the file can not be verified
-        if not SHA256.match(sha256) or (info.get("sha256") or sha256).lower() != sha256:
+        if not SHA256.fullmatch(sha256) or (info.get("sha256") or sha256).lower() != sha256:
             continue
         is_update = kb == update.kb and update.windows in names
         date = update_info.get("releaseDate") or ""
@@ -282,7 +283,7 @@ def find_files(index, name, update, fallback=True):
 
 
 def _safe_filename(name, fallback):
-    return name if isinstance(name, str) and SAFE_NAME.match(name) else fallback
+    return name if isinstance(name, str) and SAFE_NAME.fullmatch(name) else fallback
 
 
 def _install_targets(entry, machine, name):
@@ -471,7 +472,7 @@ def dll_names(extra_names=None):
     """the DLLs of the DLL filter (config.py) without duplicates that only differ in case, or the given names"""
     names, seen = [], set()
     for name in extra_names or config.DLL_FILTER:
-        if not SAFE_NAME.match(name):
+        if not SAFE_NAME.fullmatch(name):
             raise DownloaderError(f"'{name}' is not a file name.")
         if name.lower() not in seen:
             seen.add(name.lower())
@@ -549,7 +550,7 @@ def run(args, fetch=None, out=None):
     names = dll_names(args.dlls)
     if args.list is not None:
         name = args.list.lower() if args.list else "ntdll.dll"
-        if not SAFE_NAME.match(name):
+        if not SAFE_NAME.fullmatch(name):
             raise DownloaderError(f"'{name}' is not a file name.")
         try:
             index = load_index(name, cache_dir, fetch)

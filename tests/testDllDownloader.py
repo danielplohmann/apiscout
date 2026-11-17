@@ -364,6 +364,19 @@ class FindFilesTestSuite(unittest.TestCase):
         self.assertEqual("foo.dll", self.D._safe_filename("../foo.dll", "foo.dll"))
         self.assertEqual("Foo.dll", self.D._safe_filename("Foo.dll", "foo.dll"))
 
+    def test_a_newline_at_the_end_is_not_part_of_a_name(self):
+        """a name or a hash that ends with a line feed is not one ($ matches before it)"""
+        self.assertEqual("foo.dll", self.D._safe_filename("foo.dll\n", "foo.dll"))
+        with self.assertRaisesRegex(self.D.DownloaderError, "not a file name"):
+            self.D.dll_names(["kernel32.dll\n"])
+        self.assertEqual(["kernel32.dll"], self.D.dll_names(["kernel32.dll"]))
+        sha, entry = make_file(
+            DATA_X64, 34404, 5, {"11-24H2": {"KB5000002": make_update("KB5000002", "26100.2", "2024-11-12")}}
+        )
+        update = self.D.select_update(self.D.list_updates({sha: entry}), None, "KB5000002")
+        self.assertEqual(["System32"], list(self.D.find_files({sha: entry}, NAME, update)))
+        self.assertEqual({}, self.D.find_files({sha + "\n": entry}, NAME, update))
+
     def test_entries_without_a_verifiable_hash_are_ignored(self):
         sha, entry = make_file(
             DATA_X64, 34404, 5, {"11-24H2": {"KB5000002": make_update("KB5000002", "26100.2", "2024-11-12")}}
@@ -899,6 +912,9 @@ class RunTestSuite(unittest.TestCase):
         code, _, err = self.run_main("--update", "KB5000009", "--windows", "11-24H2")
         self.assertEqual(1, code)
         self.assertIn("no update 'KB5000009' for 11-24H2", err)
+        code, _, err = self.run_main("--list", "foo.dll\n")
+        self.assertEqual(1, code)
+        self.assertIn("is not a file name", err)
         self.assertEqual([], self.network.downloads())
 
     def test_partial_files_of_an_interrupted_run_are_removed(self):
