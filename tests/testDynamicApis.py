@@ -802,6 +802,30 @@ class KeyedHashesTestSuite(unittest.TestCase):
         # the unkeyed hits are the same without keys
         self.assertEqual([hit for hit in hits if hit.algorithm == "ror13"], self.find(dump, keyed=False))
 
+    def testKeyedTablesAreMadeOnceForASearch(self):
+        """the table of a key (the hashes combined with it, sorted) serves both the constants that are searched and the hits"""
+        first = ["LoadLibraryA", "GetProcAddress", "VirtualProtect", "CreateFileA", "Sleep", "connect"]
+        second = ["LoadLibraryW", "VirtualAlloc", "ExitProcess", "CreateFileW", "GetVersion", "send"]
+        dump = bytearray(build_keyed_dump("crc32", "xor", 0x218FE95B, first)[0])
+        dump[0x2000:] = build_keyed_dump("sdbm", "add", 0x0BADF00D, second, first=0x2000)[0][0x2000:]
+        dump = bytes(dump)
+        expected = self.find(dump)
+        original = ApiNameIndex.getKeyedTable
+        calls = []
+
+        def getKeyedTable(index, algorithm, mode, key):
+            calls.append((algorithm, mode, key))
+            return original(index, algorithm, mode, key)
+
+        for search in (lambda: self.find(dump), lambda: self.find(dump + bytes(DynamicApis.MIN_SINGLE_SEARCH_SIZE))):
+            calls.clear()
+            with mock.patch.object(ApiNameIndex, "getKeyedTable", getKeyedTable):
+                self.assertEqual(expected, search())
+            keyed = [call for call in calls if call[1] is not None]
+            self.assertIn(("crc32", "xor", 0x218FE95B), keyed)
+            self.assertIn(("sdbm", "add", 0x0BADF00D), keyed)
+            self.assertEqual(sorted(set(keyed)), sorted(keyed))
+
     def testDifferencesOfNamesAreNoKeys(self):
         """the hashes of names that end with A and W have the same difference for CRC-32 (XOR) and for the hashes that add the
         last character (ADD), so a key at that difference from the real one has probe APIs in common with it; only the real key

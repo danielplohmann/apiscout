@@ -954,19 +954,22 @@ class DynamicApiFinder:
                 for key in keys
             ]
         keyed_constants = None
+        # the tables of the keys of this call, which are made (combined with the key and sorted) once for the constants and the hits
+        tables = {}
+
+        def getTable(name, variant):
+            entry = (name, *variant[1:])
+            if entry not in tables:
+                tables[entry] = self.indexes[name].getKeyedTable(*variant[1:])
+            return tables[entry]
+
         if keyed_variants:
             # the hashes without a key of these algorithms take part, they may be the real ones
             keyed_variants += [
                 (algorithm, algorithm, None, 0) for algorithm in dict.fromkeys(v[1] for v in keyed_variants)
             ]
             keyed_constants = _ConstantSet(
-                np.concatenate(
-                    [
-                        index.getKeyedTable(algorithm, mode, key).hashes
-                        for index in self.indexes.values()
-                        for _, algorithm, mode, key in keyed_variants
-                    ]
-                )
+                np.concatenate([getTable(name, variant).hashes for name in self.indexes for variant in keyed_variants])
             )
         # the binary is searched once for the constants of both searches (if it is large: for a small one, the table of the constants
         # of both takes longer to build than a second search)
@@ -982,7 +985,7 @@ class DynamicApiFinder:
         # offsets of the hits that are reported so far, for each API map
         taken = {name: set() for name in self.indexes}
         variants = [(algorithm, algorithm, None, 0) for algorithm in algorithms]
-        self._findHits(results, *hits, variants, binary, min_hits, REGION_GAP, load_offset, taken)
+        self._findHits(results, *hits, variants, binary, min_hits, REGION_GAP, load_offset, taken, getTable)
         if keyed_hits is not None:
             self._findHits(
                 results,
@@ -993,15 +996,19 @@ class DynamicApiFinder:
                 KEYED_REGION_GAP,
                 load_offset,
                 taken,
+                getTable,
                 compete=True,
             )
         for found in results.values():
             found.sort(key=lambda hit: (hit.offset, hit.algorithm, hit.api))
         return results
 
-    def _findHits(self, results, offsets, values, variants, binary, min_hits, gap, load_offset, taken, compete=False):
+    def _findHits(
+        self, results, offsets, values, variants, binary, min_hits, gap, load_offset, taken, getTable, compete=False
+    ):
         """adds the APIs of which the hashes (variants: (label, algorithm, mode, key)) are in regions of the binary to the results;
-        offsets and values are the hits of the binary that are one of the hashes
+        offsets and values are the hits of the binary that are one of the hashes, getTable(API map name, variant) is the table of a
+        variant (see ApiNameIndex.getKeyedTable)
 
         compete: a constant is the hash of one API, so the variants that have it take turns, the one with the most hits first, and a
         variant does not get the hits at the offsets that earlier variants, or the hashes searched before (taken), have. This is what
@@ -1014,7 +1021,7 @@ class DynamicApiFinder:
         for name, index in self.indexes.items():
             found = []
             for variant in variants:
-                table = index.getKeyedTable(variant[1], variant[2], variant[3])
+                table = getTable(name, variant)
                 if not len(table.hashes):
                     continue
                 first = np.searchsorted(table.hashes, values, side="left")
