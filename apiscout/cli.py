@@ -1,7 +1,6 @@
 """the apiscout command line tool, see `apiscout --help`"""
 
 import argparse
-import functools
 import json
 import logging
 import os
@@ -358,14 +357,10 @@ def report(args, message):
 
 def report_placements(args, placer):
     """how many DLLs of each API DB were placed at the addresses the dump tells, and from which source"""
-    for db_path, _, num_dlls, counts in placer.summaries:
-        placed = sum(counts.values())
-        sources = ", ".join(f"{count} from the {source}" for source, count in counts.items())
-        has_module_list = bool(placer.module_lists)
-        message = f"Placed {placed} of {num_dlls} DLLs of {os.path.basename(db_path)} at their load addresses"
-        message += f" ({sources})" if sources else ""
-        message += f", {num_dlls - placed} keep the addresses of the DB." if num_dlls != placed else "."
-        report(args, ("Warning: " if has_module_list and num_dlls != placed else "") + message)
+    from .LoadAddresses import describe_placements
+
+    for line in describe_placements(placer):
+        report(args, line)
 
 
 def scan_minidump(scout, minidump, args):
@@ -397,11 +392,10 @@ def cmd_scan(args):
     from .ApiScout import ApiScout
     from .LoadAddresses import (
         SOURCE_MINIDUMP,
-        SOURCE_MODULES,
-        DllPlacer,
+        ModuleListError,
         find_dll_images,
         normalize_dll_path,
-        read_load_addresses,
+        placer_for_modules,
     )
     from .Minidump import Minidump, MinidumpError
     from .PeTools import PeTools
@@ -411,15 +405,15 @@ def cmd_scan(args):
             "--dynamic searches the dump for hashes and names of the APIs of API DBs, it can not be combined with --import-table."
         )
     check_output(args.output)
-    placer = DllPlacer(args.ignore_aslr)
     if args.modules:
         if args.import_table:
             raise CliError("--modules places the DLLs of an API DB, which --import-table does not use.")
         check_file(args.modules, "module list")
-        load_addresses = read_load_addresses(args.modules)
-        if not load_addresses:
-            raise CliError(f"no lines of '<hex load address> <DLL path>' in {args.modules}.")
-        placer.addModuleList(SOURCE_MODULES, load_addresses)
+    try:
+        placer = placer_for_modules(args.modules)
+    except ModuleListError as exc:
+        raise CliError(f"{exc}.") from None
+    placer.ignore_aslr_offsets = args.ignore_aslr
     if args.explain and not args.collection:
         raise CliError("--explain explains the best match with a collection, give --collection as well.")
     binary = read_input(args.dump)
@@ -467,7 +461,7 @@ def cmd_scan(args):
         db_paths = resolve_db_files(args)
         for db_path in db_paths:
             try:
-                scout.loadDbFile(db_path, functools.partial(placer, db_path=db_path) if not placer.isEmpty() else None)
+                scout.loadDbFile(db_path, placer.forDb(db_path))
             except (ValueError, KeyError, TypeError, AttributeError):
                 raise not_an_api_db(db_path) from None
         report_placements(args, placer)
