@@ -145,6 +145,13 @@ def main(api_dbs=None):
         return 0
     # the view is not modal, so it has to outlive this function
     global RESULTS_VIEW
+    # IDA would keep showing an open view of an earlier run under the same title, while the actions of the new
+    # one apply the selection made there to the new rows
+    if RESULTS_VIEW is not None:
+        RESULTS_VIEW.Close()
+    widget = ida_kernwin.find_widget(ApiResultsChooser.TITLE)
+    if widget is not None:
+        ida_kernwin.close_widget(widget, 0)
     RESULTS_VIEW = ApiResultsChooser(tools, rows, rescan)
     registerActions(RESULTS_VIEW)
     RESULTS_VIEW.show()
