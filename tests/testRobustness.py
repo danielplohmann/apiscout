@@ -330,8 +330,8 @@ class HostileInputTestSuite(unittest.TestCase):
         parsed = []
         original_parse = ImportDescriptor.parse
 
-        def counting_parse(self, buf, *limits):
-            original_parse(self, buf, *limits)
+        def counting_parse(self, buf, max_imports=None, max_name_bytes=None):
+            original_parse(self, buf, max_imports, max_name_bytes)
             parsed.append(len(self.imports))
 
         ImportDescriptor.parse = counting_parse
