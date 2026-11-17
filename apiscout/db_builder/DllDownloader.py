@@ -653,6 +653,9 @@ def clean_partial_files(out_dir):
 
 
 def main(argv=None):
+    # the DB is built by DatabaseBuilder, which needs Python 3.10
+    if sys.version_info < (3, 10):  # noqa: UP036
+        sys.exit("DllDownloader.py needs Python 3.10 or newer, this is Python {}.{}.".format(*sys.version_info[:2]))
     parser = argparse.ArgumentParser(
         description="Build an API DB for a Windows build from DLLs of Microsoft's symbol server, found with Winbindex.",
         epilog="examples:\n"

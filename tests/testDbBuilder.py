@@ -1,3 +1,4 @@
+import contextlib
 import json
 import logging
 import os
@@ -283,6 +284,25 @@ class DatabaseBuilderTests(unittest.TestCase):
         ]
         for document in documents:
             self.assertEqual(json.dumps(document, indent=1, sort_keys=True), DatabaseBuilder.dumps_api_db(document))
+
+    def testOldPythonStopsBeforeAnythingIsDone(self):
+        for old_version in ((3, 8, 20, "final", 0), (3, 9, 0, "final", 0)):
+            with self.subTest(old_version):
+                crawl = unittest.mock.Mock(side_effect=AssertionError("crawled"))
+                with contextlib.ExitStack() as stack:
+                    stack.enter_context(unittest.mock.patch.object(sys, "version_info", old_version))
+                    stack.enter_context(unittest.mock.patch.object(sys, "argv", ["DatabaseBuilder.py", "--paths", "x"]))
+                    stack.enter_context(
+                        unittest.mock.patch.object(DatabaseBuilder.DatabaseBuilder, "extractRecursively", crawl)
+                    )
+                    with self.assertRaises(SystemExit) as stopped:
+                        DatabaseBuilder.main()
+                self.assertIn(
+                    "needs Python 3.10 or newer, this is Python {}.{}".format(*old_version[:2]),
+                    str(stopped.exception.code),
+                )
+                self.assertIn("--load_addresses", str(stopped.exception.code))
+                crawl.assert_not_called()
 
     def testFilterIsNotCaseSensitive(self):
         builder = DatabaseBuilder.DatabaseBuilder()

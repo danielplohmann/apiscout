@@ -702,6 +702,15 @@ class RunTestSuite(unittest.TestCase):
             code = self.D.main(["--out", self.out, *argv])
         return code, out.getvalue(), err.getvalue()
 
+    def test_old_python_stops_at_once(self):
+        with (
+            unittest.mock.patch.object(sys, "version_info", (3, 9, 0, "final", 0)),
+            unittest.mock.patch.object(self.D, "http_get", side_effect=AssertionError("downloaded")),
+            self.assertRaises(SystemExit) as stopped,
+        ):
+            self.D.main(["--out", self.out, "--list"])
+        self.assertIn("needs Python 3.10 or newer, this is Python 3.9", str(stopped.exception.code))
+
     def test_download_with_missing_dll(self):
         code, out, _ = self.run_main("--windows", "11-24H2", "--update", "26100.2000", "--download-only", "--jobs", "1")
         self.assertEqual(0, code)

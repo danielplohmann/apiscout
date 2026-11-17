@@ -113,8 +113,7 @@ def check_aslr():
         pe = pefile.PE(module_path.value)
         pe_header_base_addr = pe.OPTIONAL_HEADER.ImageBase
         offsets.append(pe_header_base_addr - h_module_base)
-    # the DB builder also runs on the Python 3.8 of old analysis systems, which has no zip(strict=)
-    for dll_name, offset in zip(check_dlls, offsets):  # noqa: B905
+    for dll_name, offset in zip(check_dlls, offsets, strict=True):
         LOG.debug("Memory vs. File ImageBase offset (%s): 0x%x", dll_name, offset)
         is_aslr |= offset != 0
     return is_aslr
@@ -704,7 +703,19 @@ class DatabaseBuilder:
             f_out.write(dumps_api_db(api_db))
 
 
+def check_python_version(script):
+    """stops at once on a Python older than 3.10, instead of with a TypeError (zip(strict=)) after the crawl"""
+    # ruff knows requires-python and takes this for dead code, but this runs with any interpreter that starts it
+    if sys.version_info < (3, 10):  # noqa: UP036
+        sys.exit(
+            f"{script} needs Python 3.10 or newer, this is Python {sys.version_info[0]}.{sys.version_info[1]}. "
+            "For a system that has none, build the DB from a copy of its DLLs on another system "
+            "(--os_name, --os_version, --load_addresses)."
+        )
+
+
 def main():
+    check_python_version("DatabaseBuilder.py")
     parser = argparse.ArgumentParser(description="Build a database to be used by apiscout.")
     parser.add_argument(
         "--filter", dest="filter_dlls", action="store_true", help="(optional) filter DLLs by name (see config.py)"
