@@ -34,6 +34,18 @@ LOG = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)-15s %(message)s")
 
 
+# the bitness of the machine types of a PE file (IMAGE_FILE_MACHINE_*): x86 and the 32bit ARM types (ARM, ARMNT, ARMT)
+# have 32bit pointers, AMD64 and ARM64 64bit pointers, as does anything else there is (IA-64, ARM64EC)
+MACHINE_BITNESS = {0x14C: 32, 0x1C0: 32, 0x1C2: 32, 0x1C4: 32, 0x8664: 64, 0xAA64: 64}
+# DllBaseChecker32.exe is an x86 and DllBaseChecker64.exe an AMD64 program. Neither loads a 32bit ARM DLL, while an
+# ARM64 DLL (Windows 11 on ARM has ARM64X ones in System32) can be loaded by the AMD64 one under x64 emulation
+ARM32_MACHINES = (0x1C0, 0x1C2, 0x1C4)
+
+
+def get_bitness(machine):
+    return MACHINE_BITNESS.get(machine, 64)
+
+
 def is_windows():
     return platform.system() == "Windows"
 
@@ -435,6 +447,8 @@ def dumps_api_db(api_db):
 class DatabaseBuilder:
     def __init__(self):
         self._duplicate_paths = {}
+        # the machine type of each DLL that was read, by path: the DB does not store it
+        self._machines = {}
 
     def _extractPlainPe(self, filepath):
         """the summary of a DLL by PlainPe, None if it has no exports, an exception if pefile has to read it"""
@@ -446,10 +460,11 @@ class DatabaseBuilder:
             if exports is None:
                 return None
             version = pe.product_version()
+            self._machines[filepath] = pe.machine
             exports.sort(key=itemgetter(1))
             return {
                 "base_address": pe.image_base,
-                "bitness": 32 if pe.machine == 0x14C else 64,
+                "bitness": get_bitness(pe.machine),
                 "version": version,
                 "filepath": filepath,
                 "aslr_offset": 0,
@@ -480,9 +495,10 @@ class DatabaseBuilder:
                 if "export" in warning.lower():
                     LOG.warning("pefile warning for %s: %s", filepath, warning)
             if hasattr(pe, "DIRECTORY_ENTRY_EXPORT"):
+                self._machines[filepath] = pe.FILE_HEADER.Machine
                 dll_entry = {}
                 dll_entry["base_address"] = pe.OPTIONAL_HEADER.ImageBase
-                dll_entry["bitness"] = 32 if pe.FILE_HEADER.Machine == 0x14C else 64
+                dll_entry["bitness"] = get_bitness(pe.FILE_HEADER.Machine)
                 dll_entry["version"] = get_product_version(pe)
                 dll_entry["filepath"] = filepath
                 dll_entry["aslr_offset"] = 0
@@ -575,13 +591,22 @@ class DatabaseBuilder:
         if check_aslr():
             LOG.info(" looks like ASLR is active, let's extract some offsets!")
             num_offsets = {32: 0, 64: 0}
+            arm32_dlls = 0
             for dll_key in api_db["dlls"]:
                 dll = api_db["dlls"][dll_key]
-                if dll["bitness"] in [32, 64]:
-                    offset = self.getAslrOffsetForDll(dll)
-                    dll["aslr_offset"] = offset
-                    if offset:
-                        num_offsets[dll["bitness"]] += 1
+                if self._machines.get(dll["filepath"]) in ARM32_MACHINES:
+                    arm32_dlls += 1
+                    continue
+                offset = self.getAslrOffsetForDll(dll)
+                dll["aslr_offset"] = offset
+                if offset:
+                    num_offsets[dll["bitness"]] += 1
+            if arm32_dlls:
+                LOG.warning(
+                    "DllBaseChecker can not load 32bit ARM DLLs, the ASLR offset of %d of them is left as 0, "
+                    "--load_addresses can take it from a module list.",
+                    arm32_dlls,
+                )
             LOG.info("Found %d 32bit and %d 64bit ASLR offsets.", num_offsets[32], num_offsets[64])
             api_db["aslr_offsets"] = True
         return api_db
