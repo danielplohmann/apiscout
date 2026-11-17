@@ -5,7 +5,6 @@ import sys
 import tempfile
 import unittest
 
-import apiscout.ApiScout as ApiScoutModule
 from apiscout.ApiQR import ApiQR
 from apiscout.ApiScout import ApiScout
 from apiscout.ApiVector import ApiVector
@@ -140,14 +139,6 @@ class ImportTableTestSuite(unittest.TestCase):
 
     def testEvaluateImportTable(self):
         self.assertEqual(EXPECTED_IMPORTS, self._getImports(ApiScout().evaluateImportTable(build_pe32())))
-
-    def testEvaluateImportTableWithoutLief(self):
-        lief = ApiScoutModule.lief
-        ApiScoutModule.lief = None
-        try:
-            self.assertEqual(EXPECTED_IMPORTS, self._getImports(ApiScout().evaluateImportTable(build_pe32())))
-        finally:
-            ApiScoutModule.lief = lief
 
     def testEvaluateImportTableOfNonPe(self):
         self.assertEqual({"import_table": []}, ApiScout().evaluateImportTable(b"no pe file" * 20))
@@ -444,15 +435,9 @@ class SecondAuditTestSuite(unittest.TestCase):
         pe = bytearray(build_pe32())
         # call dword ptr [0x4010A0] in the headers' slack space references the IAT slot of CreateFileW
         pe[0x180:0x186] = b"\xff\x15" + struct.pack("<I", 0x4010A0)
-        for lief in (ApiScoutModule.lief, None):
-            original = ApiScoutModule.lief
-            ApiScoutModule.lief = lief
-            try:
-                entries = {entry[3]: entry for entry in ApiScout().evaluateImportTable(bytes(pe))["import_table"]}
-            finally:
-                ApiScoutModule.lief = original
-            self.assertEqual((2, {0x180}), entries["CreateFileW"][6:8])
-            self.assertEqual((1, set()), entries["send"][6:8])
+        entries = {entry[3]: entry for entry in ApiScout().evaluateImportTable(bytes(pe))["import_table"]}
+        self.assertEqual((2, {0x180}), entries["CreateFileW"][6:8])
+        self.assertEqual((1, set()), entries["send"][6:8])
 
     def testImportTableOfMappedImage(self):
         mapped = PeTools.mapBinary(build_pe32())
@@ -556,17 +541,11 @@ class ThirdAuditTestSuite(unittest.TestCase):
         self.assertEqual("", OrdinalHelper.resolveOrdinal("ws2_32.dll", 168))
         self.assertEqual("recv", OrdinalHelper.resolveOrdinal("ws2_32.dll", 16, 64))
 
-    def testUnnamedOrdinalImportsAreLeftOutByBothParsers(self):
+    def testUnnamedOrdinalImportsAreLeftOut(self):
         pe = bytearray(build_pe32())
         struct.pack_into("<I", pe, 0x200 + 0xC0, 0x80000BB8)
-        for lief in (ApiScoutModule.lief, None):
-            original = ApiScoutModule.lief
-            ApiScoutModule.lief = lief
-            try:
-                names = sorted(entry[3] for entry in ApiScout().evaluateImportTable(bytes(pe))["import_table"])
-            finally:
-                ApiScoutModule.lief = original
-            self.assertEqual(["CreateFileW", "send"], names)
+        names = sorted(entry[3] for entry in ApiScout().evaluateImportTable(bytes(pe))["import_table"])
+        self.assertEqual(["CreateFileW", "send"], names)
 
     def testImageWithLargeUninitializedSection(self):
         pe = bytearray(build_pe32())
@@ -639,7 +618,7 @@ class FourthAuditTestSuite(unittest.TestCase):
         self.assertEqual(0x180000000 - 0x77A10000, api_db["dlls"]["64"]["aslr_offset"])
         self.assertEqual(0, api_db["dlls"]["32"]["aslr_offset"])
 
-    def testLiefIsNotUsedForCraftedImportTables(self):
+    def testCraftedImportTablesWithUnreadableThunk(self):
         pe = bytearray(build_pe32()) + bytearray(0x800)
         struct.pack_into("<IIII", pe, 0x58 + 0xE0 + 8, 0xA00, 0x1000, 0xA00, 0x200)
         for index in range(0x40):
@@ -651,8 +630,6 @@ class FourthAuditTestSuite(unittest.TestCase):
         for index in range(1, num_descriptors):
             struct.pack_into("<IIIII", pe, 0x200 + 0x300 + 20 * index, 0x1200, 0, 0, 0x1100, 0x1200 + 0x10000 * index)
         struct.pack_into("<II", pe, 0x58 + 104, 0x1300, 20 * num_descriptors)
-        self.assertTrue(ImportTableLoader.fileExceedsThunkBudget(bytes(pe), len(pe) // 4))
-        self.assertFalse(ImportTableLoader.fileExceedsThunkBudget(build_pe32(), len(build_pe32()) // 4))
         self.assertLessEqual(len(ApiScout().evaluateImportTable(bytes(pe))["import_table"]), len(pe) // 4)
 
 
@@ -669,17 +646,15 @@ class FifthAuditTestSuite(unittest.TestCase):
         struct.pack_into("<II", pe, 0x58 + 104, 0x1300, 20 * num_descriptors)
         return pe
 
-    def testImportBudgetIsCountedInTheFile(self):
+    def testCraftedImportTablesOfUnusualLayouts(self):
         # a descriptor without address table ends the table for the Windows loader, but not for every parser
         pe = self._buildSharedThunkPe(0)
-        self.assertTrue(ImportTableLoader.fileExceedsThunkBudget(bytes(pe), len(pe) // 4))
         self.assertEqual([], ApiScout().evaluateImportTable(bytes(pe))["import_table"])
         # a section far away makes the image unmappable, its file is still readable for other parsers
         pe = self._buildSharedThunkPe(0x1200)
         struct.pack_into("<H", pe, 0x46, 2)
         struct.pack_into("<IIII", pe, 0x58 + 0xE0 + 0x28 + 8, 0x200, 0x20000000, 0x200, 0x200)
         self.assertEqual(b"", PeTools.mapBinary(bytes(pe)))
-        self.assertTrue(ImportTableLoader.fileExceedsThunkBudget(bytes(pe), len(pe) // 4))
         self.assertEqual([], ApiScout().evaluateImportTable(bytes(pe))["import_table"])
 
     def testLoadAddressesOfRenamedFoldersAndNamesInOtherCase(self):
@@ -717,26 +692,6 @@ class FifthAuditTestSuite(unittest.TestCase):
             api_db = builder.extractRecursively([directory], os_name="W", os_version="1")
         self.assertEqual(1, len(api_db["dlls"]))
         self.assertEqual(1, len(next(iter(builder._duplicate_paths.values()))))
-
-    def testImportBudgetCoversDelayImportsAndTheWorkOfCounting(self):
-        # delay import descriptors sharing one thunk list
-        pe = bytearray(build_pe32()) + bytearray(0x800)
-        struct.pack_into("<IIII", pe, 0x58 + 0xE0 + 8, 0xA00, 0x1000, 0xA00, 0x200)
-        for index in range(0x40):
-            struct.pack_into("<I", pe, 0x200 + 0x200 + 4 * index, 0x1120)
-        num_descriptors = 0x28
-        for index in range(num_descriptors):
-            struct.pack_into("<8I", pe, 0x200 + 0x300 + 32 * index, 1, 0x1100, 0, 0x1200, 0x1200, 0, 0, 0)
-        struct.pack_into("<II", pe, 0x58 + 96 + 8 * 13, 0x1300, 32 * num_descriptors)
-        self.assertTrue(ImportTableLoader.fileExceedsThunkBudget(bytes(pe), len(pe) // 4))
-        # descriptors whose thunk lists are empty cost work as well
-        pe = bytearray(build_pe32()) + bytearray(0x6000)
-        struct.pack_into("<IIII", pe, 0x58 + 0xE0 + 8, 0x6200, 0x1000, 0x6200, 0x200)
-        for index in range(0x300):
-            struct.pack_into("<IIIII", pe, 0x400 + 20 * index, 0x4800 + 8 * index, 0, 0, 0, 0x4800 + 8 * index)
-        struct.pack_into("<II", pe, 0x58 + 104, 0x1200, 20 * 0x300)
-        self.assertFalse(ImportTableLoader.fileExceedsThunkBudget(bytes(pe), len(pe) // 4))
-        self.assertTrue(ImportTableLoader.fileExceedsThunkBudget(bytes(pe), 0x10))
 
 
 if __name__ == "__main__":

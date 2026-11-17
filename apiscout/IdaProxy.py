@@ -27,7 +27,9 @@ import ida_bytes
 import ida_funcs
 import ida_ida
 import ida_idaapi
+import ida_nalt
 import ida_name
+import ida_offset
 import ida_segment
 import ida_typeinf
 import ida_xref
@@ -126,14 +128,18 @@ class IdaProxy:
         """
         A binary file loaded with a segment base (-b on the command line) has code whose operands are taken
         relative to that base, so its calls do not reference the API pointers. The base is set to 0 as for
-        a flat image, returns the affected segments.
+        a flat image, returns the affected segments. What an analysis under the base left behind is repaired.
         """
+        ida_auto.auto_wait()
         changed = []
+        old_bases = set()
         for start in self.getSegmentsWithBase():
             segment = ida_segment.getseg(start)
+            old_base = ida_segment.get_segm_base(segment)
             if not ida_segment.set_selector(segment.sel, 0):
                 continue
             changed.append(start)
+            old_bases.add(old_base)
             # calls that led to no code under the base made their functions end early
             for function_start in idautils.Functions(segment.start_ea, segment.end_ea):
                 function = ida_funcs.get_func(function_start)
@@ -143,32 +149,64 @@ class IdaProxy:
             # the references of instructions are only taken anew when they are decoded again
             for head in idautils.Heads(segment.start_ea, segment.end_ea):
                 if ida_bytes.is_code(ida_bytes.get_full_flags(head)):
+                    self._rebaseOffsets(head, {old_base}, clear=True)
                     ida_auto.auto_recreate_insn(head)
             ida_auto.plan_range(segment.start_ea, segment.end_ea)
         if changed:
             ida_auto.auto_wait()
+            functions = [ea for start in changed for ea in idautils.Functions(start, self.getSegEnd(start))]
+            for function_start in functions:
+                ida_funcs.reanalyze_function(ida_funcs.get_func(function_start))
+            ida_auto.auto_wait()
+            for function_start in functions:
+                ida_funcs.reanalyze_noret_flag(function_start)
+            ida_auto.auto_wait()
+            # IDA 9.5 creates part of the offsets with the former base again
             for start in changed:
-                for function_start in idautils.Functions(start, self.getSegEnd(start)):
-                    ida_funcs.reanalyze_function(ida_funcs.get_func(function_start))
+                for head in idautils.Heads(start, self.getSegEnd(start)):
+                    if ida_bytes.is_code(ida_bytes.get_full_flags(head)):
+                        self._rebaseOffsets(head, old_bases)
             ida_auto.auto_wait()
         return changed
 
-    def undefine(self, ea, size):
-        # also releases an item that starts in front of ea and reaches into the range
-        head = ida_bytes.get_item_head(ea)
+    def _rebaseOffsets(self, head, bases, clear=False):
+        """offset operands that were created relative to a segment base would point behind their target"""
         flags = ida_bytes.get_full_flags(head)
-        item_end = ida_bytes.get_item_end(head)
-        element_size = ida_bytes.get_data_elsize(head, flags) if ida_bytes.is_data(flags) else 0
-        ida_bytes.del_items(head, ida_bytes.DELIT_SIMPLE)
+        refinfo = ida_nalt.refinfo_t()
+        for operand in range(ida_ida.UA_MAXOP):
+            is_offset = ida_bytes.is_off(flags, operand) and ida_nalt.get_refinfo(refinfo, head, operand)
+            if not is_offset or refinfo.base not in bases:
+                continue
+            if clear:
+                ida_bytes.clr_op_type(head, operand)
+            else:
+                refinfo.base = 0
+                ida_offset.op_offset_ex(head, operand, refinfo)
+
+    def undefine(self, ea, size):
+        """releases the items in the range, arrays reaching into it keep their elements outside of it"""
+        arrays = []
+        for address in (ea, ea + size - 1):
+            head = ida_bytes.get_item_head(address)
+            flags = ida_bytes.get_full_flags(head)
+            item_end = ida_bytes.get_item_end(head)
+            element_size = ida_bytes.get_data_elsize(head, flags) if ida_bytes.is_data(flags) else 0
+            if 0 < element_size < item_end - head and not ida_bytes.is_struct(flags):
+                string_type = ida_nalt.get_str_type(head) if ida_bytes.is_strlit(flags) else None
+                if (head, item_end, flags, element_size, string_type) not in arrays:
+                    arrays.append((head, item_end, flags, element_size, string_type))
+            ida_bytes.del_items(head, ida_bytes.DELIT_SIMPLE)
         result = ida_bytes.del_items(ea, ida_bytes.DELIT_SIMPLE, size)
-        if 0 < element_size < item_end - head and not ida_bytes.is_struct(flags):
-            # an array: its elements in front of and behind the range stay an array each
-            data_type = flags & ida_bytes.DT_TYPE
-            for start, end in ((head, ea), (ea + size, item_end)):
+        for head, item_end, flags, element_size, string_type in arrays:
+            for start, end in ((head, min(ea, item_end)), (max(ea + size, head), item_end)):
                 start += -(start - head) % element_size
                 length = (end - start) // element_size * element_size
-                if length > 0:
-                    ida_bytes.create_data(start, data_type, length, ida_idaapi.BADADDR)
+                if length <= 0:
+                    continue
+                if string_type is not None:
+                    ida_bytes.create_strlit(start, length, string_type)
+                else:
+                    ida_bytes.create_data(start, flags & ida_bytes.DT_TYPE, length, ida_idaapi.BADADDR)
         return result
 
     def isData(self, ea, size):

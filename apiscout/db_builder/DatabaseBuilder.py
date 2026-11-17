@@ -269,6 +269,9 @@ class DatabaseBuilder:
                     # a copy of the DLL for the other bitness
                     continue
                 load_address = known_addresses.get(dll_path)
+                if load_address is not None and load_address >= 0x100000000 and dll.get("bitness") == 32:
+                    # the address of a 64bit DLL in a folder of the same name
+                    continue
                 if load_address is not None:
                     dll["aslr_offset"] = dll["base_address"] - load_address
                     num_offsets += 1

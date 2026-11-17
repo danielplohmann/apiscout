@@ -18,8 +18,7 @@
     ],
     "pythonDependencies": [
       "numpy",
-      "Pillow",
-      "lief"
+      "Pillow"
     ],
     "urls": {
       "repository": "https://github.com/danielplohmann/apiscout"

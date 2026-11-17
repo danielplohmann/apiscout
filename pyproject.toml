@@ -18,7 +18,7 @@ classifiers = [
     "Topic :: Security",
     "Topic :: Software Development :: Disassemblers",
 ]
-dependencies = ["lief", "numpy", "Pillow"]
+dependencies = ["numpy", "Pillow"]
 
 [project.optional-dependencies]
 update = ["requests"]

@@ -30,17 +30,8 @@ import os
 import re
 import struct
 
-try:
-    import lief
-except ImportError:
-    print(
-        "lief is not installed! We recommend installing lief to improve import table parsing capabilities of ApiScout!"
-    )
-    lief = None
-
 from .ApiVector import ApiVector
 from .ImportTableLoader import ImportTableLoader
-from .OrdinalHelper import OrdinalHelper
 from .PeTools import PeTools
 
 LOG = logging.getLogger(__name__)
@@ -224,19 +215,6 @@ class ApiScout:
             self._updateCodeReferences(references, binary, base_address, match.start())
         return references
 
-    def _parseWithLief(self, binary):
-        """parse a PE with LIEF, returns None if LIEF is not available or can not handle the buffer"""
-        if not lief or not PeTools.checkPe(binary):
-            return None
-        try:
-            lief_binary = lief.parse(binary)
-        except Exception as exc:
-            LOG.warning("LIEF failed to parse the binary (%s), falling back to our own import table parser.", exc)
-            return None
-        if lief_binary is None or not hasattr(lief_binary, "imports"):
-            return None
-        return lief_binary
-
     def evaluateImportTable(self, binary, is_unmapped=True):
         self._binary_length = len(binary)
         results = {"import_table": []}
@@ -245,59 +223,27 @@ class ApiScout:
         max_thunks = len(binary) // 8 if PeTools.getBitness(mapped_binary) == 64 else len(binary) // 4
         import_table_loader = ImportTableLoader(mapped_binary, max_thunks=max_thunks)
         self._import_table = import_table_loader.get_import_table()
-        # LIEF expects the layout of a file, images that are mapped already are left to our own parser.
-        # It has no limit for crafted import tables, so those are left to our own parser as well.
-        # They are counted in the file itself, as LIEF also reads tables of images that can not be mapped.
-        lief_binary = None
-        if is_unmapped and not ImportTableLoader.fileExceedsThunkBudget(binary, max_thunks):
-            lief_binary = self._parseWithLief(binary)
-        if lief_binary is not None:
-            # the machine type is read from the header directly, as its representation differs across LIEF versions
-            bitness = PeTools.getBitness(binary)
-            references = self._getCodeReferences(mapped_binary)
-            for imported_library in lief_binary.imports:
-                dll_name = str(imported_library.name).lower()
-                for func in imported_library.entries:
-                    api_name = func.name
-                    if func.is_ordinal:
-                        api_name = OrdinalHelper.resolveOrdinal(dll_name, func.ordinal, bitness)
-                    if api_name:
-                        api_references = references[bitness].get(func.iat_address, set())
-                        results["import_table"].append(
-                            (
-                                func.iat_address + self.load_offset,
-                                0xFFFFFFFF,
-                                dll_name + "_0x0",
-                                str(api_name),
-                                bitness,
-                                True,
-                                1 + len(api_references),
-                                api_references,
-                            )
-                        )
-        else:
-            # fallback using the old method and out own import table parser
-            bitness = PeTools.getBitness(mapped_binary)
-            references = self._getCodeReferences(mapped_binary)
-            for offset, import_entry in sorted(self._import_table.items()):
-                if not import_entry["name"]:
-                    # import by an ordinal without known name, left out as with LIEF
-                    continue
-                ref_count = 1
-                if bitness:
-                    ref_count = 1 + len(references[bitness][offset]) if offset in references[bitness] else 1
-                results["import_table"].append(
-                    (
-                        offset + self.load_offset,
-                        0xFFFFFFFF,
-                        import_entry["dll_name"].lower() + "_0x0",
-                        import_entry["name"],
-                        bitness,
-                        True,
-                        ref_count,
-                        references[bitness].get(offset, set()),
-                    )
+        bitness = PeTools.getBitness(mapped_binary)
+        references = self._getCodeReferences(mapped_binary)
+        for offset, import_entry in sorted(self._import_table.items()):
+            if not import_entry["name"]:
+                # import by an ordinal without known name
+                continue
+            ref_count = 1
+            if bitness:
+                ref_count = 1 + len(references[bitness][offset]) if offset in references[bitness] else 1
+            results["import_table"].append(
+                (
+                    offset + self.load_offset,
+                    0xFFFFFFFF,
+                    import_entry["dll_name"].lower() + "_0x0",
+                    import_entry["name"],
+                    bitness,
+                    True,
+                    ref_count,
+                    references[bitness].get(offset, set()),
                 )
+            )
         return results
 
     def crawl(self, binary):
