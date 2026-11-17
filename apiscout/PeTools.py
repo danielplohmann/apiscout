@@ -71,7 +71,11 @@ class PeTools(object):
         pe_offset = PeTools.getPeOffset(binary)
         if pe_offset:
             if pe_offset and len(binary) >= pe_offset + 0x38:
-                base_addr = struct.unpack("I", binary[pe_offset + 0x34:pe_offset + 0x38])[0]
+                if get_word(binary, pe_offset + 0x18) == 0x20b:
+                    # PE32+: ImageBase is a QWORD at offset 0x18 of the optional header
+                    base_addr = struct.unpack("Q", binary[pe_offset + 0x30:pe_offset + 0x38])[0]
+                else:
+                    base_addr = struct.unpack("I", binary[pe_offset + 0x34:pe_offset + 0x38])[0]
                 LOG.debug("Changing base address from 0 to: 0x%x for inference of reference counts (based on PE header)", base_addr)
                 return base_addr
         return 0

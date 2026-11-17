@@ -48,6 +48,9 @@ LOG = logging.getLogger(__name__)
 
 class ApiScout(object):
 
+    # share of exports overwriting another DLL's address above which loading an API DB issues a warning
+    COLLISION_WARNING_RATIO = 0.01
+
     def __init__(self, db_filepath=None):
         self.api_maps = {}
         self.has_64bit = False
@@ -93,6 +96,11 @@ class ApiScout(object):
                 api_map[virtual_address] = (dll_name, api_name, bitness)
             LOG.debug("loaded %d exports", num_apis_loaded)
         LOG.debug("loaded %d exports from %d DLLs (%s) with %d potential collisions.", num_apis_loaded, len(api_db["dlls"]), api_db["os_name"], num_collisions)
+        if num_apis_loaded and num_collisions > self.COLLISION_WARNING_RATIO * num_apis_loaded:
+            hint = ""
+            if self.ignore_aslr_offsets and api_db.get("aslr_offsets", False):
+                hint = " The ASLR offsets of this DB were ignored, so DLLs sharing a file ImageBase overlap."
+            LOG.warning("API DB %s: %d of %d exports collide with exports of other DLLs, APIs at these addresses may be resolved to the wrong DLL.%s", db_filepath, num_collisions, num_apis_loaded, hint)
         self.api_maps[api_db["os_name"]] = api_map
 
     def loadWinApi1024(self, winapi1024_filepath=None):
@@ -165,9 +173,10 @@ class ApiScout(object):
         # treat as 64bit code (this means relative offsets for jmps/calls)
         addr_block = binary[offset + 2:offset + 2 + 4]
         function_addr = struct.unpack("i", addr_block)[0]
-        # we need to calculate RIP + offset + 7 (48 ff 25 ** ** ** **)
+        # RIP-relative: target is relative to the end of the 6 byte instruction (ff 25|15 ** ** ** **),
+        # offset points to the ff opcode byte, i.e. behind a potential REX prefix (48 ff 25 ** ** ** **).
         if binary[offset:offset + 2] == b"\xFF\x25":
-            function_addr += offset + 7
+            function_addr += offset + 6
         elif binary[offset:offset + 2] == b"\xFF\x15":
             function_addr += offset + 6
         if 0 < function_addr < len(binary):

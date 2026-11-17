@@ -74,11 +74,11 @@ class ApiVectorTestSuite(unittest.TestCase):
         input_list = ["kernel32.dll!DeactivateActCtx", "kernel32.dll!Sleep", "advapi32.dll!CreateServiceA", "ntdll.dll!ZwAllocateVirtualMemory"]
         expected = {'user_list': {'percentage': 50.0, 'vector': 'QI', 'num_unique_apis': 4, 'in_api_vector': 2}}
         result_apivector = self.vector.getApiVectorFromApiList(input_list)
-        self.assertEquals(result_apivector, expected)
+        self.assertEqual(result_apivector, expected)
         # from vector to list
         expected = ['advapi32.dll!CreateService', 'kernel32.dll!DeactivateActCtx']
         result_list = self.vector.getListFromApiVector(result_apivector["user_list"]["vector"])
-        self.assertEquals(result_list, expected)
+        self.assertEqual(result_list, expected)
         
     def testDictConversions(self):
         # from dict to vector
@@ -89,21 +89,41 @@ class ApiVectorTestSuite(unittest.TestCase):
         }
         expected = {'user_list': {"percentage": 50.0, "vector": "QI", "num_unique_apis": 4, "in_api_vector": 2}}
         result_apivector = self.vector.getApiVectorFromApiDictionary(input_dict)
-        self.assertEquals(result_apivector, expected)
+        self.assertEqual(result_apivector, expected)
         # from vector to dict
         expected =  {
             "advapi32.dll": ["CreateService"], 
             "kernel32.dll": ["DeactivateActCtx"]
         }
         result_dict = self.vector.getDictionaryFromApiVector(result_apivector["user_list"]["vector"])
-        self.assertEquals(result_dict, expected)
+        self.assertEqual(result_dict, expected)
         
+    def testDllNameCaseInsensitivity(self):
+        this_dir = os.path.abspath(os.path.join(os.path.dirname(__file__)))
+        winapi_path = os.sep.join([this_dir, "..", "apiscout", "data", "winapi1024v1.txt"])
+        apivector = ApiVector(winapi_path)
+        # results as produced by ApiScout.crawl(): (offset, api_address, "<dll>_<base>", api, bitness, ...)
+        lower_case = {"db": [(0, 0, "iphlpapi.dll_0x180000000", "GetAdaptersInfo", 64), (8, 0, "sensapi.dll_0x180000000", "IsNetworkAlive", 64)]}
+        mixed_case = {"db": [(0, 0, "IPHLPAPI.DLL_0x180000000", "GetAdaptersInfo", 64), (8, 0, "SensApi.dll_0x180000000", "IsNetworkAlive", 64)]}
+        expected = apivector.getApiVectors(lower_case)["db"]
+        self.assertEqual(2, expected["in_api_vector"])
+        self.assertEqual(expected, apivector.getApiVectors(mixed_case)["db"])
+        self.assertEqual(["iphlpapi.dll!GetAdaptersInfo", "sensapi.dll!IsNetworkAlive"], apivector.getListFromApiVector(expected["vector"]))
+        # WinApi1024 definitions with mixed case DLL names are matched as well, e.g. by lower case import table results
+        mixed_definition = {"db": [(0, 0, "wldap32.dll_0x0", "ldap_init", 32), (4, 0, "Wldap32.dll_0x77000000", "ldap_search_s", 32), (8, 0, "GDIPLUS.DLL_0x0", "GdiplusStartup", 32)]}
+        result = apivector.getApiVectors(mixed_definition)["db"]
+        self.assertEqual(3, result["in_api_vector"])
+        self.assertEqual(["GdiPlus.dll!GdiplusStartup", "Wldap32.dll!ldap_init", "Wldap32.dll!ldap_search_s"], apivector.getListFromApiVector(result["vector"]))
+        # the same API found via differently cased DLL names is counted once
+        both = {"db": lower_case["db"] + mixed_case["db"]}
+        self.assertEqual(2, apivector.getApiVectors(both)["db"]["num_unique_apis"])
+
     def testLoadWinApi1024Definition(self):
         module_path = os.path.dirname(os.path.realpath(apiscout.__file__))
         LOG.info("Using module path %s" % module_path)
         winapi_path = os.sep.join([module_path, "data", "winapi1024v1.txt"])
         apivector = ApiVector(winapi_path)
-        self.assertEquals(len(apivector._winapi1024), 1024)
+        self.assertEqual(len(apivector._winapi1024), 1024)
         
     def testLoadFingerprintCollectionFile(self):
         THIS_FILE_PATH = str(os.path.abspath(__file__))
@@ -117,7 +137,7 @@ class ApiVectorTestSuite(unittest.TestCase):
         # we expect a low confidence, as this value also counts absolute occurrences and our test vector only has a length of 10 entries
         vector = "QI"
         confidence = self.vector.getVectorConfidence(vector)
-        self.assertEquals(confidence, 10.0)
+        self.assertEqual(confidence, 10.0)
 
     def testVectorCompression(self):
         apivector = ApiVector()

@@ -43,8 +43,12 @@ class ImportDescriptor:
 
     def _parse_import(self, buf, offset):
         import_offset = get_dword(buf, offset)
-        # import by ordinal
-        if import_offset & 0x80000000:
+        # import by ordinal: flagged in the highest bit of the thunk, which is a QWORD for PE32+
+        if self._is_64bit:
+            is_ordinal_import = get_qword(buf, offset) & 0x8000000000000000
+        else:
+            is_ordinal_import = import_offset & 0x80000000
+        if is_ordinal_import:
             ordinal = get_word(buf, offset)
             name_by_ordinal = OrdinalHelper.resolveOrdinal(self.lib_name, ordinal)
             return  {"ordinal": ordinal, "name": name_by_ordinal, "dll_name": self.lib_name}

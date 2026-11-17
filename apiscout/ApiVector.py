@@ -50,7 +50,8 @@ class ApiVector(object):
     def __init__(self, winapi1024_filepath=None, sort_vector=True):
         self._sort_vector = sort_vector
         self._winapi1024 = self._loadWinApi1024(winapi1024_filepath)
-        self._dllapi_only = list(zip(map(itemgetter(0), self._winapi1024), map(itemgetter(1), self._winapi1024)))
+        # DLL names are matched in lower case, see _uniquify_api_name()
+        self._dllapi_only = [(entry[0].lower(), entry[1]) for entry in self._winapi1024]
         # linear
         self._vector_ranks_only = [entry[3] for entry in self._winapi1024]
         self._n_vector_ranks_only = []
@@ -279,6 +280,8 @@ class ApiVector(object):
         return uniquified
 
     def _uniquify_api_name(self, dll_name, api_name):
+        # DLL file names differ in case across Windows versions (e.g. IPHLPAPI.DLL) and from the WinApi1024 definition (e.g. Wldap32.dll)
+        dll_name = dll_name.lower()
         if dll_name.startswith("msvcr"):
             dll_name = "msvcrt.dll"
         api_name = api_name.split("@")[0]

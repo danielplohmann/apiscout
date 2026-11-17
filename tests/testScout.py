@@ -116,6 +116,50 @@ class ApiScoutTestSuite(unittest.TestCase):
         expected_no_result = "No results for API map: test_2\n"
         self.assertEqual(expected_no_result, scout.render({"test_2": []}))
 
+    def testCodeReferences64bit(self):
+        # 0x00: call qword ptr [rip + 0x3a] -> 0x40; 0x10: jmp qword ptr [rip + 0x32] -> 0x48
+        # 0x20: REX.W prefixed jmp qword ptr [rip + 0x29] -> 0x50
+        test_binary = bytearray(b"\x00" * 0x40)
+        test_binary[0x00:0x06] = b"\xFF\x15" + struct.pack("<i", 0x40 - 0x06)
+        test_binary[0x10:0x16] = b"\xFF\x25" + struct.pack("<i", 0x48 - 0x16)
+        test_binary[0x20:0x27] = b"\x48\xFF\x25" + struct.pack("<i", 0x50 - 0x27)
+        test_binary += struct.pack("<QQQ", 0x7ffa55931000, 0x7ffa55932000, 0x7ffa55933000) + b"\x00" * 0x10
+        scout = ApiScout()
+        scout.api_maps["test"] = {
+            0x7ffa55931000: ("kernel32.dll_0x180000000", "CreateFileW", 64),
+            0x7ffa55932000: ("kernel32.dll_0x180000000", "WriteFile", 64),
+            0x7ffa55933000: ("kernel32.dll_0x180000000", "ReadFile", 64),
+        }
+        scout.has_64bit = True
+        expected = {"test": [
+            (0x40, 0x7ffa55931000, "kernel32.dll_0x180000000", "CreateFileW", 64, None, 2, set([0x00])),
+            (0x48, 0x7ffa55932000, "kernel32.dll_0x180000000", "WriteFile", 64, None, 2, set([0x10])),
+            (0x50, 0x7ffa55933000, "kernel32.dll_0x180000000", "ReadFile", 64, None, 2, set([0x21])),
+        ]}
+        self.assertEqual(expected, scout.crawl(bytes(test_binary)))
+
+    def testJsonOutputDllName(self):
+        import json
+        import tempfile
+        import scout as scout_script
+        results = {"db": [
+            (0x10, 0x71ab1000, "ws2_32.dll_0x71ab0000", "connect", 32, None, 1, set([4, 2])),
+            (0x18, 0x7ffa55931000, "kernel32.dll_0x180000000", "CreateFileW", 64, None, 1, set()),
+            (0x20, 0xFFFFFFFF, "msvcp120_clr0400.dll_0x0", "_Cnd_wait", 64, True, 1, set()),
+        ]}
+        file_handle, json_path = tempfile.mkstemp(suffix=".json")
+        os.close(file_handle)
+        try:
+            scout_script.write_results_to_json(json_path, results)
+            with open(json_path, "r") as f_json:
+                json_results = json.loads(f_json.read())
+        finally:
+            os.remove(json_path)
+        self.assertEqual(["ws2_32.dll(32 bit)", "kernel32.dll(64 bit)", "msvcp120_clr0400.dll(64 bit)"], [entry["dll"] for entry in json_results])
+        self.assertEqual([2, 4], json_results[0]["references"])
+        # DLL names from old DBs without base address suffix are kept as they are
+        self.assertEqual("ws2_32.dll", scout_script.get_dll_name("ws2_32.dll"))
+
     def testCompleteCoverage(self):
         scout = ApiScout()
         scout.setBaseAddress(0x1000)
