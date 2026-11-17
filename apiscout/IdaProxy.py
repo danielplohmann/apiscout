@@ -133,25 +133,27 @@ class IdaProxy:
         ida_auto.auto_wait()
         changed = []
         old_bases = set()
+        # all bases first, the analysis of one segment follows references into the others
         for start in self.getSegmentsWithBase():
             segment = ida_segment.getseg(start)
             old_base = ida_segment.get_segm_base(segment)
-            if not ida_segment.set_selector(segment.sel, 0):
-                continue
-            changed.append(start)
-            old_bases.add(old_base)
+            if ida_segment.set_selector(segment.sel, 0):
+                changed.append(start)
+                old_bases.add(old_base)
+        for start in changed:
+            end = self.getSegEnd(start)
             # calls that led to no code under the base made their functions end early
-            for function_start in idautils.Functions(segment.start_ea, segment.end_ea):
+            for function_start in idautils.Functions(start, end):
                 function = ida_funcs.get_func(function_start)
                 if function.flags & ida_funcs.FUNC_NORET:
                     function.flags &= ~ida_funcs.FUNC_NORET
                     ida_funcs.update_func(function)
             # the references of instructions are only taken anew when they are decoded again
-            for head in idautils.Heads(segment.start_ea, segment.end_ea):
+            for head in idautils.Heads(start, end):
                 if ida_bytes.is_code(ida_bytes.get_full_flags(head)):
-                    self._rebaseOffsets(head, {old_base}, clear=True)
+                    self._rebaseOffsets(head, old_bases)
                     ida_auto.auto_recreate_insn(head)
-            ida_auto.plan_range(segment.start_ea, segment.end_ea)
+            ida_auto.plan_range(start, end)
         if changed:
             ida_auto.auto_wait()
             functions = [ea for start in changed for ea in idautils.Functions(start, self.getSegEnd(start))]
@@ -161,6 +163,11 @@ class IdaProxy:
             for function_start in functions:
                 ida_funcs.reanalyze_noret_flag(function_start)
             ida_auto.auto_wait()
+            for function_start in functions:
+                function = ida_funcs.get_func(function_start)
+                if self._hasNoreturnPrototype(function_start) and not function.flags & ida_funcs.FUNC_NORET:
+                    function.flags |= ida_funcs.FUNC_NORET
+                    ida_funcs.update_func(function)
             # IDA 9.5 creates part of the offsets with the former base again
             for start in changed:
                 for head in idautils.Heads(start, self.getSegEnd(start)):
@@ -169,17 +176,18 @@ class IdaProxy:
             ida_auto.auto_wait()
         return changed
 
-    def _rebaseOffsets(self, head, bases, clear=False):
+    def _hasNoreturnPrototype(self, ea):
+        tinfo = ida_typeinf.tinfo_t()
+        details = ida_typeinf.func_type_data_t()
+        return ida_nalt.get_tinfo(tinfo, ea) and tinfo.get_func_details(details) and details.is_noret()
+
+    def _rebaseOffsets(self, head, bases):
         """offset operands that were created relative to a segment base would point behind their target"""
         flags = ida_bytes.get_full_flags(head)
         refinfo = ida_nalt.refinfo_t()
         for operand in range(ida_ida.UA_MAXOP):
             is_offset = ida_bytes.is_off(flags, operand) and ida_nalt.get_refinfo(refinfo, head, operand)
-            if not is_offset or refinfo.base not in bases:
-                continue
-            if clear:
-                ida_bytes.clr_op_type(head, operand)
-            else:
+            if is_offset and refinfo.base in bases:
                 refinfo.base = 0
                 ida_offset.op_offset_ex(head, operand, refinfo)
 

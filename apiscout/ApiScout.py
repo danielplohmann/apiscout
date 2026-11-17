@@ -182,14 +182,14 @@ class ApiScout:
         # try to extract from PE header
         return PeTools.getBaseAddressFromPeHeader(binary)
 
-    def _updateCodeReferences(self, references, binary, base_address, offset):
+    def _updateCodeReferences(self, references, binary, base_address, offset, targets=None):
         addr_block = binary[offset + 2 : offset + 2 + 4]
         if len(addr_block) < 4:
             # opcode bytes at the very end of the buffer, there is no operand left to read
             return
         # treat as 32bit code (absolute offsets)
         function_addr = struct.unpack("<I", addr_block)[0] - base_address
-        if 0 < function_addr < len(binary):
+        if 0 < function_addr < len(binary) and (targets is None or function_addr in targets):
             if function_addr not in references[32]:
                 references[32][function_addr] = set()
             references[32][function_addr].add(offset)
@@ -199,20 +199,21 @@ class ApiScout:
         # offset points to the ff opcode byte, i.e. behind a potential REX prefix (48 ff 25 ** ** ** **).
         if binary[offset : offset + 2] == b"\xff\x25" or binary[offset : offset + 2] == b"\xff\x15":
             function_addr += offset + 6
-        if 0 < function_addr < len(binary):
+        if 0 < function_addr < len(binary) and (targets is None or function_addr in targets):
             if function_addr not in references[64]:
                 references[64][function_addr] = set()
             references[64][function_addr].add(offset)
 
-    def _getCodeReferences(self, binary):
+    def _getCodeReferences(self, binary, targets=None):
+        """references by calls and jumps through pointers, optionally only those to the given offsets"""
         references = {32: {}, 64: {}}
         base_address = self._findBaseAddress(binary)
         # also check for "jmp dword ptr <offset>", as they sometimes point to local functions (i.e. non-API)
         for match in re.finditer(b"\xff\x25", binary):
-            self._updateCodeReferences(references, binary, base_address, match.start())
+            self._updateCodeReferences(references, binary, base_address, match.start(), targets)
         # also check for "call dword ptr <offset>", as they sometimes point to local functions (i.e. non-API)
         for match in re.finditer(b"\xff\x15", binary):
-            self._updateCodeReferences(references, binary, base_address, match.start())
+            self._updateCodeReferences(references, binary, base_address, match.start(), targets)
         return references
 
     def evaluateImportTable(self, binary, is_unmapped=True):
@@ -224,7 +225,7 @@ class ApiScout:
         import_table_loader = ImportTableLoader(mapped_binary, max_thunks=max_thunks)
         self._import_table = import_table_loader.get_import_table()
         bitness = PeTools.getBitness(mapped_binary)
-        references = self._getCodeReferences(mapped_binary)
+        references = self._getCodeReferences(mapped_binary, self._import_table.keys())
         for offset, import_entry in sorted(self._import_table.items()):
             if not import_entry["name"]:
                 # import by an ordinal without known name

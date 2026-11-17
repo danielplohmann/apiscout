@@ -28,9 +28,13 @@ class ImportDescriptor:
         else:
             imp = get_dword(buf, name_table_offset + imp_offset)
         # there is no length indicated for the array of imports, so we simply continue parsing until we hit zero.
+        # thunks of a crafted table can all name the same import, which is parsed once
+        parsed = {}
         while imp != 0 and (max_imports is None or len(self.imports) < max_imports):
             thunk = self.load_table_offset + imp_offset
-            self.imports[thunk] = self._parse_import(buf, name_table_offset + imp_offset)
+            if imp not in parsed:
+                parsed[imp] = self._parse_import(buf, name_table_offset + imp_offset)
+            self.imports[thunk] = parsed[imp]
             imp_offset += 8 if self._is_64bit else 4
             if self._is_64bit:
                 imp = get_qword(buf, name_table_offset + imp_offset)

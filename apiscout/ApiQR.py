@@ -86,7 +86,7 @@ class ApiQR:
             colored_vector.append(color)
         # each API is drawn as a square of 2**scale_factor pixels edge length, which is 4**scale_factor consecutive points on the curve
         scaled_vector = np.repeat(np.array(colored_vector, dtype=np.uint8), 4**scale_factor, axis=0)
-        transformed_vector = np.uint8(self.__vectorToHilbert(scaled_vector))
+        transformed_vector = np.asarray(self.__vectorToHilbert(scaled_vector), dtype=np.uint8)
         image = Image.fromarray(transformed_vector).convert(self.context.colors_format)
         return image
 

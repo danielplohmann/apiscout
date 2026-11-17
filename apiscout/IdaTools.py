@@ -141,8 +141,8 @@ class IdaTools:
         if not ida_ua.decode_insn(instruction, address) or not ida_idp.is_call_insn(instruction):
             return False
         operand = instruction.ops[0]
-        # the address of the operand is relative to its segment base
-        if operand.type != ida_ua.o_mem or ida_ua.map_data_ea(instruction, operand) != location:
+        # the address of the operand is relative to its segment base, IDA 9.0 needs a data segment register for that
+        if operand.type != ida_ua.o_mem or location not in (operand.addr, ida_ua.map_data_ea(instruction, operand)):
             return False
         if self.ida_proxy.hasIndexRegister(instruction, operand):
             # e.g. call table[reg*4], which only uses the location as start of a table

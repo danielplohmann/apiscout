@@ -115,12 +115,12 @@ def main(api_dbs=None):
         print("ApiScout: the database has no segments, nothing to scan.")
         return 1
     if isBatchMode():
-        for segment_address in tools.ida_proxy.useFlatAddresses():
-            print(f"ApiScout: segment @0x{segment_address:x} had a segment base, which was set to 0.")
         api_dbs = api_dbs or idc.ARGV[1:]
         if not api_dbs:
             print("ApiScout: no API DB given, nothing to do.")
             return 1
+        for segment_address in tools.ida_proxy.useFlatAddresses():
+            print(f"ApiScout: segment @0x{segment_address:x} had a segment base, which was set to 0.")
         rows = crawl(tools, api_dbs)
         tools.importTypeLibraries()
         num_renamed, num_skipped, num_xrefs_adapted = tools.applyApiNames(rows)

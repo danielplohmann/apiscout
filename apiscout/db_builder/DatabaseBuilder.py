@@ -258,20 +258,32 @@ class DatabaseBuilder:
             if known_addresses.get(dll_path, load_address) != load_address:
                 LOG.warning("Several load addresses given for %s, using 0x%x.", dll_path, load_address)
             known_addresses[dll_path] = load_address
+
+        def matching_address(dll, dll_path):
+            if has_wow64_dlls and dll_path.startswith({32: "system32/", 64: "syswow64/"}.get(dll.get("bitness"), "-")):
+                # a copy of the DLL for the other bitness
+                return None
+            load_address = known_addresses.get(dll_path)
+            if load_address is not None and load_address >= 0x100000000 and dll.get("bitness") == 32:
+                # the address of a 64bit DLL in a folder of the same name
+                return None
+            return load_address
+
+        # a path that fits a 32bit and a 64bit DLL does not tell which of them was loaded there
+        bitness_of_path = {}
+        for dll_key, dll in api_db["dlls"].items():
+            for dll_path in all_paths(dll_key, dll):
+                if matching_address(dll, dll_path) is not None:
+                    bitness_of_path.setdefault(dll_path, set()).add(dll.get("bitness"))
+        ambiguous_paths = {dll_path for dll_path, bitness in bitness_of_path.items() if len(bitness) > 1}
+        for dll_path in sorted(ambiguous_paths):
+            LOG.warning("Load address of %s fits DLLs of both bitnesses, it is not applied.", dll_path)
         num_offsets = 0
-        used_paths = set()
+        used_paths = set(ambiguous_paths)
         unmatched_dlls = {}
         for dll_key, dll in api_db["dlls"].items():
             for dll_path in all_paths(dll_key, dll):
-                if has_wow64_dlls and dll_path.startswith(
-                    {32: "system32/", 64: "syswow64/"}.get(dll.get("bitness"), "-")
-                ):
-                    # a copy of the DLL for the other bitness
-                    continue
-                load_address = known_addresses.get(dll_path)
-                if load_address is not None and load_address >= 0x100000000 and dll.get("bitness") == 32:
-                    # the address of a 64bit DLL in a folder of the same name
-                    continue
+                load_address = None if dll_path in ambiguous_paths else matching_address(dll, dll_path)
                 if load_address is not None:
                     dll["aslr_offset"] = dll["base_address"] - load_address
                     num_offsets += 1
