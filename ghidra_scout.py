@@ -12,6 +12,7 @@
 # @toolbar
 # @runtime PyGhidra
 
+import builtins
 import logging
 import os
 import re
@@ -22,6 +23,7 @@ PREFERENCE_DB_FOLDER = "apiscout.db.folder"
 OTHER_API_DB = "Other file..."
 ORDINAL_ONLY_API = re.compile(r"None<(\d+)>")
 CHUNK_SIZE = 0x100000
+KEPT_MODULES = "_apiscout_kept_modules"
 
 
 class ApiHit:
@@ -79,18 +81,21 @@ def get_memory_regions(blocks):
 
 def import_api_scout():
     """the ApiScout class, None if the apiscout package is not found"""
-    # PyGhidra unloads the modules a script imported when it ends, but numpy can not be loaded twice in one
-    # process. From the second run on, ApiVector falls back to plain Python, which the scan does not need,
-    # so its warning about the missing numpy is not shown.
-    logging.disable(logging.WARNING)
+    # PyGhidra removes the modules a script imported from sys.modules when it ends, but numpy can not be
+    # initialized twice in one process: a second import fails and apiscout would fall back to its slow plain
+    # Python scan. The modules of the first run are kept in builtins, which outlives the runs, and put back.
+    kept = getattr(builtins, KEPT_MODULES, {})
+    for name, module in kept.items():
+        sys.modules.setdefault(name, module)
+    before = set(sys.modules)
     try:
         from apiscout.ApiScout import ApiScout
     except ModuleNotFoundError as exc:
         if exc.name == "apiscout":
             return None
         raise
-    finally:
-        logging.disable(logging.NOTSET)
+    kept.update({name: sys.modules[name] for name in set(sys.modules) - before if name in sys.modules})
+    setattr(builtins, KEPT_MODULES, kept)
     return ApiScout
 
 

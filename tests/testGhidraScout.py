@@ -2,7 +2,6 @@ import contextlib
 import importlib.util
 import io
 import json
-import logging
 import os
 import tempfile
 import unittest
@@ -187,9 +186,26 @@ class GhidraScoutTestSuite(unittest.TestCase):
             self.assertEqual(expected, found)
             self.assertEqual([], script.errors)
 
-    def testImportLeavesLoggingOn(self):
-        self.assertIsNotNone(ghidra_scout.import_api_scout())
-        self.assertEqual(logging.NOTSET, logging.root.manager.disable)
+    def testModulesOutliveTheRun(self):
+        """PyGhidra removes the modules a script imported after each run, the next run gets the same ones back"""
+        import builtins
+        import sys
+
+        kept = getattr(builtins, ghidra_scout.KEPT_MODULES, None)
+        names = [name for name in sys.modules if name == "apiscout" or name.startswith("apiscout.")]
+        removed = {name: sys.modules.pop(name) for name in names}
+        try:
+            first = ghidra_scout.import_api_scout()
+            for name in [name for name in sys.modules if name.startswith("apiscout")]:
+                del sys.modules[name]
+            self.assertIs(first, ghidra_scout.import_api_scout())
+            self.assertIn("apiscout.ApiScout", getattr(builtins, ghidra_scout.KEPT_MODULES))
+        finally:
+            sys.modules.update(removed)
+            if kept is None:
+                delattr(builtins, ghidra_scout.KEPT_MODULES)
+            else:
+                setattr(builtins, ghidra_scout.KEPT_MODULES, kept)
 
     def testScanWithoutApiDb(self):
         script = FakeScript(FakeProgram([FakeBlock(0x1000, b"\0" * 16)]))
