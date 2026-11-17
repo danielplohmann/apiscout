@@ -8,6 +8,8 @@ import os
 import re
 import sys
 import tempfile
+import threading
+import time
 import unittest
 import unittest.mock
 import urllib.error
@@ -555,7 +557,7 @@ class DownloadTestSuite(unittest.TestCase):
         pauses = []
         error = urllib.error.URLError("connection reset")
         response = unittest.mock.MagicMock()
-        response.__enter__.return_value.read.return_value = b"body"
+        response.__enter__.return_value.read.side_effect = [b"body", b""]
         with unittest.mock.patch.object(D.urllib.request, "urlopen", side_effect=[error, error, response]) as urlopen:
             self.assertEqual(b"body", D.http_get("https://msdl.microsoft.com/x", 100, sleep=pauses.append))
         self.assertEqual(3, urlopen.call_count)
@@ -595,6 +597,65 @@ class DownloadTestSuite(unittest.TestCase):
             self.assertRaises(self.D.Mismatch),
         ):
             self.D.http_get("https://msdl.microsoft.com/x", 100)
+
+    def test_http_get_ends_when_the_run_is_interrupted(self):
+        D = self.D
+        self.addCleanup(D.INTERRUPTED.clear)
+        error = urllib.error.URLError("connection reset")
+        # nothing is requested after the interrupt
+        D.INTERRUPTED.set()
+        with (
+            unittest.mock.patch.object(D.urllib.request, "urlopen", side_effect=error) as urlopen,
+            self.assertRaises(D.Interrupted),
+        ):
+            D.http_get("https://msdl.microsoft.com/x", 100)
+        self.assertEqual(0, urlopen.call_count)
+        # a pause between the attempts (2 s the first time) ends when the run is interrupted, the request is not repeated
+        D.INTERRUPTED.clear()
+        timer = threading.Timer(0.2, D.INTERRUPTED.set)
+        started = time.monotonic()
+        with unittest.mock.patch.object(D.urllib.request, "urlopen", side_effect=error) as urlopen:
+            timer.start()
+            with self.assertRaises(D.Interrupted):
+                D.http_get("https://msdl.microsoft.com/x", 100)
+        timer.join()
+        self.assertEqual(1, urlopen.call_count)
+        self.assertLess(time.monotonic() - started, 1.5)
+        # so does the download of a body, which is read piece by piece
+        D.INTERRUPTED.clear()
+        reads = []
+
+        def read(size):
+            reads.append(size)
+            D.INTERRUPTED.set()
+            return b"x" * size
+
+        response = unittest.mock.MagicMock()
+        response.__enter__.return_value.read.side_effect = read
+        with (
+            unittest.mock.patch.object(D.urllib.request, "urlopen", return_value=response),
+            self.assertRaises(D.Interrupted),
+        ):
+            D.http_get("https://msdl.microsoft.com/x", 1 << 20)
+        self.assertEqual([D.READ_SIZE], reads)
+
+    def test_http_get_reads_the_body_in_pieces(self):
+        D = self.D
+        body = bytes(range(256)) * 1000
+        response = unittest.mock.MagicMock()
+        stream = io.BytesIO(body)
+        response.__enter__.return_value.read.side_effect = stream.read
+        with unittest.mock.patch.object(D, "READ_SIZE", 10000):
+            with unittest.mock.patch.object(D.urllib.request, "urlopen", return_value=response):
+                self.assertEqual(body, D.http_get("https://msdl.microsoft.com/x", len(body)))
+            sizes = [call.args[0] for call in response.__enter__.return_value.read.call_args_list]
+            self.assertEqual([10000] * 25 + [6001, 1], sizes)
+            stream.seek(0)
+            with (
+                unittest.mock.patch.object(D.urllib.request, "urlopen", return_value=response),
+                self.assertRaises(D.Mismatch),
+            ):
+                D.http_get("https://msdl.microsoft.com/x", len(body) - 1)
 
     def test_only_two_hosts_in_the_code(self):
         path = os.path.join(THIS_DIR, "..", "apiscout", "db_builder", "DllDownloader.py")
@@ -765,6 +826,55 @@ class RunTestSuite(unittest.TestCase):
         self.assertIn("1 failed", out)
         self.assertIn("Failed: foo.dll", out)
         self.assertIn("1 DLLs, 1 APIs", out)
+
+    def test_ctrl_c_does_not_wait_for_the_downloads(self):
+        """a download under way gives up when the run is interrupted, and the run does not wait for it: the attempts of a download
+        with the pauses between them take minutes"""
+        D = self.D
+        self.addCleanup(D.INTERRUPTED.clear)
+        downloading, gave_up = threading.Event(), threading.Event()
+        real = self.network.__call__
+
+        def fetch(url, max_bytes):
+            if "msdl.microsoft.com" not in url:
+                return real(url, max_bytes)
+            # as http_get in a pause between its attempts
+            downloading.set()
+            if not D.INTERRUPTED.wait(20):
+                return real(url, max_bytes)
+            gave_up.set()
+            raise D.Interrupted("interrupted")
+
+        class Terminal:
+            """Ctrl-C when the first DLL is done, which is bar.dll that is not in Winbindex, while foo.dll is downloaded"""
+
+            def write(self, text):
+                if text.startswith("["):
+                    assert downloading.wait(10)
+                    raise KeyboardInterrupt
+
+            def flush(self):
+                pass
+
+        err = io.StringIO()
+        started = time.monotonic()
+        with (
+            unittest.mock.patch.object(D, "http_get", fetch),
+            unittest.mock.patch.object(sys, "stdout", Terminal()),
+            contextlib.redirect_stderr(err),
+        ):
+            code = D.main(
+                ["--out", self.out, "--windows", "11-24H2", "--update", "KB5000002", "--dlls", "bar.dll", "foo.dll"]
+            )
+        self.assertEqual(130, code)
+        self.assertIn("interrupted", err.getvalue())
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertTrue(gave_up.wait(5))
+        # nothing is left running
+        for thread in threading.enumerate():
+            if thread.name.startswith("ThreadPoolExecutor"):
+                thread.join(5)
+                self.assertFalse(thread.is_alive())
 
     def test_listing(self):
         code, out, _ = self.run_main("--list", NAME)

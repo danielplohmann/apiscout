@@ -31,6 +31,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -50,6 +51,8 @@ FOLDER_BY_SOURCE_PATH = {"system32": ("System32", MACHINE_AMD64), "syswow64": ("
 BITNESS = {"System32": "x64", "SysWOW64": "x86"}
 
 MAX_INDEX_BYTES = 256 * 1024 * 1024
+# the body of a response is read in pieces of this size, between which an interrupted run is noticed
+READ_SIZE = 1 << 16
 INDEX_MAX_AGE = 24 * 3600
 PAGE_SIZE = 0x1000
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -66,6 +69,10 @@ class NotFound(DownloaderError):
 
 class Mismatch(DownloaderError):
     """a download that is not the file the index describes"""
+
+
+class Interrupted(DownloaderError):
+    """a request that was given up because the run was interrupted"""
 
 
 class Unavailable(DownloaderError):
@@ -310,14 +317,36 @@ def os_names(update, os_version_hint=None):
     return os_name, "10.0." + build if build else "10.0"
 
 
-def http_get(url, max_bytes, retries=4, sleep=time.sleep, timeout=60):
-    """the body of an URL (at most max_bytes), retried with a growing pause on network errors and server errors"""
+# set when the run is interrupted (Ctrl-C): the requests under way give up, they do not read on, retry or wait any more
+INTERRUPTED = threading.Event()
+
+
+def read_body(response, max_bytes):
+    """the body of a response, at most max_bytes and one byte more if it is longer"""
+    chunks, size = [], 0
+    while size <= max_bytes:
+        chunk = response.read(min(READ_SIZE, max_bytes + 1 - size))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        size += len(chunk)
+        if INTERRUPTED.is_set():
+            raise Interrupted("interrupted")
+    return b"".join(chunks)
+
+
+def http_get(url, max_bytes, retries=4, sleep=None, timeout=60):
+    """the body of an URL (at most max_bytes), retried with a growing pause on network errors and server errors; sleep
+    (default: waits for INTERRUPTED) makes the pause. An interrupted run (INTERRUPTED) ends the request."""
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    sleep = sleep or INTERRUPTED.wait
     for attempt in range(retries + 1):
+        if INTERRUPTED.is_set():
+            raise Interrupted("interrupted")
         pause = 2.0 * 2**attempt
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
-                data = response.read(max_bytes + 1)
+                data = read_body(response, max_bytes)
             if len(data) > max_bytes:
                 raise Mismatch(f"larger than the {max_bytes} bytes of Winbindex")
             return data
@@ -550,25 +579,29 @@ def run(args, fetch=None, out=None):
     problems = []
     verified = []
     started = time.time()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
+    INTERRUPTED.clear()
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs)
+    try:
         futures = {pool.submit(fetch_dll, name, update, args.out, cache_dir, fetch, verified): name for name in names}
-        try:
-            for number, future in enumerate(concurrent.futures.as_completed(futures), 1):
-                name = futures[future]
-                try:
-                    results = future.result()
-                except Exception as exc:  # a bug must not end the run of the other DLLs
-                    results = [("failed", f"unexpected error: {exc}")]
-                for status, _ in results:
-                    counts[status] += 1
-                    if status == "failed":
-                        problems.append(name)
-                out.write("[{:3d}/{}] {:<24} {}\n".format(number, len(names), name, "; ".join(m for _, m in results)))
-                out.flush()
-        except KeyboardInterrupt:
-            for future in futures:
-                future.cancel()
-            raise
+        for number, future in enumerate(concurrent.futures.as_completed(futures), 1):
+            name = futures[future]
+            try:
+                results = future.result()
+            except Exception as exc:  # a bug must not end the run of the other DLLs
+                results = [("failed", f"unexpected error: {exc}")]
+            for status, _ in results:
+                counts[status] += 1
+                if status == "failed":
+                    problems.append(name)
+            out.write("[{:3d}/{}] {:<24} {}\n".format(number, len(names), name, "; ".join(m for _, m in results)))
+            out.flush()
+    except BaseException:
+        # Ctrl-C: the downloads under way give up (and do not retry), the others are not started, and nothing waits for
+        # them, which would take all the retries and their pauses of every download
+        INTERRUPTED.set()
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
+    pool.shutdown()
     out.write(
         "{downloaded} downloaded, {present} already present, {missing} not available, {rejected} rejected (not the "
         "file of Winbindex), {failed} failed".format(**counts)
