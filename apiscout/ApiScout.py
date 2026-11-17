@@ -10,6 +10,7 @@
 #
 ########################################################################
 
+import bisect
 import itertools
 import logging
 import os
@@ -19,9 +20,9 @@ from itertools import repeat
 from operator import itemgetter
 
 try:
-    import numpy as np
-except ImportError:  # pragma: no cover - numpy is a dependency, the plain loop is kept for environments without it
-    np = None
+    from . import numpy_search
+except ImportError:  # pragma: no cover - numpy is a dependency, the plain loops are kept for environments without it
+    numpy_search = None
 
 from .ApiVector import ApiVector
 from .ImportTableLoader import ImportTableLoader
@@ -32,8 +33,6 @@ LOG = logging.getLogger(__name__)
 
 
 class ApiScout:
-    # number of DWORDs/QWORDs compared at once by the numpy search, bounds its memory use to some 100 MB
-    SEARCH_CHUNK_SIZE = 1 << 22
     # share of exports overwriting another DLL's address above which loading an API DB issues a warning
     COLLISION_WARNING_RATIO = 0.01
     # DLL keys of API DBs end in the address they were loaded at: 32_6.1.7601.17514_kernel32.dll_0x76d10000
@@ -61,7 +60,8 @@ class ApiScout:
         self.api_maps = {}
         self._api_map_sources = {}
         self._other_bitness_maps = {}
-        self._sorted_addresses = {}
+        # (signature of the API maps, AddressSearch for them, the maps)
+        self._address_search = None
         self._export_entries = {}
         self._dynamic_finder = None
         self.has_64bit = False
@@ -220,54 +220,27 @@ class ApiScout:
         for offset in range(len(binary) - 7):
             yield offset, unpack_from(binary, offset)[0]
 
-    def _getSortedAddresses(self, api_map_name):
-        assert np is not None
-        api_map = self.api_maps[api_map_name]
-        cached = self._sorted_addresses.get(api_map_name)
-        # api_maps is public, rebuild when a map was replaced or extended since the last scan
-        if cached is None or cached[0] is not api_map or len(cached[1]) != len(api_map):
-            cached = (api_map, np.array(sorted(api_map), dtype=np.uint64))
-            self._sorted_addresses[api_map_name] = cached
-        return cached[1]
-
-    def _iterateCandidates(self, binary, api_map_name, width):
-        """offsets and values of all DWORDs (width 4) or QWORDs (width 8) that are addresses in the API map, in the order of their offsets"""
-        if np is None:
-            values = self.iterateAllDwords(binary) if width == 4 else self.iterateAllQwords(binary)
-            api_map = self.api_maps[api_map_name]
-            yield from ((offset, value) for offset, value in values if value in api_map)
-            return
-        addresses = self._getSortedAddresses(api_map_name)
-        if width == 4:
-            addresses = addresses[addresses <= 0xFFFFFFFF].astype(np.uint32)
-        if not len(addresses) or len(binary) < width:
-            return
-        lowest, highest = addresses[0], addresses[-1]
-        dtype = np.dtype("<u4") if width == 4 else np.dtype("<u8")
-        hits = []
-        # one view per alignment, each one reads every width-th value starting at that offset
-        for alignment in range(width):
-            count = (len(binary) - alignment) // width
-            for start in range(0, count, self.SEARCH_CHUNK_SIZE):
-                values = np.frombuffer(
-                    binary,
-                    dtype=dtype,
-                    count=min(self.SEARCH_CHUNK_SIZE, count - start),
-                    offset=alignment + start * width,
-                )
-                indices = np.flatnonzero((values >= lowest) & (values <= highest))
-                if not len(indices):
-                    continue
-                in_range = values[indices]
-                positions = np.minimum(np.searchsorted(addresses, in_range), len(addresses) - 1)
-                indices = indices[addresses[positions] == in_range]
-                hits.append(alignment + (start + indices) * width)
-        if not hits:
-            return
-        offsets = np.sort(np.concatenate(hits))
-        unpack_from = struct.Struct("<I" if width == 4 else "<Q").unpack_from
-        for offset in offsets.tolist():
-            yield offset, unpack_from(binary, offset)[0]
+    def _findCandidates(self, binary, widths):
+        """the DWORDs (width 4) and QWORDs (width 8) of the binary that are addresses of an API map, with their offsets
+        in ascending order, as {(API map name, width): [(offset, value)]}. Maps and widths without any hit may be missing."""
+        if numpy_search is None:
+            return {
+                (name, width): [
+                    (offset, value)
+                    for offset, value in (
+                        self.iterateAllDwords(binary) if width == 4 else self.iterateAllQwords(binary)
+                    )
+                    if value in api_map
+                ]
+                for name, api_map in self.api_maps.items()
+                for width in widths
+            }
+        # api_maps is public, search for the addresses of the maps as they are now
+        signature = tuple((name, id(api_map), len(api_map)) for name, api_map in self.api_maps.items())
+        if self._address_search is None or self._address_search[0] != signature:
+            search = numpy_search.AddressSearch.fromApiMaps(self.api_maps, self._other_bitness_maps)
+            self._address_search = (signature, search, list(self.api_maps.values()))
+        return self._address_search[1].find(binary, widths)
 
     def _parseImportTable(self, binary):
         if self._import_table is None:
@@ -286,38 +259,33 @@ class ApiScout:
         # try to extract from PE header
         return PeTools.getBaseAddressFromPeHeader(binary)
 
-    def _updateCodeReferences(self, references, binary, base_address, offset, targets=None):
+    def _updateCodeReferences(self, references, binary, base_address, offset, targets):
         addr_block = binary[offset + 2 : offset + 2 + 4]
         if len(addr_block) < 4:
             # opcode bytes at the very end of the buffer, there is no operand left to read
             return
         # treat as 32bit code (absolute offsets)
         function_addr = struct.unpack("<I", addr_block)[0] - base_address
-        if 0 < function_addr < len(binary) and (targets is None or function_addr in targets):
-            if function_addr not in references[32]:
-                references[32][function_addr] = set()
-            references[32][function_addr].add(offset)
+        if 0 < function_addr < len(binary) and function_addr in targets:
+            references[32].setdefault(function_addr, set()).add(offset)
         # treat as 64bit code (this means relative offsets for jmps/calls)
-        function_addr = struct.unpack("<i", addr_block)[0]
         # RIP-relative: target is relative to the end of the 6 byte instruction (ff 25|15 ** ** ** **),
         # offset points to the ff opcode byte, i.e. behind a potential REX prefix (48 ff 25 ** ** ** **).
-        if binary[offset : offset + 2] == b"\xff\x25" or binary[offset : offset + 2] == b"\xff\x15":
-            function_addr += offset + 6
-        if 0 < function_addr < len(binary) and (targets is None or function_addr in targets):
-            if function_addr not in references[64]:
-                references[64][function_addr] = set()
-            references[64][function_addr].add(offset)
+        function_addr = struct.unpack("<i", addr_block)[0] + offset + 6
+        if 0 < function_addr < len(binary) and function_addr in targets:
+            references[64].setdefault(function_addr, set()).add(offset)
 
-    def _getCodeReferences(self, binary, targets=None):
-        """references by calls and jumps through pointers, optionally only those to the given offsets"""
-        references = {32: {}, 64: {}}
+    def _getCodeReferences(self, binary, targets):
+        """references by calls and jumps through pointers to the given offsets, as {bitness: {offset: {offsets of the instructions}}}"""
         base_address = self._findBaseAddress(binary)
-        # also check for "jmp dword ptr <offset>", as they sometimes point to local functions (i.e. non-API)
-        for match in re.finditer(b"\xff\x25", binary):
-            self._updateCodeReferences(references, binary, base_address, match.start(), targets)
-        # also check for "call dword ptr <offset>", as they sometimes point to local functions (i.e. non-API)
-        for match in re.finditer(b"\xff\x15", binary):
-            self._updateCodeReferences(references, binary, base_address, match.start(), targets)
+        if numpy_search is not None:
+            return numpy_search.find_code_references(binary, targets, base_address)
+        references = {32: {}, 64: {}}
+        targets = set(targets)
+        # also check for "jmp dword ptr <offset>" and "call dword ptr <offset>", as they sometimes point to local functions (i.e. non-API)
+        for opcode in (b"\xff\x25", b"\xff\x15"):
+            for match in re.finditer(opcode, binary):
+                self._updateCodeReferences(references, binary, base_address, match.start(), targets)
         return references
 
     def evaluateImportTable(self, binary, is_unmapped=True):
@@ -356,44 +324,34 @@ class ApiScout:
         self._binary_length = len(binary)
         self._import_table = None
         self._parseImportTable(binary)
-        references = self._getCodeReferences(binary)
+        widths = (4, 8) if self.has_64bit and self.bitness != 32 else (4,)
+        found = self._findCandidates(binary, widths)
+        references = self._getCodeReferences(binary, {offset for hits in found.values() for offset, _ in hits})
+        load_offset = self.load_offset
         for api_map_name in self.api_maps:
             recovered_apis = []
-            for offset, api_address in self._iterateCandidates(binary, api_map_name, 4):
-                dll, api, bitness = self._resolveApiByAddress(api_map_name, api_address, 32)
-                if dll and api and bitness == 32:
-                    ref_count = 1 + len(references[32][offset]) if offset in references[32] else 1
-                    recovered_apis.append(
-                        (
-                            offset + self.load_offset,
-                            api_address,
-                            dll,
-                            api,
-                            bitness,
-                            self._isImportTableEntry(offset),
-                            ref_count,
-                            {caller + self.load_offset for caller in references[bitness].get(offset, set())},
-                        )
-                    )
-            if self.has_64bit and self.bitness != 32:
-                for offset, api_address in self._iterateCandidates(binary, api_map_name, 8):
-                    dll, api, bitness = self._resolveApiByAddress(api_map_name, api_address, 64)
-                    if dll and api and bitness == 64:
-                        ref_count = 1 + len(references[64][offset]) if offset in references[64] else 1
+            for width in widths:
+                bitness = width * 8
+                callers_of = references[bitness]
+                for offset, api_address in found.get((api_map_name, width), ()):
+                    dll, api, api_bitness = self._resolveApiByAddress(api_map_name, api_address, bitness)
+                    if dll and api and api_bitness == bitness:
+                        callers = callers_of.get(offset, ())
                         recovered_apis.append(
                             (
-                                offset + self.load_offset,
+                                offset + load_offset,
                                 api_address,
                                 dll,
                                 api,
                                 bitness,
                                 self._isImportTableEntry(offset),
-                                ref_count,
-                                {caller + self.load_offset for caller in references[bitness].get(offset, set())},
+                                1 + len(callers),
+                                {caller + load_offset for caller in callers},
                             )
                         )
             # hits of both bitnesses are reported in the order of their offsets, as filter() and render() work on neighbouring entries
-            recovered_apis.sort(key=lambda entry: (entry[0], entry[4]))
+            if len(widths) > 1:
+                recovered_apis.sort(key=lambda entry: (entry[0], entry[4]))
             results[api_map_name] = recovered_apis
         return results
 
@@ -540,14 +498,19 @@ class ApiScout:
     def filter(self, result, from_addr, to_addr, distance, own_image=True, exclude_ranges=()):
         """exclude_ranges: (start, end) addresses of memory whose references are dropped, e.g. the images of DLLs"""
         filtered_result = {}
+        ranges = sorted(exclude_ranges)
+        range_starts = [start for start, _ in ranges]
+        # an address is in a range if the greatest end of the ranges that start at or before it is behind it
+        greatest_ends = list(itertools.accumulate((end for _, end in ranges), max))
+
+        def is_excluded(address):
+            num_starts = bisect.bisect_right(range_starts, address)
+            return num_starts > 0 and greatest_ends[num_starts - 1] > address
+
         for key in result:
             filtered_list = result[key]
-            if exclude_ranges:
-                filtered_list = [
-                    item
-                    for item in filtered_list
-                    if not any(start <= self.base_address + item[0] < end for start, end in exclude_ranges)
-                ]
+            if ranges:
+                filtered_list = [item for item in filtered_list if not is_excluded(self.base_address + item[0])]
             # filter all entries pointing into our own image
             if own_image:
                 filtered_list = [
@@ -587,31 +550,35 @@ class ApiScout:
         """confidence from 0 to 100 of every hit of the results of crawl() or evaluateImportTable(), see CONFIDENCE_*.
         Returns {api_map_name: {(offset, bitness): confidence}}. Neighbours and agreement are taken from the given
         results, so score the complete results of a scan, before filtering them."""
+        # the same API at the same offset in the results of another API DB is an agreement, which there can not be with one DB
         located_apis = {}
-        for api_map_name, entries in results.items():
-            for entry in entries:
-                api_key = (entry[2].lower().rsplit("_0x", 1)[0], entry[3])
-                located_apis.setdefault((entry[0], entry[4], api_key), set()).add(api_map_name)
+        if len(results) > 1:
+            for api_map_name, entries in results.items():
+                for entry in entries:
+                    api_key = (entry[2].lower().rsplit("_0x", 1)[0], entry[3])
+                    located_apis.setdefault((entry[0], entry[4], api_key), set()).add(api_map_name)
+        neighbour_scores, references_score = self.CONFIDENCE_NEIGHBOURS, self.CONFIDENCE_REFERENCES
         confidences = {}
         for api_map_name, entries in results.items():
             neighbour_counts = self._getNeighbourCounts(entries)
-            confidences[api_map_name] = {}
+            scores = confidences[api_map_name] = {}
             for entry in entries:
                 offset, bitness = entry[0], entry[4]
                 if entry[5]:
                     score = 100
                 else:
-                    score = self.CONFIDENCE_NEIGHBOURS[min(neighbour_counts[(offset, bitness)], 3)]
+                    score = neighbour_scores[min(neighbour_counts[(offset, bitness)], 3)]
                     if entry[6] > 1:
-                        score += self.CONFIDENCE_REFERENCES
-                    api_key = (entry[2].lower().rsplit("_0x", 1)[0], entry[3])
-                    if located_apis[(offset, bitness, api_key)] - {api_map_name}:
-                        score += self.CONFIDENCE_AGREEMENT
+                        score += references_score
+                    if located_apis:
+                        api_key = (entry[2].lower().rsplit("_0x", 1)[0], entry[3])
+                        if located_apis[(offset, bitness, api_key)] - {api_map_name}:
+                            score += self.CONFIDENCE_AGREEMENT
                     if (self.base_address + offset) % (bitness // 8) == 0:
                         score = min(score + self.CONFIDENCE_ALIGNED, 100)
                     else:
                         score = min(score, self.CONFIDENCE_UNALIGNED_MAX)
-                confidences[api_map_name][(offset, bitness)] = score
+                scores[(offset, bitness)] = score
         return confidences
 
     def filterByConfidence(self, results, min_confidence, confidences=None):
@@ -653,35 +620,38 @@ class ApiScout:
         return sorted(api_vectors.items(), key=lambda x: (x[1]["in_api_vector"], x[1]["percentage"]))[-1]
 
     def render(self, results):
-        output = ""
-        for api_map_name in results:
-            if len(results[api_map_name]):
-                result = results[api_map_name]
-                output += f"Results for API DB: {api_map_name}\n"
-                output += "{:3}: {:10}; {:18}; {:3}; {:4};{:40}; {:60}\n".format(
+        lines = []
+        base_address = self.base_address
+        # the address of a 32bit hit is 8 hex digits wide and set off by 10 spaces, that of a 64bit hit 16 digits wide
+        row_32 = "%3d: 0x%08x;         0x%08x; %-3s; %4d; %-40s; %-60s\n"
+        row_64 = "%3d: 0x%08x; 0x%016x; %-3s; %4d; %-40s; %-60s\n"
+        for api_map_name, result in results.items():
+            if not len(result):
+                lines.append(f"No results for API map: {api_map_name}\n")
+                continue
+            lines.append(f"Results for API DB: {api_map_name}\n")
+            lines.append(
+                "{:3}: {:10}; {:18}; {:3}; {:4};{:40}; {:60}\n".format(
                     "idx", "offset", "VA", "IT?", "#ref", "DLL", "API"
                 )
-                prev_offset = None
-                dlls = set()
-                apis = set()
-                num_references = 0
-                for index, entry in enumerate(result):
-                    if prev_offset is not None and entry[0] > prev_offset + 16:
-                        output += "-" * 129 + "\n"
-                    dll_name = f"{entry[2]} ({entry[4]}bit)"
-                    is_in_import_table = "err" if entry[5] is None else "yes" if entry[5] else "no"
-                    if entry[4] == 32:
-                        output += f"{index + 1:3}: 0x{self.base_address + entry[0]:08x};         0x{entry[1]:08x}; {is_in_import_table:3}; {entry[6]:4}; {dll_name:40}; {entry[3]:60}\n"
-                    else:
-                        output += f"{index + 1:3}: 0x{self.base_address + entry[0]:08x}; 0x{entry[1]:016x}; {is_in_import_table:3}; {entry[6]:4}; {dll_name:40}; {entry[3]:60}\n"
-                    num_references += entry[6] - 1
-                    prev_offset = entry[0]
-                    dlls.add(entry[2])
-                    apis.add(entry[3])
-                output += f"DLLs: {len(dlls)}, APIs: {len(apis)}, references: {num_references}\n"
-            else:
-                output += f"No results for API map: {api_map_name}\n"
-        return output
+            )
+            prev_offset = None
+            num_references = 0
+            for index, entry in enumerate(result, 1):
+                if prev_offset is not None and entry[0] > prev_offset + 16:
+                    lines.append("-" * 129 + "\n")
+                is_in_import_table = "err" if entry[5] is None else "yes" if entry[5] else "no"
+                row_format = row_32 if entry[4] == 32 else row_64
+                dll_name = f"{entry[2]} ({entry[4]}bit)"
+                lines.append(
+                    row_format
+                    % (index, base_address + entry[0], entry[1], is_in_import_table, entry[6], dll_name, entry[3])
+                )
+                num_references += entry[6] - 1
+                prev_offset = entry[0]
+            num_dlls, num_apis = len({entry[2] for entry in result}), len({entry[3] for entry in result})
+            lines.append(f"DLLs: {num_dlls}, APIs: {num_apis}, references: {num_references}\n")
+        return "".join(lines)
 
     def renderVectorResults(self, results):
         api_vectors = self.getWinApi1024Vectors(results)
