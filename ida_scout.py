@@ -35,6 +35,7 @@ import idc
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from apiscout.ApiScout import ApiScout  # noqa: E402
+from apiscout.db_index import get_data_dir  # noqa: E402
 from apiscout.IdaForm import ApiResultsAction, ApiResultsChooser, loadIcon  # noqa: E402
 from apiscout.IdaTools import IdaTools  # noqa: E402
 
@@ -127,6 +128,9 @@ def main(api_dbs=None):
         print(f"Annotated {num_renamed} APIs and adapted {num_xrefs_adapted} Xrefs ({num_skipped} skipped).")
         return 0
     db_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dbs")
+    if not os.path.isdir(db_folder):
+        # DBs downloaded with `apiscout dbs download`
+        db_folder = get_data_dir()
     for segment_address in tools.ida_proxy.getSegmentsWithBase():
         print(
             f"ApiScout: segment @0x{segment_address:x} has a segment base, its code does not reference the API "

@@ -15,6 +15,7 @@ import tempfile
 import traceback
 from multiprocessing import Pool, cpu_count
 
+from . import db_index
 from .ApiQR import ApiQR
 from .ApiScout import ApiScout
 from .FingerprintCrawler import FingerprintCrawler
@@ -45,9 +46,11 @@ EXAMPLES = {
       draw a vector as ApiQR diagram
   apiscout dbs
       show the API DBs that are used when --db is not given
+  apiscout dbs download
+      download the example API DBs of the repository
 
-API DBs describe one Windows system each. Example DBs and the DB builder
-are part of the repository: {PROJECT_URL}
+API DBs describe one Windows system each. The DB builder is part of the
+repository: {PROJECT_URL}
 """,
     "scan": """examples:
   apiscout scan dump_0x00400000 --db win7_prof-n_sp1_example.json
@@ -77,6 +80,12 @@ Quote vectors, they contain characters that are special to the shell.
     "dbs": """examples:
   apiscout dbs
   apiscout dbs --db-dir ~/apiscout-dbs --json
+  apiscout dbs download
+""",
+    "download": """examples:
+  apiscout dbs download
+  apiscout dbs download win7_prof-n_sp1_example.json
+  apiscout dbs download --db-dir ~/apiscout-dbs --ref master
 """,
 }
 
@@ -102,10 +111,15 @@ class Parser(argparse.ArgumentParser):
 
 
 def get_default_db_dir():
-    """the folder searched for API DBs and collections: $APISCOUT_DB_DIR, ./dbs or the dbs folder of a checkout"""
+    """the folder searched for API DBs and collections: $APISCOUT_DB_DIR, ./dbs, the folder of downloaded DBs
+    or the dbs folder of a checkout"""
     if os.environ.get(DB_DIR_VARIABLE):
         return os.environ[DB_DIR_VARIABLE]
-    candidates = [os.path.join(os.getcwd(), "dbs"), os.path.join(os.path.dirname(os.path.dirname(__file__)), "dbs")]
+    candidates = [
+        os.path.join(os.getcwd(), "dbs"),
+        db_index.get_data_dir(),
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "dbs"),
+    ]
     for candidate in candidates:
         if os.path.isdir(candidate):
             return candidate
@@ -118,15 +132,27 @@ def get_db_files(db_dir):
     return sorted(os.path.join(db_dir, name) for name in os.listdir(db_dir) if name.endswith(".json"))
 
 
+def locate(path, args, what):
+    """a file given by path, or by its bare name when it is in the DB folder (e.g. from `apiscout dbs download`)"""
+    if path == "-" or os.path.exists(path) or os.path.basename(path) != path:
+        check_file(path, what)
+        return path
+    db_dir = getattr(args, "db_dir", None) or get_default_db_dir()
+    candidate = os.path.join(db_dir, path)
+    if not os.path.isfile(candidate):
+        raise CliError(f"{what} not found: {path}, also not in the DB folder {db_dir}")
+    return candidate
+
+
 def resolve_db_files(args):
     """the API DBs to use: those given with --db, otherwise all of the DB folder"""
-    db_paths = list(args.db) if args.db else get_db_files(args.db_dir or get_default_db_dir())
-    for db_path in db_paths:
-        check_file(db_path, "API DB")
+    if args.db:
+        return [locate(db_path, args, "API DB") for db_path in args.db]
+    db_paths = get_db_files(args.db_dir or get_default_db_dir())
     if not db_paths:
         raise CliError(
-            f"no API DB found in {args.db_dir or get_default_db_dir()}. Pass one with --db, or point --db-dir or "
-            f"${DB_DIR_VARIABLE} to a folder of API DBs (example DBs: {PROJECT_URL}/tree/master/dbs)."
+            f"no API DB found in {args.db_dir or get_default_db_dir()}. Download the example DBs with "
+            f"'apiscout dbs download', pass one with --db, or point --db-dir or ${DB_DIR_VARIABLE} to a folder of API DBs."
         )
     return db_paths
 
@@ -282,7 +308,7 @@ def cmd_scan(args):
     binary = read_input(args.dump)
     scout = ApiScout()
     if args.collection:
-        check_file(args.collection, "collection")
+        args.collection = locate(args.collection, args, "collection")
         # a file that is no collection is found out before the scan, without the warnings for each of its lines
         logging.disable(logging.WARNING)
         try:
@@ -340,7 +366,7 @@ def cmd_match(args):
         raise CliError("give either a second vector or --collection to match against.")
     check_output(args.output)
     if args.collection:
-        check_file(args.collection, "collection")
+        args.collection = locate(args.collection, args, "collection")
     vector = read_vector(args.vector)
     scout = ApiScout()
     scout.loadWinApi1024()
@@ -563,8 +589,8 @@ def cmd_dbs(args):
     db_dir = args.db_dir or get_default_db_dir()
     if not os.path.isdir(db_dir):
         raise CliError(
-            f"folder not found: {db_dir}. Point --db-dir or ${DB_DIR_VARIABLE} to a folder of API DBs "
-            f"(example DBs: {PROJECT_URL}/tree/master/dbs)."
+            f"folder not found: {db_dir}. Download the example DBs with 'apiscout dbs download', or point "
+            f"--db-dir or ${DB_DIR_VARIABLE} to a folder of API DBs."
         )
     entries = []
     for db_path in get_db_files(db_dir):
@@ -589,7 +615,8 @@ def cmd_dbs(args):
     if not entries:
         lines = [
             f"No API DBs in {db_dir}.",
-            f"Point --db-dir or ${DB_DIR_VARIABLE} to a folder of API DBs (example DBs: {PROJECT_URL}/tree/master/dbs).",
+            f"Download the example DBs with 'apiscout dbs download', or point --db-dir or ${DB_DIR_VARIABLE} "
+            "to a folder of API DBs.",
         ]
         write_output("\n".join(lines) + "\n", args.output)
         return EXIT_OK
@@ -604,6 +631,54 @@ def cmd_dbs(args):
     if any(entry["aslr_offsets"] for entry in entries):
         lines.extend(["", "A DB with ASLR offsets only fits memory dumps of the boot it was built in."])
     write_output("\n".join(lines) + "\n", args.output)
+    return EXIT_OK
+
+
+def get_download_ref():
+    """the git tag of the installed version, so that code and DBs match; master for a checkout that is not installed"""
+    version = get_version()
+    return f"v{version}" if re.fullmatch(r"\d+(\.\d+)*", version) else "master"
+
+
+def cmd_dbs_download(args):
+    db_dir = getattr(args, "db_dir", None) or os.environ.get(DB_DIR_VARIABLE) or db_index.get_data_dir()
+    if os.path.exists(db_dir) and not os.path.isdir(db_dir):
+        raise CliError(f"not a folder: {db_dir}")
+    ref = args.ref or get_download_ref()
+    try:
+        files = db_index.fetch_index(ref, args.timeout)
+    except db_index.DownloadError as exc:
+        hint = ""
+        if "HTTP 404" in str(exc) and not args.ref:
+            hint = f" There are no DBs for apiscout {get_version()} yet, --ref master downloads the current ones."
+        raise CliError(f"could not read the list of API DBs: {exc}.{hint}") from exc
+    unknown = [name for name in args.names if name not in files]
+    if unknown:
+        raise CliError(f"not in the repository ({ref}): {', '.join(unknown)}. Available: {', '.join(sorted(files))}")
+    selected = list(dict.fromkeys(args.names)) if args.names else sorted(files)
+    os.makedirs(db_dir, exist_ok=True)
+    kept = []
+    for name in selected:
+        path = os.path.join(db_dir, name)
+        if db_index.is_current(path, files[name]):
+            report(args, f"Up to date: {path}")
+            continue
+        if os.path.exists(path) and not args.force:
+            kept.append(path)
+            continue
+        report(args, f"Downloading {name} ...")
+        try:
+            db_index.download(ref, name, files[name], db_dir, args.timeout)
+        except db_index.DownloadError as exc:
+            raise CliError(f"{exc}. Files downloaded so far are kept, run the command again to continue.") from exc
+        report(args, f"Stored {path}")
+    if kept:
+        raise CliError(
+            f"kept {len(kept)} files that differ from those of the repository: {', '.join(kept)}. "
+            "--force replaces them."
+        )
+    if not getattr(args, "db_dir", None) and not os.environ.get(DB_DIR_VARIABLE):
+        report(args, "scan, collect and dbs use this folder when there is no ./dbs and --db is not given.")
     return EXIT_OK
 
 
@@ -777,6 +852,34 @@ def build_parser():
     add_db_options(dbs, with_db=False)
     add_output_options(dbs)
     dbs.set_defaults(run=cmd_dbs)
+    dbs_commands = dbs.add_subparsers(dest="dbs_command", metavar="command", parser_class=Parser)
+    download = dbs_commands.add_parser(
+        "download",
+        parents=[common],
+        help="download the example API DBs of the repository",
+        description="Download the example API DBs and the example collection of the repository, checked against "
+        f"the SHA-256 sums in its dbs/{db_index.INDEX_NAME}. They are stored in --db-dir, else ${DB_DIR_VARIABLE}, else "
+        f"{db_index.get_data_dir()}, which scan, collect and dbs search after ./dbs.",
+        epilog=EXAMPLES["download"],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    download.add_argument("names", nargs="*", metavar="file", help="files to download (default: all)")
+    download.add_argument(
+        "--db-dir",
+        metavar="DIR",
+        default=argparse.SUPPRESS,
+        help=f"folder to store them in (default: ${DB_DIR_VARIABLE}, then {db_index.get_data_dir()})",
+    )
+    download.add_argument(
+        "--ref",
+        metavar="REF",
+        help="git tag or branch to download from (default: the tag of this version, v" + get_version() + ")",
+    )
+    download.add_argument("--force", action="store_true", help="replace files that differ from those of the repository")
+    download.add_argument(
+        "--timeout", type=parse_timeout, default=60, metavar="SECONDS", help="timeout of a request (default: 60)"
+    )
+    download.set_defaults(run=cmd_dbs_download)
 
     help_command = commands.add_parser(
         "help", help="show the help of a command", description="Show the help of apiscout or of one of its commands."
