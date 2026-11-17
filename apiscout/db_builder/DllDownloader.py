@@ -506,8 +506,7 @@ def build_db(out_dir, update, os_version_hint, outfile, files=None):
     ]
     os_name, os_version = os_names(update, os_version_hint)
     builder = DatabaseBuilder.DatabaseBuilder()
-    only_files = None if files is None else {os.path.abspath(path) for path in files}
-    api_db = builder.extractRecursively(paths, False, os_name, os_version, only_files=only_files)
+    api_db = builder.extractRecursively(paths, False, os_name, os_version, only_files=files)
     if not api_db["dlls"]:
         raise DownloaderError("no DLLs to build an API DB from in {}.".format(", ".join(paths)))
     builder.persistApiDb(api_db, outfile)
@@ -597,14 +596,15 @@ def run(args, fetch=None, out=None):
 
 def other_files(out_dir, files):
     """the DLLs in the folders of out_dir that are not among files, e.g. left from a run for another update"""
-    kept = {os.path.abspath(path) for path in files}
+    # a file name is not case sensitive on Windows, the file may be there in another spelling than the one of the index
+    kept = {os.path.normcase(os.path.abspath(path)) for path in files}
     others = []
     for folder, _, _ in SYSTEM_FOLDERS:
         folder_path = os.path.join(out_dir, folder)
         if os.path.isdir(folder_path):
             for name in sorted(os.listdir(folder_path)):
                 path = os.path.join(folder_path, name)
-                if name.lower().endswith(".dll") and os.path.abspath(path) not in kept:
+                if name.lower().endswith(".dll") and os.path.normcase(os.path.abspath(path)) not in kept:
                     others.append(f"{folder}/{name}")
     return others
 

@@ -723,6 +723,33 @@ class RunTestSuite(unittest.TestCase):
             builder.extractRecursively([self.out], False, "W", "1", only_files={os.path.abspath(keep)})
         self.assertEqual([os.path.join(self.out, "SysWOW64") + os.sep + NAME], seen)
 
+    def test_files_are_matched_in_the_case_of_the_file_system(self):
+        """on Windows, a verified kernelbase.dll that is there as KernelBase.dll is the file of the index"""
+        sys.path.insert(0, os.path.join(THIS_DIR, "..", "apiscout", "db_builder"))
+        self.addCleanup(sys.path.remove, sys.path[0])
+        import DatabaseBuilder
+
+        os.makedirs(os.path.join(self.out, "System32"))
+        with open(os.path.join(self.out, "System32", "KernelBase.dll"), "wb") as f_out:
+            f_out.write(b"MZ")
+        verified = [os.path.join(self.out, "System32", "kernelbase.dll")]
+        seen = []
+        builder = DatabaseBuilder.DatabaseBuilder()
+
+        def build():
+            seen.clear()
+            with unittest.mock.patch.object(builder, "_extractPeExports", side_effect=seen.append):
+                builder.extractRecursively([self.out], False, "W", "1", only_files=verified)
+            return seen
+
+        # a file system that is case sensitive has two files
+        self.assertEqual([], build())
+        self.assertEqual(["System32/KernelBase.dll"], self.D.other_files(self.out, verified))
+        # os.path.normcase is the case of the platform, on Windows it is lower case
+        with unittest.mock.patch("os.path.normcase", str.lower):
+            self.assertEqual([os.path.join(self.out, "System32") + os.sep + "KernelBase.dll"], build())
+            self.assertEqual([], self.D.other_files(self.out, verified))
+
     def test_failure_is_reported_and_db_is_built_from_the_rest(self):
         real = self.network.__call__
 
