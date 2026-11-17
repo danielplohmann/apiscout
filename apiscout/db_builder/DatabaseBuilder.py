@@ -118,7 +118,8 @@ def check_aslr():
         pe = pefile.PE(module_path.value)
         pe_header_base_addr = pe.OPTIONAL_HEADER.ImageBase
         offsets.append(pe_header_base_addr - h_module_base)
-    for dll_name, offset in zip(check_dlls, offsets, strict=False):
+    # the DB builder also runs on the Python 3.8 of old analysis systems, which has no zip(strict=)
+    for dll_name, offset in zip(check_dlls, offsets):  # noqa: B905
         LOG.debug("Memory vs. File ImageBase offset (%s): 0x%x", dll_name, offset)
         is_aslr |= offset != 0
     return is_aslr
