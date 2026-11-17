@@ -453,9 +453,15 @@ class ApiScout:
         A hash of a name does not tell which DLL exports the API. The DLLs of the WinApi1024 vector are used where there are some, so
         that the number of APIs does not grow with the number of DLLs that export the same name; otherwise the first DLL."""
         combined = {name: list(apis) for name, apis in results.items()}
+        # the same API is found at many offsets
+        chosen = {}
         for name, dynamic_apis in dynamic_results.items():
             for api in dynamic_apis:
-                dlls = [dll for dll in api.dlls if self._apivector.isInWinApi1024(dll, api.api)] or api.dlls[:1]
+                dlls = chosen.get((api.api, api.dlls))
+                if dlls is None:
+                    dlls = chosen[(api.api, api.dlls)] = [
+                        dll for dll in api.dlls if self._apivector.isInWinApi1024(dll, api.api)
+                    ] or list(api.dlls[:1])
                 for dll in dlls:
                     combined.setdefault(name, []).append((api.offset, 0, dll + "_0x0", api.api, 0, None, 1, set()))
         return combined
