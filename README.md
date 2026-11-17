@@ -6,7 +6,7 @@ A dumped process has no usable import table any more, but it still holds the add
 
 It comes as a command line tool, a Python library, a plugin for IDA Pro and a script for Ghidra.
 
-![IDA Pro listing the API references ApiScout found in a memory dump](docs/images/ida.png)
+![IDA Pro listing the API references ApiScout found in a memory dump](https://raw.githubusercontent.com/danielplohmann/apiscout/master/docs/images/ida.png)
 
 ## Quick start
 
@@ -105,7 +105,7 @@ The collection is stored as `<date>-apivectors-v<version>.csv` in the folder giv
 
 `apiscout export` draws a vector as an ApiQR diagram. Each of the 1024 APIs has a fixed place and a colour for its topic, among them GUI, system, execution, strings, network, files, devices, crypto, memory and registry. Samples with similar capabilities look alike. The HTML version names each API when the mouse is over it.
 
-<img src="docs/images/apiqr.png" alt="ApiQR diagram of a TrickBot dump" width="256">
+<img src="https://raw.githubusercontent.com/danielplohmann/apiscout/master/docs/images/apiqr.png" alt="ApiQR diagram of a TrickBot dump" width="256">
 
 ```bash
 VECTOR=$(apiscout scan trickbot_dump_0x00400000 --db win7_prof-n_sp1_example.json --json | jq -r .apivector)
@@ -162,7 +162,7 @@ vector = scout.getPrimaryVector(scout.getWinApi1024Vectors(results))[1]["vector"
 
 ## API DBs
 
-| File in [`dbs`](dbs) | System | ASLR offsets |
+| File in [`dbs`](https://github.com/danielplohmann/apiscout/tree/master/dbs) | System | ASLR offsets |
 | :--- | :--- | :---: |
 | `winxp_prof_sp3_example.json` | Windows XP Professional SP3, 32bit DLLs | no |
 | `win7_prof-n_sp1_example.json` | Windows 7 Professional N SP1, 32bit and 64bit DLLs | no |
@@ -232,7 +232,7 @@ idat -A -TBinary -b<dump address / 16, hex> -pmetapc -S"ida_scout.py <API DB> [<
 
 The script asks once for the folder with the API DBs, for example `dbs` of the repository, and scans the memory of the current program. The references you select in its table are annotated like imports: a pointer with an external reference to the function of its library, with the prototype of Ghidra's Windows data type archive. Tested with Ghidra 12.2.
 
-![Ghidra listing with API pointers annotated as external functions](docs/images/ghidra.png)
+![Ghidra listing with API pointers annotated as external functions](https://raw.githubusercontent.com/danielplohmann/apiscout/master/docs/images/ghidra.png)
 
 <details>
 <summary>Headless</summary>
@@ -262,7 +262,7 @@ uv run python -m unittest discover -s tests -p "test*.py" -t .
 uv run ruff check && uv run ruff format --check && uv run ty check
 ```
 
-Changes are listed in the [changelog](CHANGELOG.md).
+Changes are listed in the [changelog](https://github.com/danielplohmann/apiscout/blob/master/CHANGELOG.md).
 
 <details>
 <summary>Releasing</summary>
@@ -279,7 +279,7 @@ It uses [trusted publishing](https://docs.pypi.org/trusted-publishers/), so no t
 
 </details>
 
-Questions, bug reports and pull requests are welcome on [GitHub](https://github.com/danielplohmann/apiscout/issues). ApiScout is licensed under the [BSD 2-Clause License](LICENSE).
+Questions, bug reports and pull requests are welcome on [GitHub](https://github.com/danielplohmann/apiscout/issues). ApiScout is licensed under the [BSD 2-Clause License](https://github.com/danielplohmann/apiscout/blob/master/LICENSE).
 
 ## Credits
 
