@@ -428,11 +428,15 @@ def cmd_collect(args):
     fingerprints = []
     show_progress = not args.quiet and sys.stderr.isatty()
     # every worker builds its own crawler once, tasks then only carry a path
-    with Pool(cpu_count(), initializer=init_worker, initargs=crawler_arguments) as pool:
-        for fingerprint in pool.imap(get_fingerprint, file_list, chunksize=4):
-            fingerprints.append(fingerprint)
-            if show_progress:
-                print(f"\r{len(fingerprints)} / {len(file_list)}", end="", file=sys.stderr, flush=True)
+    log_level = logging.getLogger("apiscout").getEffectiveLevel()
+    with Pool(cpu_count(), initializer=init_worker, initargs=(log_level, *crawler_arguments)) as pool:
+        try:
+            for fingerprint in pool.imap(get_fingerprint, file_list, chunksize=4):
+                fingerprints.append(fingerprint)
+                if show_progress:
+                    print(f"\r{len(fingerprints)} / {len(file_list)}", end="", file=sys.stderr, flush=True)
+        except RuntimeError as exc:
+            raise CliError(f"a worker process could not load the API DBs or the collection ({exc}).") from None
     if show_progress:
         print(file=sys.stderr)
     if args.skip_empty:
@@ -452,6 +456,7 @@ def cmd_collect(args):
 
 
 WORKER_CRAWLER = None
+WORKER_ERROR = None
 
 
 def create_crawler(db_paths, winapi1024_path, folder, filter_size, ignore_aslr, known_collection):
@@ -461,15 +466,24 @@ def create_crawler(db_paths, winapi1024_path, folder, filter_size, ignore_aslr, 
     return crawler
 
 
-def init_worker(*crawler_arguments):
-    global WORKER_CRAWLER
+def init_worker(log_level, *crawler_arguments):
+    global WORKER_CRAWLER, WORKER_ERROR
     # Ctrl-C is handled by the main process, which then ends its workers
     signal.signal(signal.SIGINT, signal.SIG_IGN)
-    WORKER_CRAWLER = create_crawler(*crawler_arguments)
+    # what loading the API DBs has to say was reported by the main process already
+    package_log = logging.getLogger("apiscout")
+    package_log.setLevel(logging.ERROR)
+    try:
+        WORKER_CRAWLER = create_crawler(*crawler_arguments)
+    except Exception as exc:
+        # reported with the first task, a worker that ends here would be started again and again
+        WORKER_ERROR = f"{type(exc).__name__}: {exc}"
+    package_log.setLevel(log_level)
 
 
 def get_fingerprint(path):
-    assert WORKER_CRAWLER is not None
+    if WORKER_CRAWLER is None:
+        raise RuntimeError(WORKER_ERROR)
     return WORKER_CRAWLER.getFingerprint(path)
 
 

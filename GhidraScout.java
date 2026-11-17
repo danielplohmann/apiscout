@@ -188,8 +188,10 @@ public class GhidraScout extends GhidraScript {
 
 	private List<ApiScoutResultEntry> scoutRegion(MemoryRegion region, List<String> dataBasePaths) throws Exception {
 		List<ApiScoutResultEntry> results = new ArrayList<ApiScoutResultEntry>();
-		File dumpFile = File.createTempFile("ghidrascout", ".bin");
-		File jsonFile = File.createTempFile("ghidrascout", ".json");
+		// a folder of its own, in which python is started: the shared temp folder can hold anything
+		File workFolder = Files.createTempDirectory("ghidrascout").toFile();
+		File dumpFile = new File(workFolder, "dump.bin");
+		File jsonFile = new File(workFolder, "result.json");
 		try {
 			try (OutputStream output = new FileOutputStream(dumpFile)) {
 				byte[] chunk = new byte[0x100000];
@@ -219,6 +221,7 @@ public class GhidraScout extends GhidraScript {
 		} finally {
 			dumpFile.delete();
 			jsonFile.delete();
+			workFolder.delete();
 		}
 		return results;
 	}
@@ -237,7 +240,7 @@ public class GhidraScout extends GhidraScript {
 				command.add("--db");
 				command.add(dataBasePath);
 			}
-			File outputFile = File.createTempFile("ghidrascout", ".log");
+			File outputFile = File.createTempFile("ghidrascout", ".log", dumpFile.getParentFile());
 			try {
 				ProcessBuilder builder = new ProcessBuilder(command);
 				// not in the working directory of Ghidra, where a folder named apiscout would be taken for the package

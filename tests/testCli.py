@@ -378,6 +378,33 @@ class CliTestSuite(unittest.TestCase):
             with unittest.mock.patch("requests.get", side_effect=[Response(version="x")]):
                 self.assertIn("not understood", run(*arguments)[2])
 
+    def testCollectWithWorkersThatCanNotStart(self):
+        import multiprocessing
+        import unittest.mock
+
+        if multiprocessing.get_start_method() != "fork":
+            self.skipTest("the workers only see the patched function when they are forked")
+        with tempfile.TemporaryDirectory() as directory:
+            os.mkdir(os.path.join(directory, "family"))
+            with open(os.path.join(directory, "family", "x_dump"), "wb") as f_dump:
+                f_dump.write(b"dump")
+            target = os.path.join(directory, "collection.csv")
+            real_create = cli.create_crawler
+            calls = []
+
+            def create_once(*arguments):
+                # the main process succeeds, its workers do not
+                if calls:
+                    raise OSError("API DB vanished")
+                calls.append(1)
+                return real_create(*arguments)
+
+            with unittest.mock.patch.object(cli, "create_crawler", create_once):
+                code, _, errors = run("collect", directory, "--db", DB_PATH, "-o", target)
+            self.assertEqual(1, code)
+            self.assertIn("a worker process could not load", errors)
+            self.assertFalse(os.path.exists(target))
+
     def testUpdateNeedsToken(self):
         with tempfile.TemporaryDirectory() as directory:
             code, _, errors = run("update", "--db-dir", directory, "--token-file", os.path.join(directory, "token"))
