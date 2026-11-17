@@ -17,7 +17,7 @@ update, and the timestamp and SizeOfImage of the PE, which make up the address o
 server. This script looks the DLLs of config.DLL_FILTER up in the index, downloads the 64bit ones for System32 and the
 32bit ones for SysWOW64, verifies each against the hash of the index and writes them to <out>/System32 and
 <out>/SysWOW64, the folders DatabaseBuilder.py --paths takes. Then it builds the API DB from them (--download-only
-stops before). Like DatabaseBuilder.py, it only needs the standard library (Python 3.8 or newer).
+stops before). Like DatabaseBuilder.py, it only needs the standard library (Python 3.10 or newer).
 
 The DB has no ASLR offsets: `apiscout scan` places the DLLs where the dump has them (--modules, minidumps).
 """

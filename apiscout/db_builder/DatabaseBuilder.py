@@ -258,8 +258,7 @@ class PlainPe:
             if rva <= address < forwarders_end:
                 # a forwarder: pefile skips it if it can not map it to the file
                 self.section(address)
-        # the DB builder also runs on the Python 3.8 of old analysis systems, which has no zip(strict=)
-        exports = list(zip([base + ordinal for ordinal in name_ordinals], named_addresses, names))  # noqa: B905
+        exports = list(zip([base + ordinal for ordinal in name_ordinals], named_addresses, names, strict=True))
         # then the exports without a name
         ordinals_of_names = set(name_ordinals)
         exports += [
