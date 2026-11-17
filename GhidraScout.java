@@ -5,12 +5,11 @@
 //@menupath Tools.ApiScout
 //@toolbar
 // Put the script in the Ghidra plugins directory (ghidra_scripts).
-// Requires working version of ApiScout (not bundled with this plugin, available here:
-// https://github.com/danielplohmann/apiscout)
-// When run for the first time, the script will ask for the path to the scout.py (ApiScout root directory)
-// and remember it in the user preferences of Ghidra.
+// Requires ApiScout for the python3 on the PATH (pip install apiscout, https://github.com/danielplohmann/apiscout).
+// When run for the first time, the script asks for the folder with the API DBs
+// and remembers it in the user preferences of Ghidra.
 // Ctrl+A to choose all found APIs for annotation.
-// Headless usage: -postScript GhidraScout.java <path to scout.py> [<path to API DB> ...], annotates all APIs found.
+// Headless usage: -postScript GhidraScout.java <path to API DB> [<path to API DB> ...], annotates all APIs found.
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -61,15 +60,14 @@ import ghidra.program.model.symbol.SymbolUtilities;
 import ghidra.util.exception.CancelledException;
 
 import com.google.gson.Gson;
-import com.google.gson.reflect.TypeToken;
 
 public class GhidraScout extends GhidraScript {
 	TableChooserDialog tableDialog;
-	String scoutPyPath = null;
+	File dbFolder = null;
 	FileDataTypeManager windowsArchive = null;
 	boolean windowsArchiveMissing = false;
 
-	static final String PREFERENCE_SCOUT_PY_PATH = "apiscout.scout.py.path";
+	static final String PREFERENCE_DB_FOLDER = "apiscout.db.folder";
 	static final String OTHER_API_DB = "Other file...";
 	static final Pattern BITNESS_OF_DLL = Pattern.compile("\\((\\d+) bit\\)$");
 	static final Pattern ORDINAL_ONLY_API = Pattern.compile("None<(\\d+)>");
@@ -79,14 +77,13 @@ public class GhidraScout extends GhidraScript {
 		if (isRunningHeadless()) {
 			String[] args = getScriptArgs();
 			if (args.length == 0) {
-				printerr("Usage: GhidraScout.java <path to scout.py> [<path to API DB> ...]");
+				printerr("Usage: GhidraScout.java <path to API DB> [<path to API DB> ...]");
 				return;
 			}
-			this.scoutPyPath = args[0];
-			dataBasePaths.addAll(Arrays.asList(args).subList(1, args.length));
+			dataBasePaths.addAll(Arrays.asList(args));
 		} else {
 			// cancelling one of the dialogs ends the script
-			this.scoutPyPath = this.initApiScoutPathProperty();
+			this.dbFolder = this.initDbFolderProperty();
 			dataBasePaths.addAll(askUserForDatabasesToUse());
 		}
 		printf("\nProcessing %s\nImage file: %s\n", currentProgram.getName(), currentProgram.getExecutablePath());
@@ -128,28 +125,19 @@ public class GhidraScout extends GhidraScript {
 		tableDialog.setMessage(foundApis.size() + " API references found, select the ones to annotate");
 	}
 
-	private String initApiScoutPathProperty() throws CancelledException {
-		String scoutPyAbsolutePath = Preferences.getProperty(PREFERENCE_SCOUT_PY_PATH);
-		if (scoutPyAbsolutePath != null && new File(scoutPyAbsolutePath).isFile()) {
-			return scoutPyAbsolutePath;
+	private File initDbFolderProperty() throws CancelledException {
+		String folder = Preferences.getProperty(PREFERENCE_DB_FOLDER);
+		if (folder != null && new File(folder).isDirectory()) {
+			return new File(folder);
 		}
-		scoutPyAbsolutePath = askFile("Path to ApiScout's scout.py script", "Select").getAbsolutePath();
-		Preferences.setProperty(PREFERENCE_SCOUT_PY_PATH, scoutPyAbsolutePath);
+		File chosen = askDirectory("Folder with ApiScout's API DBs", "Select");
+		Preferences.setProperty(PREFERENCE_DB_FOLDER, chosen.getAbsolutePath());
 		Preferences.store();
-		return scoutPyAbsolutePath;
+		return chosen;
 	}
 
-	// A path that does not work is asked for again with the next run.
-	private void forgetScoutPyPath() {
-		if (!isRunningHeadless() && Preferences.getProperty(PREFERENCE_SCOUT_PY_PATH) != null) {
-			Preferences.removeProperty(PREFERENCE_SCOUT_PY_PATH);
-			Preferences.store();
-		}
-	}
-
-	// The API DBs shipped next to scout.py are offered by name, any other file can be chosen as well.
+	// The API DBs of the folder are offered by name, any other file can be chosen as well.
 	private List<String> askUserForDatabasesToUse() throws CancelledException {
-		File dbFolder = new File(new File(this.scoutPyPath).getParentFile(), "dbs");
 		List<String> choices = new ArrayList<String>();
 		String[] dbFiles = dbFolder.list((folder, name) -> name.endsWith(".json"));
 		if (dbFiles != null) {
@@ -208,21 +196,17 @@ public class GhidraScout extends GhidraScript {
 					}
 				}
 			}
-			if (!executeScoutPy(dumpFile, jsonFile, region.start, dataBasePaths)) {
-				forgetScoutPyPath();
+			if (!executeApiScout(dumpFile, jsonFile, region.start, dataBasePaths)) {
 				return results;
 			}
 			try (Reader reader = Files.newBufferedReader(jsonFile.toPath(), StandardCharsets.UTF_8)) {
-				List<ApiScoutResultEntry> entries = new Gson().fromJson(reader,
-						new TypeToken<List<ApiScoutResultEntry>>() {
-						}.getType());
-				if (entries == null) {
-					// scout.py writes a list even if it finds nothing
-					printerr("No result was written, is this ApiScout's scout.py? " + this.scoutPyPath);
-					forgetScoutPyPath();
+				ApiScoutResult result = new Gson().fromJson(reader, ApiScoutResult.class);
+				if (result == null || result.apis == null) {
+					// a list is written even if nothing is found
+					printerr("ApiScout wrote no result.");
 					return results;
 				}
-				for (ApiScoutResultEntry entry : entries) {
+				for (ApiScoutResultEntry entry : result.apis) {
 					entry.address = region.start.add(entry.offset);
 					results.add(entry);
 				}
@@ -234,22 +218,20 @@ public class GhidraScout extends GhidraScript {
 		return results;
 	}
 
-	private boolean executeScoutPy(File dumpFile, File jsonFile, Address baseAddress, List<String> dataBasePaths)
+	private boolean executeApiScout(File dumpFile, File jsonFile, Address baseAddress, List<String> dataBasePaths)
 			throws IOException, InterruptedException, CancelledException {
 		boolean isWindows = System.getProperty("os.name").toLowerCase().startsWith("windows");
 		String[] interpreters = isWindows ? new String[] { "py.exe", "python.exe" }
 				: new String[] { "python3", "python" };
+		boolean interpreterFound = false;
 		for (String interpreter : interpreters) {
-			List<String> command = new ArrayList<String>();
-			command.add(interpreter);
-			command.add(this.scoutPyPath);
-			command.add("-s");
-			command.add("-b");
-			command.add("0x" + Long.toHexString(baseAddress.getOffset()));
-			command.add("-o");
-			command.add(jsonFile.getAbsolutePath());
-			command.add(dumpFile.getAbsolutePath());
-			command.addAll(dataBasePaths);
+			List<String> command = new ArrayList<String>(Arrays.asList(interpreter, "-m", "apiscout", "scan",
+					dumpFile.getAbsolutePath(), "--base-addr", "0x" + Long.toHexString(baseAddress.getOffset()),
+					"--json", "--output", jsonFile.getAbsolutePath(), "--quiet"));
+			for (String dataBasePath : dataBasePaths) {
+				command.add("--db");
+				command.add(dataBasePath);
+			}
 			File outputFile = File.createTempFile("ghidrascout", ".log");
 			try {
 				ProcessBuilder builder = new ProcessBuilder(command);
@@ -262,15 +244,20 @@ public class GhidraScout extends GhidraScript {
 					// this interpreter is not installed, try the next one
 					continue;
 				}
+				interpreterFound = true;
 				while (!process.waitFor(200, TimeUnit.MILLISECONDS)) {
 					if (monitor.isCancelled()) {
 						process.destroyForcibly();
 						throw new CancelledException();
 					}
 				}
+				String output = new String(Files.readAllBytes(outputFile.toPath()), StandardCharsets.UTF_8);
+				if (process.exitValue() != 0 && output.contains("No module named apiscout")) {
+					// ApiScout is not installed for this interpreter, try the next one
+					continue;
+				}
 				if (process.exitValue() != 0) {
-					printerr("ApiScout subprocess exited with error code " + process.exitValue() + "\n"
-							+ new String(Files.readAllBytes(outputFile.toPath()), StandardCharsets.UTF_8));
+					printerr("ApiScout exited with error code " + process.exitValue() + "\n" + output);
 					return false;
 				}
 				return true;
@@ -278,7 +265,8 @@ public class GhidraScout extends GhidraScript {
 				outputFile.delete();
 			}
 		}
-		printerr("No python interpreter found to run ApiScout.");
+		printerr(interpreterFound ? "ApiScout is not installed for the python on the PATH: pip install apiscout"
+				: "No python interpreter found to run ApiScout.");
 		return false;
 	}
 
@@ -469,10 +457,14 @@ public class GhidraScout extends GhidraScript {
 		}
 	}
 
+	class ApiScoutResult {
+		List<ApiScoutResultEntry> apis;
+	}
+
 	class ApiScoutResultEntry {
 		String api;
 		String dll;
-		// unsigned in the output of scout.py, kernel addresses exceed a long
+		// unsigned in the output of ApiScout, kernel addresses exceed a long
 		BigInteger apiAddress;
 		long offset;
 		transient Address address;
