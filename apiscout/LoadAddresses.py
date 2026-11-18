@@ -22,7 +22,9 @@ There are two sources, tried in this order for each DLL:
    neither TimeDateStamp nor SizeOfImage of a DLL, but the RVA and ordinal of each export.
 """
 
+import functools
 import logging
+import os
 import re
 import struct
 from dataclasses import dataclass
@@ -36,6 +38,9 @@ SOURCE_MINIDUMP = "minidump module list"
 SOURCE_IMAGES = "DLL images in the dump"
 
 PAGE_SIZE = 0x1000
+# the largest SizeOfImage of a DLL that is believed, and the flag of a PE file that is a DLL
+MAX_IMAGE_SIZE = 0x10000000
+IMAGE_FILE_DLL = 0x2000
 # share of the exports of a DB entry that an image has to have at the same RVA
 MIN_EXPORT_MATCH = 0.9
 MAX_EXPORTS = 0x20000
@@ -301,6 +306,10 @@ class DllPlacer:
     def isEmpty(self):
         return not (self.module_lists or self.images)
 
+    def forDb(self, db_path):
+        """the argument of ApiScout.loadDbFile() for the API DB in this file, None if there is nothing to place by"""
+        return None if self.isEmpty() else functools.partial(self, db_path=db_path)
+
     def __call__(self, api_db, db_path=""):
         dlls = api_db.get("dlls", {})
         placements = {}
@@ -334,3 +343,105 @@ class DllPlacer:
         warn_about_low_64bit_dlls(dlls, placements)
         self.summaries.append((db_path, api_db.get("os_name", ""), len(dlls), counts))
         return placements
+
+
+class ModuleListError(ValueError):
+    """a module list that can not be used: no file given, not readable, or without a line of a module"""
+
+
+def placer_for_modules(modules_path=None):
+    """the DllPlacer for the module list in the file modules_path, as `apiscout scan --modules` reads it, which places
+    nothing without a file. Raises ModuleListError. The plugins of the disassemblers place by the module list only, not
+    by DLL images in the memory they analyse: IDA and Binary Ninja leave out references into their memory, so a DLL
+    placed at its image yields none, and an image that is a private copy of a DLL that the sample mapped would move
+    the DLL away from where the real one is."""
+    placer = DllPlacer()
+    if modules_path:
+        try:
+            load_addresses = read_load_addresses(modules_path)
+        except OSError as exc:
+            raise ModuleListError(f"can not read the module list {modules_path}: {exc.strerror or exc}") from None
+        if not load_addresses:
+            raise ModuleListError(f"no lines of '<hex load address> <DLL path>' in {modules_path}")
+        placer.addModuleList(SOURCE_MODULES, load_addresses)
+    return placer
+
+
+def describe_placements(placer):
+    """one line per loaded API DB: how many of its DLLs were placed and from which source"""
+    lines = []
+    for db_path, _, num_dlls, counts in placer.summaries:
+        placed = sum(counts.values())
+        sources = ", ".join(f"{count} from the {source}" for source, count in counts.items())
+        line = f"Placed {placed} of {num_dlls} DLLs of {os.path.basename(db_path)} at their load addresses"
+        line += f" ({sources})" if sources else ""
+        line += f", {num_dlls - placed} keep the addresses of the DB." if num_dlls != placed else "."
+        lines.append(("Warning: " if placer.module_lists and num_dlls != placed else "") + line)
+    return lines
+
+
+def read_from_regions(regions, address, size):
+    """the bytes at an address of memory given as [(start address, buffer)], fewer where the buffer ends, none
+    where there is no memory"""
+    for start, binary in regions:
+        if start <= address < start + len(binary):
+            return binary[address - start : address - start + size]
+    return b""
+
+
+def _imageSize(header):
+    """SizeOfImage of the header of a DLL at the start of the bytes, 0 if it is not one (the sample's own image is
+    not a DLL listed at its address, unless it is a DLL itself)"""
+    if len(header) < 0x40 or header[:2] != b"MZ":
+        return 0
+    pe_offset = struct.unpack_from("<I", header, 0x3C)[0]
+    if (
+        not 0 < pe_offset <= PAGE_SIZE - 0x60
+        or pe_offset + 0x54 > len(header)
+        or header[pe_offset : pe_offset + 4] != b"PE\x00\x00"
+    ):
+        return 0
+    characteristics = struct.unpack_from("<H", header, pe_offset + 0x16)[0]
+    if not characteristics & IMAGE_FILE_DLL or struct.unpack_from("<H", header, pe_offset + 0x18)[0] not in (
+        0x10B,
+        0x20B,
+    ):
+        return 0
+    size = struct.unpack_from("<I", header, pe_offset + 0x50)[0]
+    return size if 0 < size <= MAX_IMAGE_SIZE else 0
+
+
+def placed_image_ranges(placer, read_memory):
+    """(start, end) of the images that the placed DLLs have in the memory of the plugin. What these hold are the export
+    tables and import address tables of the DLLs, not references of the sample, so they are left out as `apiscout scan`
+    leaves them out for a minidump. read_memory(address, size) gives the bytes at an address, fewer or none where the
+    memory ends. The size of an image is the SizeOfImage of its PE header at the load address: a DLL whose header
+    is not in the memory leaves nothing out."""
+    ranges = set()
+    for placement in placer.placed:
+        address = placement["load_address"]
+        size = _imageSize(bytes(read_memory(address, PAGE_SIZE)))
+        if size:
+            ranges.add((address, address + size))
+    return sorted(ranges)
+
+
+def split_modules_argument(arguments):
+    """(the other arguments, the module list file) of the arguments of a script, which take the module list as
+    `apiscout scan` does: `--modules FILE`, `-m FILE` or `--modules=FILE`, the last one counts. Raises ModuleListError
+    for an option without a file or with one that looks like an option."""
+    others = []
+    modules_path = None
+    iterator = iter(arguments)
+    for argument in iterator:
+        if argument in ("--modules", "-m"):
+            value = next(iterator, None)
+        elif argument.startswith("--modules="):
+            value = argument.split("=", 1)[1]
+        else:
+            others.append(argument)
+            continue
+        if not value or value.startswith("-"):
+            raise ModuleListError(f"{argument.split('=', 1)[0]} needs the file with the module list")
+        modules_path = value
+    return others, modules_path

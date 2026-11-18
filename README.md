@@ -164,11 +164,13 @@ Without a machine of the build, `python DllDownloader.py --windows 11-24H2 --upd
 
 Annotated APIs are named, typed as pointers to their prototype, and the calls through them get the prototype too.
 
+The DLLs of the API DBs are placed at the load addresses of the module list file you give in the form (optional, lines of `<hex load address> <DLL path>` as for `apiscout scan --modules`), so one DB fits the dumps of every boot.
+
 <details>
 <summary>Batch mode</summary>
 
 ```bash
-idat -A -TBinary -b<dump address / 16, hex> -pmetapc -S"ida_scout.py <API DB> [<API DB> ...]" <dump>
+idat -A -TBinary -b<dump address / 16, hex> -pmetapc -S"ida_scout.py <API DB> [<API DB> ...] [--modules <module list>]" <dump>
 ```
 
 Annotates everything and saves the database. The segment base from `-b` is reset to 0. DBs in the plugin's `dbs` folder or the download folder can be given by name. idat creates 64bit databases for binary files, so prepare 32bit dumps as database first.
@@ -186,6 +188,8 @@ Annotates everything and saves the database. The segment base from `-b` is reset
 
 It asks once for the DB folder, scans the program's memory and annotates the references you select like imports, with prototypes from Ghidra's Windows data types.
 
+The DLLs of the API DBs are placed at the load addresses of a module list file, as `apiscout scan --modules` does (choose `Module list file...` in the dialog).
+
 ![Ghidra listing with API pointers annotated as external functions](https://raw.githubusercontent.com/danielplohmann/apiscout/master/docs/images/ghidra.png)
 
 <details>
@@ -194,7 +198,7 @@ It asks once for the DB folder, scans the program's memory and annotates the ref
 ```bash
 pyghidraRun -H <project folder> <project name> -import <dump> -loader BinaryLoader -loader-baseAddr <address> \
     -processor x86:LE:64:default -scriptPath <folder of ghidra_scout.py> \
-    -postScript ghidra_scout.py <API DB> [<API DB> ...]
+    -postScript ghidra_scout.py <API DB> [<API DB> ...] [--modules <module list>]
 ```
 
 Use `-processor x86:LE:32:default` for 32bit dumps.
@@ -211,6 +215,8 @@ The plugin in `binja_scout` works with Binary Ninja 6 (tested with 6.0):
 The extension manager needs neither step: it installs the repository with numpy.
 
 Open the dump with Open with Options as `Mapped` view, with its address as image base and `windows-x86` or `windows-x86_64` as platform, then use Plugins > ApiScout to scan, show the results and annotate all or filtered references. Calls through annotated pointers read as API calls in HLIL.
+
+The DLLs of the API DBs are placed at the load addresses of the module list file you give in the form (optional, `modules=` of `scan_and_annotate`), as `apiscout scan --modules` does.
 
 <details>
 <summary>Headless</summary>

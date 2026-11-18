@@ -23,6 +23,7 @@ import unittest
 from unittest import mock
 
 from apiscout import cli
+from tests.testPluginPlacement import BASE, PlacementCase, rebase_db
 
 THIS_DIR = os.path.abspath(os.path.dirname(__file__))
 REPO_DIR = os.path.dirname(THIS_DIR)
@@ -1034,6 +1035,149 @@ class CommandTest(unittest.TestCase):
         tools.show_results(view)
         self.assertEqual([], view.reports)
         self.assertEqual("warn", LOG[-1][0])
+
+
+class PlacementTest(unittest.TestCase):
+    """the DLLs of the API DBs are placed where the memory of the view has them, like `apiscout scan` does"""
+
+    def setUp(self):
+        LOG.clear()
+        FakeInteraction.forms.clear()
+        FakeBackgroundTaskThread.started.clear()
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.folder = folder.name
+        self.case = PlacementCase(self.folder)
+
+    def tearDown(self):
+        FakeInteraction.form_handler = None
+
+    def makeView(self, dump):
+        return FakeBinaryView([FakeSegment(BASE, len(dump), dump)], 4, FakePlatform("windows-x86", []))
+
+    def found(self, rows):
+        return [(row[0], row[3]) for row in rows]
+
+    def testModuleList(self):
+        view = self.makeView(self.case.sample)
+        without = self.found(tools.scan(view, [self.case.db_path]))
+        self.assertEqual(self.case.cli_apis(), without)
+        self.assertEqual(1, len(without))
+        self.assertFalse([text for _, text in LOG if "Placed" in text])
+        rows = tools.scan(view, [self.case.db_path], modules=self.case.modules_path)
+        self.assertEqual(self.case.cli_apis("--modules", self.case.modules_path), self.found(rows))
+        self.assertEqual(3, len(rows))
+        self.assertIn(
+            (
+                "info",
+                "Warning: Placed 2 of 3 DLLs of case_db.json at their load addresses (2 from the modules file), "
+                "1 keep the addresses of the DB.",
+            ),
+            LOG,
+        )
+
+    def testModuleListIsAnnotated(self):
+        view = self.makeView(self.case.sample)
+        state = tools.scan_and_annotate(view, [self.case.db_path], modules=self.case.modules_path)
+        self.assertEqual((3, 0), (state["annotated"], state["skipped"]))
+        self.assertEqual({0x400010: "Api1", 0x400014: "Api2", 0x400018: "Api2"}, view.symbol_names())
+
+    def testDllImagesDoNotPlace(self):
+        # DLL images in the memory place nothing: the dump has kernel32 at the image, the module list does not say so
+        dump, _ = self.case.with_image(self.folder)
+        self.assertEqual([], tools.scan(self.makeView(dump), [self.case.db_path]))
+        self.assertFalse([text for _, text in LOG if "Placed" in text])
+
+    def testHitsInTheImageOfAPlacedDll(self):
+        dump, modules_path = self.case.with_image(self.folder)
+        flat = os.path.join(self.folder, f"flat_0x{BASE:08x}")
+        with open(flat, "wb") as f_dump:
+            f_dump.write(dump)
+        # the import address table of the image points to ntdll!Api2 like the sample does, and is not a reference
+        # of the sample; `scan` of a flat dump does not leave it out
+        self.assertEqual(3, len(self.case.cli_apis("--modules", modules_path, dump_path=flat)))
+        view = self.makeView(dump)
+        self.assertEqual(
+            [(0x400010, "Api2"), (0x400014, "Api1")],
+            self.found(tools.scan(view, [self.case.db_path], modules=modules_path)),
+        )
+        # segments with a gap, the image in the second one
+        view = FakeBinaryView(
+            [FakeSegment(BASE, 0x1000, dump[:0x1000]), FakeSegment(self.case.IMAGE, 0x3000, dump[0x3000:])], 4
+        )
+        rows = tools.scan(view, [self.case.db_path], modules=modules_path)
+        self.assertEqual([(0x400010, "Api2"), (0x400014, "Api1")], self.found(rows))
+        # a module list that has kernel32 elsewhere than the dump does, leaves nothing out
+        rows = tools.scan(view, [self.case.db_path], modules=self.case.modules_path)
+        self.assertEqual([(0x400010, "Api2"), (self.case.IMAGE + 0x2000, "Api2")], self.found(rows))
+
+    @needs_sample(TRICKBOT)
+    def testTrickbotWithTheDbOfAnotherSystem(self):
+        # every DLL of the DB is elsewhere than in the dump, as with a DB built from the symbol server
+        db_path, modules_path = rebase_db(WIN7_DB, self.folder)
+        view = dump_view(TRICKBOT, 0x400000, 4)
+        self.assertEqual([], tools.scan(view, [db_path]))
+        rows = tools.scan(view, [db_path], modules=modules_path)
+        self.assertEqual(
+            sorted((0x400000 + api["offset"], api["api"]) for api in cli_hits(TRICKBOT, WIN7_DB)["apis"]),
+            self.found(rows),
+        )
+        self.assertEqual(183, len(rows))
+        # one DLL elsewhere
+        db_path, modules_path = rebase_db(WIN7_DB, self.folder, only={"kernel32.dll"})
+        self.assertEqual(105, len(tools.scan(view, [db_path])))
+        self.assertEqual(183, len(tools.scan(view, [db_path], modules=modules_path)))
+
+    @needs_sample(COBALT_STRIKE)
+    def testCobaltStrikeWithTheDbOfAnotherSystem(self):
+        db_path, modules_path = rebase_db(WIN7_DB, self.folder)
+        view = dump_view(COBALT_STRIKE, 0x1C0000, 8)
+        self.assertEqual(3, len(tools.scan(view, [db_path])))
+        rows = tools.scan(view, [db_path], modules=modules_path)
+        expected = sorted((0x1C0000 + api["offset"], api["api"]) for api in cli_hits(COBALT_STRIKE, WIN7_DB)["apis"])
+        self.assertEqual(expected, self.found(rows))
+        self.assertEqual(196, len(rows))
+
+    def testModuleListThatCanNotBeUsed(self):
+        view = self.makeView(self.case.sample)
+        with self.assertRaisesRegex(ValueError, "can not read the module list"):
+            tools.scan(view, [self.case.db_path], modules=os.path.join(self.folder, "missing.txt"))
+        FakeInteraction.form_handler = lambda fields: self.answer(fields, os.path.join(self.folder, "missing.txt"))
+        tools.command_scan(view)
+        self.runTasks()
+        self.assertNotIn("apiscout", view.session_data)
+        self.assertTrue(any(level == "error" and "can not read the module list" in text for level, text in LOG))
+
+    def answer(self, fields, modules):
+        files = [field for field in fields if isinstance(field, OpenFileNameField)]
+        self.assertEqual(["Other API DB file"], [field.prompt for field in files[:1]])
+        files[0].result = self.case.db_path
+        files[1].result = modules.encode() if modules else None
+        return True
+
+    def runTasks(self):
+        for task in FakeBackgroundTaskThread.started:
+            task.join(120)
+            self.assertFalse(task.thread.is_alive())
+
+    def testForm(self):
+        FakeInteraction.form_handler = lambda fields: self.answer(fields, self.case.modules_path)
+        parameters = tools.ask_parameters()
+        self.assertEqual(self.case.modules_path, parameters["modules"])
+        self.assertEqual([self.case.db_path], parameters["db_paths"])
+        # the module list is optional
+        FakeInteraction.form_handler = lambda fields: self.answer(fields, "")
+        self.assertIsNone(tools.ask_parameters()["modules"])
+
+    def testCommands(self):
+        for command, annotated in ((tools.command_scan, False), (tools.command_scan_and_annotate, True)):
+            FakeInteraction.form_handler = lambda fields: self.answer(fields, self.case.modules_path)
+            FakeBackgroundTaskThread.started.clear()
+            view = self.makeView(self.case.sample)
+            command(view)
+            self.runTasks()
+            self.assertEqual(3, len(view.session_data["apiscout"]["rows"]))
+            self.assertEqual(3 if annotated else 0, len(view.symbols))
 
 
 if __name__ == "__main__":

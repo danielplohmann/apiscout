@@ -9,6 +9,7 @@
 #  see the file LICENSE of the repository. SPDX-License-Identifier: BSD-2-Clause
 #
 
+import functools
 import os
 import sys
 import traceback
@@ -25,6 +26,14 @@ from apiscout.ApiScout import ApiScout  # noqa: E402
 from apiscout.db_index import get_data_dir  # noqa: E402
 from apiscout.IdaForm import ApiResultsAction, ApiResultsChooser, loadIcon  # noqa: E402
 from apiscout.IdaTools import IdaTools  # noqa: E402
+from apiscout.LoadAddresses import (  # noqa: E402
+    ModuleListError,
+    describe_placements,
+    placed_image_ranges,
+    placer_for_modules,
+    read_from_regions,
+    split_modules_argument,
+)
 
 RESULTS_VIEW = None
 
@@ -39,20 +48,31 @@ def updateResults(results, new_results):
             results[key] = merged_results
 
 
-def crawl(tools, api_dbs, ignore_aslr_offsets=False):
+def crawl(tools, api_dbs, ignore_aslr_offsets=False, modules=None):
+    """the API references in the memory of the database. The DLLs of the API DBs are placed where the module list in
+    the file `modules` has them, as `apiscout scan --modules` does; raises ModuleListError if it can not be used."""
+    placer = placer_for_modules(modules)
     scout = ApiScout()
     scout.ignoreAslrOffsets(ignore_aslr_offsets)
     for path in api_dbs:
-        scout.loadDbFile(path)
+        scout.loadDbFile(path, placer.forDb(path))
+    for line in describe_placements(placer):
+        print(f"ApiScout: {line}")
     bitness_string = "32bit and 64bit" if scout.has_64bit else "32bit"
     base_address = tools.getBaseAddress()
+    memory = sorted(tools.getAllMemoryFromIda().items())
     all_results = {}
-    for segment_address, binary in sorted(tools.getAllMemoryFromIda().items()):
+    for segment_address, binary in memory:
         scout.setLoadOffset(segment_address - base_address)
         # code references are resolved relative to the buffer they are found in
         scout.setBaseAddress(segment_address)
         print(f"Scanning {len(binary)} bytes @0x{segment_address:x} in {bitness_string} mode.")
         updateResults(all_results, scout.crawl(binary))
+    # the images of the DLLs in the memory hold their export tables and import address tables, not references
+    ranges = placed_image_ranges(placer, functools.partial(read_from_regions, memory))
+    if ranges:
+        scout.setBaseAddress(base_address)
+        all_results = scout.filter(all_results, 0, 0, 0, own_image=False, exclude_ranges=ranges)
     return tools.getResultRows(all_results)
 
 
@@ -107,17 +127,24 @@ def locateDb(path):
     return candidate if os.path.isfile(candidate) else path
 
 
-def main(api_dbs=None):
+def main(api_dbs=None, modules=None):
     """
     Interactive: ask for the API DBs and list the API references found in a view, from which they are annotated.
-    Batch mode (idat -A -S"ida_scout.py <API DB> ..."): annotate all API references found with the given API DBs.
+    Batch mode (idat -A -S"ida_scout.py <API DB> ... [--modules <module list>]"): annotate all API references found
+    with the given API DBs. The optional module list gives the load addresses of the DLLs, as `apiscout scan --modules`.
     """
     tools = IdaTools()
     if not tools.hasSegments():
         print("ApiScout: the database has no segments, nothing to scan.")
         return 1
     if isBatchMode():
-        api_dbs = [locateDb(path) for path in api_dbs or idc.ARGV[1:]]
+        try:
+            api_dbs, argument_modules = split_modules_argument(api_dbs or idc.ARGV[1:])
+        except ModuleListError as exc:
+            print(f"ApiScout: {exc}.")
+            return 1
+        modules = modules or argument_modules
+        api_dbs = [locateDb(path) for path in api_dbs]
         if not api_dbs:
             print("ApiScout: no API DB given, nothing to do.")
             return 1
@@ -127,7 +154,11 @@ def main(api_dbs=None):
             return 1
         for segment_address in tools.ida_proxy.useFlatAddresses():
             print(f"ApiScout: segment @0x{segment_address:x} had a segment base, which was set to 0.")
-        rows = crawl(tools, api_dbs)
+        try:
+            rows = crawl(tools, api_dbs, modules=modules)
+        except ModuleListError as exc:
+            print(f"ApiScout: {exc}.")
+            return 1
         tools.importTypeLibraries()
         num_renamed, num_skipped, num_xrefs_adapted = tools.applyApiNames(rows)
         print(f"Annotated {num_renamed} APIs and adapted {num_xrefs_adapted} Xrefs ({num_skipped} skipped).")
@@ -143,9 +174,13 @@ def main(api_dbs=None):
         return 0
 
     def rescan():
-        return crawl(tools, parameters["api_dbs"], parameters["ignore_aslr_offset"])
+        return crawl(tools, parameters["api_dbs"], parameters["ignore_aslr_offset"], parameters.get("modules"))
 
-    rows = rescan()
+    try:
+        rows = rescan()
+    except ModuleListError as exc:
+        print(f"ApiScout: {exc}.")
+        return 0
     if not rows:
         print("ApiScout: no API references found.")
         return 0
