@@ -143,17 +143,19 @@ For your own analysis system, run the DB builder on it (Python 3.10 or newer, wh
 
 ```bash
 git clone https://github.com/danielplohmann/apiscout
-cd apiscout/apiscout/db_builder
-python DatabaseBuilder.py --auto
+cd apiscout
+python -m apiscout.db_builder --auto
 ```
+
+The builder needs only the standard library, so on a machine without a clone, a copy of the `apiscout` folder of it is enough: run the command in the folder that holds it.
 
 `--paths` and `--filter` choose folders and DLLs, `--os_name` and `--os_version` build a DB from a copy of the DLLs on another system, and `--load_addresses` then takes the load addresses from a module list.
 
-Without a machine of the build, `python DllDownloader.py --windows 11-24H2 --update KB5046617 --out win11` downloads the DLLs of the filter from Microsoft's symbol server, finds them with [Winbindex](https://github.com/m417z/winbindex), checks each against its SHA-256 and builds the DB (standard library only, no ASLR offsets, so scan with `--modules` or a minidump). `--update` also takes a build such as `26100.2605`, `--list` shows the Windows versions and updates, `--windows 11-24H2 --list` the updates of one.
+Without a machine of the build, `python -m apiscout.db_builder.DllDownloader --windows 11-24H2 --update KB5046617 --out win11` downloads the DLLs of the filter from Microsoft's symbol server, finds them with [Winbindex](https://github.com/m417z/winbindex), checks each against its SHA-256 and builds the DB (standard library only, no ASLR offsets, so scan with `--modules` or a minidump). `--update` also takes a build such as `26100.2605`, `--list` shows the Windows versions and updates, `--windows 11-24H2 --list` the updates of one.
 
 ## IDA Pro
 
-`ida_scout.py` works as plugin (`hcli plugin install <clone>`, then Edit > Plugins > ApiScout, <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>A</kbd>) or as script, with IDA 9.0 and newer. Load the dump as binary file with its address as loading offset and 0 as loading segment, choose the API DBs, and work in the ApiScout view:
+`plugins/ida/ida_scout.py` works as plugin (`hcli plugin install <clone>/plugins/ida`, which installs apiscout from PyPI, and `apiscout dbs download` for the DBs, then Edit > Plugins > ApiScout, <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>A</kbd>) or as script, with IDA 9.0 and newer. Load the dump as binary file with its address as loading offset and 0 as loading segment, choose the API DBs, and work in the ApiScout view:
 
 | Key | Action |
 | :--- | :--- |
@@ -170,20 +172,20 @@ The DLLs of the API DBs are placed at the load addresses of the module list file
 <summary>Batch mode</summary>
 
 ```bash
-idat -A -TBinary -b<dump address / 16, hex> -pmetapc -S"ida_scout.py <API DB> [<API DB> ...] [--modules <module list>]" <dump>
+idat -A -TBinary -b<dump address / 16, hex> -pmetapc -S"<clone>/plugins/ida/ida_scout.py <API DB> [<API DB> ...] [--modules <module list>]" <dump>
 ```
 
-Annotates everything and saves the database. The segment base from `-b` is reset to 0. DBs in the plugin's `dbs` folder or the download folder can be given by name. idat creates 64bit databases for binary files, so prepare 32bit dumps as database first.
+Annotates everything and saves the database. The segment base from `-b` is reset to 0. DBs in the `dbs` folder of the clone or the download folder can be given by name. idat creates 64bit databases for binary files, so prepare 32bit dumps as database first.
 
 </details>
 
 ## Ghidra
 
-`ghidra_scout.py` runs in PyGhidra (Ghidra 12, tested with 12.2):
+`plugins/ghidra/ghidra_scout.py` runs in PyGhidra (Ghidra 12, tested with 12.2):
 
 1. Start Ghidra with `support/pyghidraRun`. The first start creates its virtual environment.
 2. Install ApiScout there, e.g. `~/.config/ghidra/ghidra_12.2_PUBLIC/venv/bin/python3 -m pip install apiscout` (Windows: `%APPDATA%\ghidra\ghidra_<version>_PUBLIC\venv\Scripts\python.exe`, macOS: `~/Library/ghidra/ghidra_<version>_PUBLIC/venv/bin/python3`).
-3. Copy the script into `~/ghidra_scripts`, or add a clone of the repository as script directory (then step 2 is not needed).
+3. Copy the script into `~/ghidra_scripts`, or add `plugins/ghidra` of a clone of the repository as script directory (then step 2 is not needed).
 4. Run it from the Script Manager, category ApiScoutForGhidra.
 
 It asks once for the DB folder, scans the program's memory and annotates the references you select like imports, with prototypes from Ghidra's Windows data types.
@@ -197,7 +199,7 @@ The DLLs of the API DBs are placed at the load addresses of a module list file, 
 
 ```bash
 pyghidraRun -H <project folder> <project name> -import <dump> -loader BinaryLoader -loader-baseAddr <address> \
-    -processor x86:LE:64:default -scriptPath <folder of ghidra_scout.py> \
+    -processor x86:LE:64:default -scriptPath <clone>/plugins/ghidra \
     -postScript ghidra_scout.py <API DB> [<API DB> ...] [--modules <module list>]
 ```
 
@@ -207,10 +209,10 @@ Use `-processor x86:LE:32:default` for 32bit dumps.
 
 ## Binary Ninja
 
-The plugin in `binja_scout` works with Binary Ninja 6 (tested with 6.0):
+The plugin in `plugins/binja_scout` works with Binary Ninja 6 (tested with 6.0):
 
 1. Install ApiScout for Binary Ninja's Python: `Install python3 module` in the command palette.
-2. Link `binja_scout` into the `plugins` folder of the [user folder](https://docs.binary.ninja/guide/index.html#user-folder).
+2. Link `plugins/binja_scout` into the `plugins` folder of the [user folder](https://docs.binary.ninja/guide/index.html#user-folder).
 
 The extension manager needs neither step: it installs the repository with numpy.
 

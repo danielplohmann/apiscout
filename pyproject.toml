@@ -41,17 +41,17 @@ apiscout = ["data/*"]
 
 [tool.ruff]
 line-length = 120
-extend-exclude = ["apiscout/db_builder/pefile.py", "apiscout/db_builder/peutils.py", "apiscout/db_builder/ordlookup"]
+extend-exclude = ["apiscout/db_builder/_vendor"]
 
 [tool.ruff.lint]
 select = ["E", "F", "UP", "B", "SIM", "I"]
 ignore = ["E501"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["apiscout", "config", "pefile", "ThreadedCommand", "DatabaseBuilder", "DllDownloader"]
+known-first-party = ["apiscout"]
 
 [tool.ty.src]
 exclude = ["apiscout/db_builder"]
 
 [tool.ty.analysis]
-allowed-unresolved-imports = ["idaapi", "idc", "idautils", "ida_*", "binaryninja", "binaryninja.*", "config", "DatabaseBuilder", "DllDownloader", "ghidra.**", "java.**", "jpype"]
+allowed-unresolved-imports = ["idaapi", "idc", "idautils", "ida_*", "binaryninja", "binaryninja.*", "ghidra.**", "java.**", "jpype"]

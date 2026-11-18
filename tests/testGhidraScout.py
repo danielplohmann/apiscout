@@ -11,7 +11,7 @@ from apiscout import cli
 from tests.testPluginPlacement import BASE, PlacementCase, rebase_db
 
 THIS_DIR = os.path.abspath(os.path.dirname(__file__))
-SCRIPT_PATH = os.path.join(os.path.dirname(THIS_DIR), "ghidra_scout.py")
+SCRIPT_PATH = os.path.join(os.path.dirname(THIS_DIR), "plugins", "ghidra", "ghidra_scout.py")
 DB_PATH = os.path.join(THIS_DIR, "minimal_db.json")
 DUMP_PATH = os.path.join(THIS_DIR, "example_dump.bin")
 
@@ -224,6 +224,18 @@ class GhidraScoutTestSuite(unittest.TestCase):
             found = [(api.address.offset, api.api, f"{api.dll}({api.bitness} bit)") for api in hits]
             self.assertEqual(expected, found)
             self.assertEqual([], script.errors)
+
+    def testCloneIsOnThePath(self):
+        """run from plugins/ghidra of a clone, the script imports the package of the clone, a copy elsewhere does not"""
+        root = os.path.dirname(THIS_DIR)
+        with mock.patch("sys.path", ["elsewhere"]) as path:
+            ghidra_scout.add_clone_to_path()
+            ghidra_scout.add_clone_to_path()
+            self.assertEqual([root, "elsewhere"], path)
+        with tempfile.TemporaryDirectory() as directory, mock.patch("sys.path", ["elsewhere"]) as path:
+            with mock.patch.object(ghidra_scout, "__file__", os.path.join(directory, "scripts", "ghidra_scout.py")):
+                ghidra_scout.add_clone_to_path()
+            self.assertEqual(["elsewhere"], path)
 
     def testModulesOutliveTheRun(self):
         """PyGhidra removes the modules a script imported after each run, the next run gets the same ones back"""

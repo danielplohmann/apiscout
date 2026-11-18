@@ -37,7 +37,7 @@ import time
 import math
 import string
 import mmap
-import ordlookup
+from . import ordlookup
 
 from collections import Counter
 from hashlib import sha1

@@ -20,7 +20,12 @@ import ida_kernwin
 import ida_pro
 import idc
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# in a clone, plugins/ida/ lies two folders below the package; installed by hcli, apiscout comes from PyPI
+CLONE_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", ".."))
+if not os.path.isfile(os.path.join(CLONE_ROOT, "apiscout", "ApiScout.py")):
+    CLONE_ROOT = None
+elif CLONE_ROOT not in sys.path:
+    sys.path.insert(0, CLONE_ROOT)
 
 from apiscout.ApiScout import ApiScout  # noqa: E402
 from apiscout.db_index import get_data_dir  # noqa: E402
@@ -114,8 +119,8 @@ def isBatchMode():
 
 
 def getDbFolder():
-    """the dbs folder next to the plugin, else the one `apiscout dbs download` stores the DBs in"""
-    db_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dbs")
+    """the dbs folder of the clone the plugin lies in, else the one `apiscout dbs download` stores the DBs in"""
+    db_folder = os.path.join(CLONE_ROOT, "dbs") if CLONE_ROOT else ""
     return db_folder if os.path.isdir(db_folder) else get_data_dir()
 
 

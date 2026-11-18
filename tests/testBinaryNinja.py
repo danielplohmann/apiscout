@@ -454,11 +454,12 @@ class BinaryNinjaImportTest(unittest.TestCase):
     def testPluginRegistersCommands(self):
         FakePluginCommand.registered.clear()
         with fake_binaryninja():
-            sys.path.insert(0, REPO_DIR)
+            plugins = os.path.join(REPO_DIR, "plugins")
+            sys.path.insert(0, plugins)
             try:
                 plugin = importlib.import_module("binja_scout")
             finally:
-                sys.path.remove(REPO_DIR)
+                sys.path.remove(plugins)
         self.assertTrue(callable(plugin.scan_and_annotate))
         names = [entry[0] for entry in FakePluginCommand.registered]
         self.assertEqual(

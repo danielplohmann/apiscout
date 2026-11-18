@@ -1,8 +1,8 @@
 # ApiScout for Ghidra: finds the Windows APIs referenced in the memory of a program, e.g. a memory dump,
 # and annotates them like imports.
 # Runs with PyGhidra (Ghidra started with support/pyghidraRun) and needs apiscout in its Python environment,
-# or a clone of the repository as script directory. When run for the first time, the script asks for the
-# folder with the API DBs and remembers it in the user preferences of Ghidra.
+# or plugins/ghidra of a clone of the repository as script directory. When run for the first time, the script
+# asks for the folder with the API DBs and remembers it in the user preferences of Ghidra.
 # Ctrl+A chooses all APIs found for annotation.
 # Headless: pyghidraRun -H ... -postScript ghidra_scout.py <API DB> [<API DB> ...] [--modules <module list>]
 # annotates all APIs found.
@@ -86,8 +86,16 @@ def get_memory_regions(blocks):
     return regions
 
 
+def add_clone_to_path():
+    """in a clone, plugins/ghidra/ lies two folders below the package apiscout: let it be imported from there"""
+    root = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", ".."))
+    if os.path.isfile(os.path.join(root, "apiscout", "ApiScout.py")) and root not in sys.path:
+        sys.path.insert(0, root)
+
+
 def import_api_scout():
     """the ApiScout class, None if the apiscout package is not found"""
+    add_clone_to_path()
     # PyGhidra removes the modules a script imported from sys.modules when it ends, but numpy can not be
     # initialized twice in one process: a second import fails and apiscout would fall back to its slow plain
     # Python scan. The modules of the first run are kept in builtins, which outlives the runs, and put back.

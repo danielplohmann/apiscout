@@ -26,9 +26,13 @@ import sys
 from json.encoder import encode_basestring_ascii
 from operator import attrgetter, itemgetter
 
-import config
-import pefile
-from ThreadedCommand import ThreadedCommand
+if not __package__:
+    # run as a file (python DatabaseBuilder.py) instead of as module, the imports of the package below would fail
+    sys.exit("Run the DB builder from the root of the clone: python -m apiscout.db_builder")
+
+from . import config  # noqa: E402
+from ._vendor import pefile  # noqa: E402
+from .ThreadedCommand import ThreadedCommand  # noqa: E402
 
 LOG = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)-15s %(message)s")
@@ -776,8 +780,10 @@ def check_python_version(script):
 
 
 def main():
-    check_python_version("DatabaseBuilder.py")
-    parser = argparse.ArgumentParser(description="Build a database to be used by apiscout.")
+    check_python_version("The DB builder")
+    parser = argparse.ArgumentParser(
+        prog="python -m apiscout.db_builder", description="Build a database to be used by apiscout."
+    )
     parser.add_argument(
         "--filter", dest="filter_dlls", action="store_true", help="(optional) filter DLLs by name (see config.py)"
     )
