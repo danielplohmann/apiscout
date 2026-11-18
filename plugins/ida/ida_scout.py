@@ -200,9 +200,19 @@ def main(api_dbs=None, modules=None):
         ida_kernwin.close_widget(widget, 0)
     RESULTS_VIEW = ApiResultsChooser(tools, rows, rescan)
     registerActions(RESULTS_VIEW)
-    RESULTS_VIEW.show()
-    print(f"ApiScout: {len(rows)} API references found, use the context menu of the ApiScout view to annotate them.")
+    # opened from a timer: started with -S, ApiScout runs while IDA is still loading, and a view opened then is
+    # closed again when IDA restores its window layout
+    ida_kernwin.register_timer(0, functools.partial(showResults, RESULTS_VIEW, len(rows)))
     return 0
+
+
+def showResults(view, num_rows):
+    """a timer callback, which returns -1 so that it runs only once"""
+    if view.show():
+        print(f"ApiScout: {num_rows} API references found, use the context menu of the ApiScout view to annotate them.")
+    else:
+        print(f"ApiScout: {num_rows} API references found, but the ApiScout view could not be opened.")
+    return -1
 
 
 class ApiScoutPlugmod(ida_idaapi.plugmod_t):
