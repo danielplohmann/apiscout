@@ -17,8 +17,7 @@
       "unpacking"
     ],
     "pythonDependencies": [
-      "numpy",
-      "Pillow"
+      "apiscout>=3.0.0"
     ],
     "urls": {
       "repository": "https://github.com/danielplohmann/apiscout"
