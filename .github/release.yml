@@ -1,0 +1,24 @@
+# Not a workflow: GitHub reads the generated-release-notes configuration from this path and
+# nowhere else. The release itself is cut by the workflow under `.github/workflows/`.
+#
+# The generated list is appended under the hand-written CHANGELOG.md section, so it exists to
+# credit contributors and link every pull request, not to describe the release. Dependency and
+# tooling bumps are grouped so they do not sit between the real changes.
+changelog:
+  exclude:
+    authors:
+      - github-actions[bot]
+  categories:
+    - title: Changes
+      labels:
+        - "*"
+      exclude:
+        labels:
+          - dependencies
+          - github_actions
+          - pre_commit
+    - title: Dependency and tooling updates
+      labels:
+        - dependencies
+        - github_actions
+        - pre_commit

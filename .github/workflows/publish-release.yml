@@ -1,0 +1,280 @@
+name: Publish release
+
+# Pushing a vX.Y.Z tag is the release. A manual run rehearses the same path against TestPyPI
+# and stops before the GitHub release, so the whole workflow can be exercised without
+# consuming a version number on PyPI.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A cancelled publish can leave PyPI holding some files of a version and not others, and the
+# version number cannot be reused afterwards.
+#
+# The trigger is part of the group so that a rehearsal can run beside a real run parked on the
+# `pypi` reviewer gate, which is the procedure RELEASING.md describes. Both carry the same
+# `github.ref` for one tag, so on the ref alone the rehearsal queues behind a run that is
+# waiting for a human and never starts. Two real publishes of one tag are both `push`, so they
+# still share a group and still serialise, which is what the paragraph above is protecting.
+concurrency:
+  group: release-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  verify:
+    name: Verify the tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      issues: read
+    outputs:
+      version: ${{ steps.guard.outputs.version }}
+      prerelease: ${{ steps.guard.outputs.prerelease }}
+    steps:
+      - name: Refuse anything that is not a tag
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "${REF_TYPE}" != "tag" ]; then
+            echo "::error::Run this from a tag, not ${REF_TYPE} ${REF_NAME}."
+            exit 1
+          fi
+
+      - name: Checkout the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Check the tag against the packaged version and the changelog
+        id: guard
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python .github/workflows/scripts/release_guard.py \
+            --tag "${TAG}" --notes release-notes.md --github-output "${GITHUB_OUTPUT}"
+
+      - name: Check the tag is on master
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          git fetch --quiet origin master
+          if ! git merge-base --is-ancestor "${TAG}" origin/master; then
+            echo "::error::${TAG} is not an ancestor of master; releases are cut from master."
+            exit 1
+          fi
+
+      - name: Check CI passed on this commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          conclusion=$(gh api \
+            "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${SHA}&status=completed" \
+            --jq '.workflow_runs[0].conclusion // ""')
+          if [ -z "${conclusion}" ]; then
+            echo "::error::No completed CI run for ${SHA}. Wait for master to go green, then re-run."
+            exit 1
+          fi
+          if [ "${conclusion}" != "success" ]; then
+            echo "::error::CI concluded '${conclusion}' for ${SHA}. Fix master before releasing."
+            exit 1
+          fi
+          echo "CI passed on ${SHA}"
+
+      # Milestones here are named for the tag they ship in, so an open item is work that was
+      # assigned to this release and did not make it. A repository that does not track a release
+      # this way has no milestone for the tag, which is not an error.
+      - name: Check the milestone for this tag is finished
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          open_items=$(gh api "repos/${REPO}/milestones?state=all&per_page=100" \
+            --jq "[.[] | select(.title == \"${TAG}\")] | .[0].open_issues // \"none\"")
+          if [ "${open_items}" = "none" ]; then
+            echo "::notice::No milestone named ${TAG}; releasing without one."
+          elif [ "${open_items}" != "0" ]; then
+            echo "::error::Milestone ${TAG} still has ${open_items} open item(s)."
+            exit 1
+          else
+            echo "Milestone ${TAG} reads 100%"
+          fi
+
+      - name: Keep the release notes for the later jobs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
+
+  build:
+    name: Build and check the distribution
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # Isolated: the wheel is a product of the declared build requirements, not of the runner.
+      # The tool versions come from the release group, the one place they are pinned.
+      - name: Build the sdist and the wheel
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --group release
+          python -m build
+          python -m twine check --strict dist/*
+
+      # The artifact is tested, not the tree it came from: a clean environment carrying only the
+      # declared runtime dependencies has to import the package and run its entry point. `-P`
+      # keeps the checkout in the working directory off sys.path, so the import cannot fall back
+      # to the source tree and pass for a wheel that is missing something.
+      - name: Smoke-test the built wheel
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/python -m pip install --upgrade pip
+          /tmp/smoke/bin/python -m pip install dist/apiscout-"${VERSION}"-py3-none-any.whl
+          /tmp/smoke/bin/python -P - <<'PY'
+          import importlib.metadata
+          import os
+          import pathlib
+
+          import apiscout
+
+          installed = pathlib.Path(apiscout.__file__).parent
+          assert "site-packages" in str(installed), f"imported a source tree: {installed}"
+          version = importlib.metadata.version("apiscout")
+          assert version == os.environ["VERSION"], version
+          assert (installed / "data" / "winapi1024v1.txt").exists(), "package data did not ship"
+          print(f"apiscout {version} imported from {installed}")
+          PY
+          test "$(/tmp/smoke/bin/apiscout --version)" = "apiscout ${VERSION}" \
+            || { /tmp/smoke/bin/apiscout --version; echo "::error::apiscout --version does not name ${VERSION}"; exit 1; }
+
+      - name: Keep the distribution for the later jobs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: distribution
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to ${{ github.event_name == 'workflow_dispatch' && 'TestPyPI' || 'PyPI' }}
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: ${{ github.event_name == 'workflow_dispatch' && 'testpypi' || 'pypi' }}
+      url: ${{ github.event_name == 'workflow_dispatch' && 'https://test.pypi.org/p/apiscout' || 'https://pypi.org/p/apiscout' }}
+    permissions:
+      # mandatory for trusted publishing, and it must be the only credential in the job
+      id-token: write
+    steps:
+      - name: Fetch the distribution
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: distribution
+          path: dist
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          # empty resolves to PyPI: the canonical input carries no default and the action falls
+          # through to the deprecated alias, which defaults to the real index
+          repository-url: ${{ github.event_name == 'workflow_dispatch' && 'https://test.pypi.org/legacy/' || '' }}
+          # a PyPI collision means the version is already public, so only a rehearsal skips it
+          skip-existing: ${{ github.event_name == 'workflow_dispatch' }}
+          attestations: true
+          print-hash: true
+
+  release:
+    name: Create the GitHub release
+    needs: [verify, build, publish]
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - name: Fetch the distribution
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: distribution
+          path: dist
+
+      - name: Fetch the release notes
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-notes
+
+      # --generate-notes appends its list under --notes-file rather than replacing it, so the
+      # changelog section leads and `.github/release.yml` groups what follows. A pre-release
+      # is marked as such and never becomes "latest".
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          shopt -s failglob
+          flags=(--latest)
+          if [ "${PRERELEASE}" = "true" ]; then
+            flags=(--prerelease --latest=false)
+          fi
+          gh release create "${TAG}" dist/* \
+            --repo "${REPO}" \
+            --title "${TAG}" \
+            --notes-file release-notes.md \
+            --generate-notes \
+            --verify-tag \
+            "${flags[@]}"
+
+      # Last, so a failure here leaves a released version with an open milestone rather than a
+      # closed milestone and no release.
+      - name: Close the milestone for this tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          number=$(gh api "repos/${REPO}/milestones?state=open&per_page=100" \
+            --jq "[.[] | select(.title == \"${TAG}\")] | .[0].number // \"\"")
+          if [ -z "${number}" ]; then
+            echo "No open milestone named ${TAG}; nothing to close."
+          else
+            gh api -X PATCH "repos/${REPO}/milestones/${number}" -f state=closed >/dev/null
+            echo "Closed milestone ${TAG}"
+          fi

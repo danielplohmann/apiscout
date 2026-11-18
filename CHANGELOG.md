@@ -1,7 +1,67 @@
 # Changelog
 
- * 2026-11-17: Added a Windows 11 Pro 26H2 (build 26300.9974) 32bit and 64bit import DB (`dbs/win11_pro_26h2_example.json`, 462 DLLs, 140,065 APIs), built with `DatabaseBuilder.py --paths C:\Windows\System32 C:\Windows\SysWOW64 --filter` on an installed system (not a fresh installation). All DLLs are Microsoft-signed system DLLs from `System32` and `SysWOW64`; the 7 DLLs the crawl also found in the `DriverStore` folder (copies shipped with driver packages) were removed afterwards. Like the other DBs of recent Windows versions, it carries the ASLR offsets of the boot it was built in and serves as example and for tests, not for dumps of other systems.
- * 2026-11-17: v3.0.0 - (BREAKING) Python 2 and IDA before 9.0 are no longer supported, and the scripts `scout.py`, `match.py`, `export.py`, `collect.py` and `update.py` are replaced by the `apiscout` command. Packaging moved to `pyproject.toml` (with `uv.lock`), code is linted and formatted with ruff and type checked with ty, CI runs on GitHub Actions, and a release published on GitHub is tested, built and uploaded to PyPI by a workflow (trusted publishing, with attestations).
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)
+from 3.0.0 on. The versioned surface is the `apiscout` command (its sub commands, options and
+`--json` output), the API DB and ApiVector formats, and the library classes the plugins use
+(`ApiScout`, `ApiVector`, `LoadAddresses`). What a scan finds in a given dump is not part of it:
+finding more APIs, or scoring them differently, is not a breaking change unless a default drops
+hits that were reported before, which a release says here.
+
+## [Unreleased]
+
+Nothing yet.
+
+## [3.0.0] - 2026-11-18
+
+3.0.0 turns ApiScout into one `apiscout` command, adds new input formats, API hash detection and plugins for current IDA, Ghidra and Binary Ninja, and makes everything much faster.
+
+`pip install apiscout`, then `apiscout dbs download` and `apiscout scan dump_0x00400000 --db win7_prof-n_sp1_example.json`.
+
+**New input formats.** `scan` reads Windows minidumps (range by range, at their own addresses) and reads from standard input with `-`. `--import-table` uses a parser of our own, so LIEF is no longer a dependency.
+
+**DLL placement (ASLR).** One API DB per Windows build now fits dumps of every boot. `--modules FILE`, the module list of a minidump, or DLL images found in a flat dump place the DLLs at their real load addresses.
+
+**Confidence and explain.** Every hit gets a confidence from 0 to 100 against chance hits. `scan` drops hits below 20 by default; `--min-confidence N` sets the cut, `--min-confidence 0` keeps every hit. `apiscout match A B --explain` lists the APIs two vectors share, and those only one has, with their weight in the score.
+
+**Dynamic API hashes.** `--dynamic` also finds APIs a program resolves at run time: hashes of export names (ROR13, Metasploit block_api, CRC32, djb2, FNV-1a, sdbm), also with an XOR or ADD key of the sample, plus export names as strings. Without the flag, nothing changes.
+
+**DBs.** `apiscout dbs download` fetches the example DBs, checked against `dbs/SHA256SUMS`. New example DBs: Windows Server 2022 21H2 and Windows 11 Pro 26H2. `python -m apiscout.db_builder.DllDownloader` builds the DB of a Windows build from Winbindex and Microsoft's symbol server, without a machine of that build.
+
+**Plugins.** IDA 9 (dockable view, batch mode, `ida-plugin.json` for hcli), Ghidra 12 with PyGhidra (`ghidra_scout.py` replaces `GhidraScout.java`), Binary Ninja 6 (`binja_scout`, new).
+
+**Speed.** Scanning a 62 MB dump with two DBs went from 73 s to 2.9 s, and a 65 MB dump with one DB from 2.0 s to 0.22 s. `--dynamic` with the key search on 65 MB: 5.3 s to 1.2 s. Matching against 20,000 vectors: 2.9 s to 0.08 s. `scan` with all five example DBs: 1.9 s to 0.8 s. Building a DB of 439 DLLs: 80 s to 0.4 s. Same results as before.
+
+Also: Python 3.10+, packaging with `pyproject.toml`, ruff and ty, CI on GitHub Actions, releases go to PyPI through trusted publishing. File headers now say BSD-2-Clause, like `LICENSE`. The full list is in the CHANGELOG.
+
+**Moving from 2.x**
+
+| 2.x | 3.0.0 |
+| :--- | :--- |
+| `scout.py dump db.json` | `apiscout scan dump --db db.json` |
+| every hit, chance hits included | `apiscout scan dump --db db.json --min-confidence 0` |
+| `scout.py -t` / `-i` / `-b` / `-f` | `--import-table` / `--ignore-aslr` / `--base-addr` / `--filter` |
+| `scout.py -o out.json` | `apiscout scan --json -o out.json` |
+| `match.py A -v B`, `-c FILE` | `apiscout match A B`, `-c FILE` |
+| `export.py -p x.png -w x.html` | `apiscout export --png x.png --html x.html` |
+| `collect.py ROOT -r _dump -u FILE` | `apiscout collect ROOT --require _dump --update FILE` |
+| `update.py` | `apiscout update` |
+| `GhidraScout.java` | `ghidra_scout.py` (PyGhidra) |
+
+Breaking:
+
+- The JSON changed. `scout.py -o` wrote a list of rows. `apiscout scan --json` writes an object with the same rows under `apis`, next to `base_address`, `api_dbs`, `apivector`, `apis_in_vector` and, with `--collection`, `collection_matches`. Scripts that read the list need `["apis"]` now. (There are more fields, like `placed_dlls`, and `dynamic_apis` with `--dynamic`.)
+- Python 2 and IDA before 9.0 are no longer supported. Python 3.10 or newer.
+- `scout.py`, `match.py`, `export.py`, `collect.py` and `update.py` are gone, and so are `setup.py`, `requirements.txt` and `template.config.py`.
+- `update` reads the Malpedia token from `~/.config/apiscout/malpedia-token` (or `--token-file`), not from `config.py`.
+- `collect` skips API DBs with ASLR offsets unless you pass `--use-aslr-dbs` or `--ignore-aslr`.
+- `scan` drops hits with a confidence below 20 by default, so it can list fewer APIs than `scout.py` did. `--min-confidence 0` keeps every hit.
+
+### In detail
+
+- (BREAKING) Python 2 and IDA before 9.0 are no longer supported, and the scripts `scout.py`, `match.py`, `export.py`, `collect.py` and `update.py` are replaced by the `apiscout` command. Packaging moved to `pyproject.toml` (with `uv.lock`), code is linted and formatted with ruff and type checked with ty, CI runs on GitHub Actions, and pushing a version tag builds and checks the distributions, uploads them to PyPI (trusted publishing, with attestations) and creates the GitHub release, as described in `RELEASING.md`.
    * Command line: `pip install apiscout` installs the `apiscout` command with the sub commands `scan`, `match`, `export`, `collect`, `update` and `dbs`. It prints JSON with `--json`, takes API DBs from `--db`, `--db-dir` or `$APISCOUT_DB_DIR`, reads and writes standard input and output with `-`, and its errors say what to do. `update` reads the Malpedia token from a file instead of `config.py`. `dbs download` fetches the example DBs of the repository for the installed version, checked against `dbs/SHA256SUMS`, into the user data folder, which is searched after `./dbs`; `--db` and `--collection` also find files there by bare name. (BREAKING) The JSON output changed shape: `scout.py -o` wrote a list of API rows, `apiscout scan --json` writes an object with these rows, unchanged, under `apis`, next to `base_address`, `api_dbs`, `apivector`, `apis_in_vector` and, with `--collection`, `collection_matches`.
    * Minidumps: `apiscout scan` recognizes a Windows minidump by its `MDMP` signature and scans its memory ranges (Memory64ListStream and MemoryListStream, adjacent ranges joined) at their own addresses with a small parser of its own (`apiscout/Minidump.py`, no new dependency, bounded by the size of the file), so offsets are virtual addresses (relative to `--base-addr` if given, which a file name no longer sets for a minidump). The processor architecture of a 32bit system restricts the search to 32bit pointers, and hits inside the images of the DLLs of the module list that are also in the API DB are left out, as they are the export tables and import address tables of the DLLs and not references of the sample. `ApiScout.crawlRegions()` scans regions like `ida_scout.py` does, and the references of a crawl result are now in the same coordinates as its offsets.
    * ASLR at scan time: one API DB per Windows build fits dumps of every boot. `apiscout scan --modules FILE` (lines of `<hex load address> <DLL path>`, the format and the matching rules of `DatabaseBuilder.py --load_addresses`, whose logic `apiscout/LoadAddresses.py` copies because the builder is standalone), the module list of a minidump, and DLL images found in a flat dump (PE headers at page-aligned offsets, identified by the name in their export directory and verified by the RVAs and ordinals of their exports, as the API DB stores no TimeDateStamp or SizeOfImage; the image at offset 0 is the sample's own and is skipped; a DLL whose load address the DB has from its ASLR offsets is not moved by an image, which may be a copy the sample mapped itself, unless `--ignore-aslr`) place the DLLs of the API DBs at their real load addresses (`ApiScout.loadDbFile(path, place)`), the other DLLs keep the addresses of the DB. How many DLLs were placed from which source is reported on standard error and listed in `placed_dlls` of the JSON output.
@@ -29,40 +89,49 @@
    * `DatabaseBuilder.py --os_name/--os_version` without `--outfile` checks up front that the first two numbers of the version, which name the output file, contain none of the characters Windows does not allow in a file name (`/ \ < > : " | ? *` and control characters), on every OS as DBs are shared; the build used to fail when it wrote the file, after reading all DLLs.
    * (BREAKING) DB Builder: it runs as a module from a clone, `python -m apiscout.db_builder` and `python -m apiscout.db_builder.DllDownloader`, instead of `python DatabaseBuilder.py` in `apiscout/db_builder` with imports through `sys.path`. The vendored pefile, peutils and ordlookup moved to `apiscout/db_builder/_vendor/`. Still standard library only and not in the wheel.
    * (BREAKING) The IDA plugin moved to `plugins/ida/` (with `ida-plugin.json` and `ida-plugin.png`), the Ghidra script to `plugins/ghidra/` and the Binary Ninja plugin folder `binja_scout` to `plugins/binja_scout/` (`plugin.json` and the `__init__.py` the extension manager imports stay at the root). hcli installs only the folder of `ida-plugin.json`, so the IDA plugin gets apiscout from PyPI (`pythonDependencies`: `apiscout>=3.0.0`), install it with `hcli plugin install <clone>/plugins/ida`. Run from a clone, the IDA and Ghidra plugins still use the package and the `dbs` folder of the clone.
- * 2026-11-16: Added a Windows Server 2022 (21H2, build 20348) 64bit import DB (`dbs/win2022_server_21h2_example.json`, 343 DLLs, built with `DatabaseBuilder.py --filter` on a fresh installation). Like the Windows 10 DB, it carries the ASLR offsets of the boot it was built in and serves as example and for tests, not for dumps of other systems.
- * 2026-11-16: Follow-ups for the Windows 10 DB: `collect.py` now skips API DBs with ASLR offsets unless `--use_aslr_dbs` or `--ignore_aslr` is given (`FingerprintCrawler` got an `ignore_aslr_offsets` parameter) and loading a DB warns about many colliding addresses. ApiVector now matches DLL names case-insensitively (e.g. `IPHLPAPI.DLL`). Fixed `ws2_32.dll` being truncated in the JSON output of `scout.py`, missed references of 64bit `jmp [rip+x]` thunks, the base address of PE32+ headers and 64bit imports by ordinal. Tests now run with `unittest` instead of nose.
- * 2026-11-01: Added Windows 10 Pro 1803 (build 17134.1) 64bit import DB, including the ASLR offsets of the boot it was built in (as all 64bit system DLLs share the file ImageBase 0x180000000). These offsets are only valid for memory dumps from that very boot; for other dumps, use import table parsing (`scout.py -t`) or rebuild the DB on the system the dump was taken from. `scout.py --ignore_aslr` (`ApiScout.ignoreAslrOffsets(True)`) is only meaningful for systems without ASLR and not usable for this DB's 64bit DLLs, as they then overlap at 0x180000000. Also note that the offsets of several rarely loaded DLLs in this DB (mostly 32bit ones, e.g. iphlpapi.dll, wininet.dll) put them at overlapping addresses, so APIs of these DLLs may be resolved incorrectly. Also fixed two DB Builder bugs: version 0.0.0.0 was written for all DLLs, and ordinal-only exports were truncated for DLLs mapping many ordinals to one address (e.g. mfc42.dll lost ~90% of its exports).
- * 2023-03-27: v2.0.2 - Bugfix for IdaScout and handling of sets, contributed by @7a6570 (THX!!)
- * 2023-01-02: v2.0.1 - Bugfix for lief-based import table parsing with Python 3.10, contributed by @malware-kitten (THX!!)
- * 2022-08-01: v1.2.0 - Added plugin for Ghidra, contributed by @mari-mari (THX!!)
- * 2022-09-20: v2.0.0 - (potentially BREAKING) crawl results now have one additional output field with a set of calling references for a given WinAPI. This is also included in the JSON output of `scout.py`, contributed by @renzhexigua (THX!!)
- * 2022-08-01: v1.2.0 - Added plugin for Ghidra, contributed by @mari-mari (THX!!)
- * 2022-01-17: v1.1.9 - Fixed `ida_scout.py` to work with IDA 7.5+ when apiscout is also installed as a Python package.
- * 2021-10-04: v1.1.8 - Extension of winapi contexts based on observations provided by @blattm (THX!).
- * 2021-08-30: v1.1.7 - Fixed deprecation warning in ApiQR as raised by numpy.
- * 2021-07-31: v1.1.6 - It's no longer required to keep a fixed LIEF version. (THX to @cccs-rs!)
- * 2021-01-10: v1.1.5 - Python3 LIEF package fixed to version 0.10.1 (THX to @akhribfarouk!)
- * 2020-12-09: v1.1.4 - Python3 fixes on DatabaseBuilder (THX to @Dump-GUY!)
- * 2020-07-13: v1.1.3 - Added "install_requires" to setup.py to ensure dependencies are installed.
- * 2020-06-30: v1.1.0 - Now using LIEF for import table parsing. Fixed bug which would not produce ApiVectors when using import table parsing. ApiScout is now also available through PyPI.
- * 2020-03-03: Added a script to pull the most recent ApiVector DB from Malpedia (requires Malpedia account / API token).
- * 2020-03-02: Ported to IDA 7.4 (THX to @jenfrie).
- * 2020-02-18: DB Builder is now compatible up to Python 3.7 (THX to @elanfer).
- * 2019-10-08: Workaround for broken filtering of the API view in IDA 7.3 (THX to @enzok for pointing this out).
- * 2019-08-22: Fixed a bug where missing type info in IDA would lead to a crash (now gives an error message instead).
- * 2019-08-20: Added self-filter to eliminate pointers to own memory image that could be mistakenly treated as API references.
- * 2019-06-06: Added support for proper type reconstruction for annotated APIs in IDA Pro (THX to @FlxP0c)
- * 2019-05-15: Added numpy support for vector calculations (based on implementation provided by @garanews - THX!)
- * 2019-05-15: Fixed a bug in PE mapper where buffer would be shortened because of misinterpretation of section sizes.
- * 2019-01-23: QoL improvements: automated data folder deployment when used as module, logger initialization (THX to @jdval)
- * 2018-08-23: Fixed a bug in PE mapper where the PE header would be overwritten by (empty) section data.
- * 2018-08-21: Added functionality that allows to use import table information instead of crawling for references.
- * 2018-07-31: Fixed convenience functions to create/export vectors from/to lists and dicts, added test coverage.
- * 2018-07-23: WARNING: Change in Apivector format -- Introduced sorted ApiVectors which are even more space efficient (20%+).
- * 2018-06-25: Fixed incompatibility with IDA Pro 7.0+ (THX to @nazywam!)
- * 2018-05-23: Added further semantic context groups (THX to Quoscient.io)
- * 2018-03-27: Heuristic estimation of Windows API reference counts added
- * 2018-03-06: ApiQR visualization of vector results (C-1024)
- * 2017-11-28: Added own import table parser to enrich result information
- * 2017-08-24: Multi-Segment support in IDA Pro (THX to @nazywam!)
- * 2017-05-31: Added Windows 7 SP1 64bit import DB (compatible to Malpedia)
+- 2026-11-17: Added a Windows 11 Pro 26H2 (build 26300.9974) 32bit and 64bit import DB (`dbs/win11_pro_26h2_example.json`, 462 DLLs, 140,065 APIs), built with `DatabaseBuilder.py --paths C:\Windows\System32 C:\Windows\SysWOW64 --filter` on an installed system (not a fresh installation). All DLLs are Microsoft-signed system DLLs from `System32` and `SysWOW64`; the 7 DLLs the crawl also found in the `DriverStore` folder (copies shipped with driver packages) were removed afterwards. Like the other DBs of recent Windows versions, it carries the ASLR offsets of the boot it was built in and serves as example and for tests, not for dumps of other systems.
+- 2026-11-16: Added a Windows Server 2022 (21H2, build 20348) 64bit import DB (`dbs/win2022_server_21h2_example.json`, 343 DLLs, built with `DatabaseBuilder.py --filter` on a fresh installation). Like the Windows 10 DB, it carries the ASLR offsets of the boot it was built in and serves as example and for tests, not for dumps of other systems.
+- 2026-11-16: Follow-ups for the Windows 10 DB: `collect.py` now skips API DBs with ASLR offsets unless `--use_aslr_dbs` or `--ignore_aslr` is given (`FingerprintCrawler` got an `ignore_aslr_offsets` parameter) and loading a DB warns about many colliding addresses. ApiVector now matches DLL names case-insensitively (e.g. `IPHLPAPI.DLL`). Fixed `ws2_32.dll` being truncated in the JSON output of `scout.py`, missed references of 64bit `jmp [rip+x]` thunks, the base address of PE32+ headers and 64bit imports by ordinal. Tests now run with `unittest` instead of nose.
+- 2026-11-01: Added Windows 10 Pro 1803 (build 17134.1) 64bit import DB, including the ASLR offsets of the boot it was built in (as all 64bit system DLLs share the file ImageBase 0x180000000). These offsets are only valid for memory dumps from that very boot; for other dumps, use import table parsing (`scout.py -t`) or rebuild the DB on the system the dump was taken from. `scout.py --ignore_aslr` (`ApiScout.ignoreAslrOffsets(True)`) is only meaningful for systems without ASLR and not usable for this DB's 64bit DLLs, as they then overlap at 0x180000000. Also note that the offsets of several rarely loaded DLLs in this DB (mostly 32bit ones, e.g. iphlpapi.dll, wininet.dll) put them at overlapping addresses, so APIs of these DLLs may be resolved incorrectly. Also fixed two DB Builder bugs: version 0.0.0.0 was written for all DLLs, and ordinal-only exports were truncated for DLLs mapping many ordinals to one address (e.g. mfc42.dll lost ~90% of its exports).
+
+## Releases before 3.0.0
+
+Kept as they were written. Only v2.0.2 and earlier went to PyPI, and none of them has a tag.
+
+- 2023-03-27: v2.0.2 - Bugfix for IdaScout and handling of sets, contributed by @7a6570 (THX!!)
+- 2023-01-02: v2.0.1 - Bugfix for lief-based import table parsing with Python 3.10, contributed by @malware-kitten (THX!!)
+- 2022-08-01: v1.2.0 - Added plugin for Ghidra, contributed by @mari-mari (THX!!)
+- 2022-09-20: v2.0.0 - (potentially BREAKING) crawl results now have one additional output field with a set of calling references for a given WinAPI. This is also included in the JSON output of `scout.py`, contributed by @renzhexigua (THX!!)
+- 2022-08-01: v1.2.0 - Added plugin for Ghidra, contributed by @mari-mari (THX!!)
+- 2022-01-17: v1.1.9 - Fixed `ida_scout.py` to work with IDA 7.5+ when apiscout is also installed as a Python package.
+- 2021-10-04: v1.1.8 - Extension of winapi contexts based on observations provided by @blattm (THX!).
+- 2021-08-30: v1.1.7 - Fixed deprecation warning in ApiQR as raised by numpy.
+- 2021-07-31: v1.1.6 - It's no longer required to keep a fixed LIEF version. (THX to @cccs-rs!)
+- 2021-01-10: v1.1.5 - Python3 LIEF package fixed to version 0.10.1 (THX to @akhribfarouk!)
+- 2020-12-09: v1.1.4 - Python3 fixes on DatabaseBuilder (THX to @Dump-GUY!)
+- 2020-07-13: v1.1.3 - Added "install_requires" to setup.py to ensure dependencies are installed.
+- 2020-06-30: v1.1.0 - Now using LIEF for import table parsing. Fixed bug which would not produce ApiVectors when using import table parsing. ApiScout is now also available through PyPI.
+- 2020-03-03: Added a script to pull the most recent ApiVector DB from Malpedia (requires Malpedia account / API token).
+- 2020-03-02: Ported to IDA 7.4 (THX to @jenfrie).
+- 2020-02-18: DB Builder is now compatible up to Python 3.7 (THX to @elanfer).
+- 2019-10-08: Workaround for broken filtering of the API view in IDA 7.3 (THX to @enzok for pointing this out).
+- 2019-08-22: Fixed a bug where missing type info in IDA would lead to a crash (now gives an error message instead).
+- 2019-08-20: Added self-filter to eliminate pointers to own memory image that could be mistakenly treated as API references.
+- 2019-06-06: Added support for proper type reconstruction for annotated APIs in IDA Pro (THX to @FlxP0c)
+- 2019-05-15: Added numpy support for vector calculations (based on implementation provided by @garanews - THX!)
+- 2019-05-15: Fixed a bug in PE mapper where buffer would be shortened because of misinterpretation of section sizes.
+- 2019-01-23: QoL improvements: automated data folder deployment when used as module, logger initialization (THX to @jdval)
+- 2018-08-23: Fixed a bug in PE mapper where the PE header would be overwritten by (empty) section data.
+- 2018-08-21: Added functionality that allows to use import table information instead of crawling for references.
+- 2018-07-31: Fixed convenience functions to create/export vectors from/to lists and dicts, added test coverage.
+- 2018-07-23: WARNING: Change in Apivector format -- Introduced sorted ApiVectors which are even more space efficient (20%+).
+- 2018-06-25: Fixed incompatibility with IDA Pro 7.0+ (THX to @nazywam!)
+- 2018-05-23: Added further semantic context groups (THX to Quoscient.io)
+- 2018-03-27: Heuristic estimation of Windows API reference counts added
+- 2018-03-06: ApiQR visualization of vector results (C-1024)
+- 2017-11-28: Added own import table parser to enrich result information
+- 2017-08-24: Multi-Segment support in IDA Pro (THX to @nazywam!)
+- 2017-05-31: Added Windows 7 SP1 64bit import DB (compatible to Malpedia)
+
+[Unreleased]: https://github.com/danielplohmann/apiscout/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/danielplohmann/apiscout/releases/tag/v3.0.0

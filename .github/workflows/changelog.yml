@@ -1,0 +1,64 @@
+name: Changelog
+
+# pull_request rather than pull_request_target: this needs the PR's changed-file list and no
+# secrets, so the read-only token a fork PR receives is enough, and no PR content is checked
+# out or executed. `labeled`/`unlabeled` are here so applying the skip label re-runs the check
+# rather than leaving a stale failure behind.
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - labeled
+      - unlabeled
+    branches:
+      - master
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  changelog-entry:
+    name: Changelog entry
+    runs-on: ubuntu-latest
+    steps:
+      # The job runs unconditionally and decides inside the step, rather than skipping on an
+      # `if`: a skipped job reports as neither passing nor failing, and the reason a PR is
+      # exempt belongs in the log where the next reader will look for it.
+      - name: Require a changelog entry beside a user-visible change
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          # contains() matches an array element exactly, so a label carrying a comma or a
+          # name this one is a prefix of cannot be mistaken for it
+          SKIP_LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'no-changelog') }}
+          IS_DEPENDABOT: ${{ github.event.pull_request.user.login == 'dependabot[bot]' }}
+        run: |
+          set -euo pipefail
+
+          if [ "${SKIP_LABELLED}" = "true" ]; then
+            echo "Labelled no-changelog; entry not required."
+            exit 0
+          fi
+          if [ "${IS_DEPENDABOT}" = "true" ]; then
+            echo "Dependency bump; the generated release notes list these under their own heading."
+            exit 0
+          fi
+
+          changed="$(gh api --paginate "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files" --jq '.[].filename')"
+
+          if ! printf '%s\n' "${changed}" | grep -qE '^(apiscout/|pyproject.toml$)'; then
+            echo "No shipped files changed; entry not required."
+            exit 0
+          fi
+
+          if printf '%s\n' "${changed}" | grep -qx 'CHANGELOG.md'; then
+            echo "CHANGELOG.md touched beside the change."
+            exit 0
+          fi
+
+          echo "::error file=CHANGELOG.md::This PR changes shipped files but does not touch CHANGELOG.md. Add an entry under ## [Unreleased], or apply the no-changelog label if the change genuinely needs no entry."
+          exit 1
