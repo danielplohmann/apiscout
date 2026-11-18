@@ -258,9 +258,11 @@ class DllPlacer:
     """Places the DLLs of API DBs at the load addresses a dump tells: pass it to ApiScout.loadDbFile(). Each source
     is asked in turn for the DLLs the earlier ones did not know, `placed` lists all placements."""
 
-    def __init__(self):
+    def __init__(self, ignore_aslr_offsets=False):
         # (source, [(normalized path, address)])
         self.module_lists = []
+        # with ASLR offsets, a DB has the load addresses of the boot it was built in, see __call__
+        self.ignore_aslr_offsets = ignore_aslr_offsets
         self.images = []
         self.placed = []
         self.summaries = []
@@ -280,7 +282,22 @@ class DllPlacer:
         counts = {}
         matches = [(source, match_load_addresses(dlls, addresses)) for source, addresses in self.module_lists]
         if self.images:
-            matches.append((SOURCE_IMAGES, match_images(dlls, self.images)))
+            # an image in the dump only places a DLL whose load address the DB does not have: a DB built from a copy
+            # of the DLLs or from the symbol server only has their file ImageBase. With the ASLR offsets of the boot
+            # it was built in, the DB has it, and an image of the DLL in the dump may be a copy that the sample mapped
+            # itself (of ntdll, to get around hooks), while the DLL it calls is loaded where the DB says.
+            has_load_address = api_db.get("aslr_offsets", False) and not self.ignore_aslr_offsets
+            found = match_images(dlls, self.images)
+            kept = sorted(key for key in found if has_load_address and dlls[key].get("aslr_offset"))
+            if kept:
+                LOG.info(
+                    "%s: the DB has the load addresses of %d DLLs that are also images in the dump, they stay where the "
+                    "DB has them (--ignore-aslr places them at the images): %s",
+                    db_path,
+                    len(kept),
+                    ", ".join(kept),
+                )
+            matches.append((SOURCE_IMAGES, {key: address for key, address in found.items() if key not in kept}))
         for source, found in matches:
             for dll_key, load_address in found.items():
                 if dll_key not in placements:
