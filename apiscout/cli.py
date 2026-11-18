@@ -403,7 +403,7 @@ def cmd_scan(args):
             "--dynamic searches the dump for hashes and names of the APIs of API DBs, it can not be combined with --import-table."
         )
     check_output(args.output)
-    placer = DllPlacer()
+    placer = DllPlacer(args.ignore_aslr)
     if args.modules:
         if args.import_table:
             raise CliError("--modules places the DLLs of an API DB, which --import-table does not use.")
