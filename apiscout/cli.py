@@ -479,7 +479,12 @@ def cmd_scan(args):
         num_hits = sum(len(hits) for hits in results.values())
         results = scout.filterByConfidence(results, args.min_confidence, confidences)
         dropped = num_hits - sum(len(hits) for hits in results.values())
-        report(args, f"Dropped {dropped} of {num_hits} hits with a confidence below {args.min_confidence}.")
+        if dropped:
+            report(
+                args,
+                f"Dropped {dropped} of {num_hits} hits with a confidence below {args.min_confidence} "
+                "(--min-confidence 0 keeps all).",
+            )
     report(args, summary)
     dynamic = None
     vector_results = results
@@ -972,9 +977,9 @@ def build_parser():
     scan.add_argument(
         "--min-confidence",
         type=parse_confidence,
-        default=0,
+        default=20,
         metavar="N",
-        help="drop hits with a confidence below N (0 to 100, default: 0 keeps all). The confidence, listed as "
+        help="drop hits with a confidence below N (0 to 100, default: 20, 0 keeps all). The confidence, listed as "
         "confidence in --json, says how unlikely a hit is bytes that happen to equal an API address. A hit in the "
         "import table scores 100. Others add up: neighbours (other APIs within 16 bytes: 30 for one, 50 for two, "
         "60 for three or more, an address repeated counts once), a call or jmp through it 40, another API DB agreeing "

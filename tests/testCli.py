@@ -88,7 +88,8 @@ class CliTestSuite(unittest.TestCase):
         self.assertEqual(2, run("help", "nothing")[0])
 
     def testScan(self):
-        code, output, errors = run("scan", DUMP_PATH, "--db", DB_PATH, "--base-addr", "0x1000")
+        # at the wrong base address the call through InterlockedIncrement is not seen, so it scores below 20
+        code, output, errors = run("scan", DUMP_PATH, "--db", DB_PATH, "--base-addr", "0x1000", "--min-confidence", "0")
         self.assertEqual(0, code)
         self.assertIn("InterlockedIncrement", output)
         # what is not the result goes to standard error, and is left out on request
@@ -170,9 +171,26 @@ class CliTestSuite(unittest.TestCase):
         text = run("scan", DUMP_PATH, "--db", DB_PATH, "--min-confidence", "26")[1]
         self.assertIn("InterlockedIncrement", text)
         self.assertNotIn("WaitForSingleObjectEx", text)
+        self.assertIn("default: 20", run("scan", "--help")[1])
         for bad in ("-1", "101", "x", "1.5"):
             self.assertEqual(2, run("scan", DUMP_PATH, "--db", DB_PATH, "--min-confidence", bad)[0])
         self.assertIn("--min-confidence", run("scan", "--help")[1])
+
+    def testMinConfidenceDefault(self):
+        """a lone aligned API with no neighbour and no call scores 10 and is dropped unless --min-confidence 0"""
+        with tempfile.TemporaryDirectory() as directory:
+            dump_path = os.path.join(directory, "dump_0x00400000")
+            with open(dump_path, "wb") as f_out:
+                f_out.write(b"\x00" * 64 + (0x7D856A50).to_bytes(4, "little") + b"\x00" * 64)
+            code, output, errors = run("scan", dump_path, "--db", DB_PATH, "--json")
+            self.assertEqual((0, []), (code, json.loads(output)["apis"]))
+            self.assertIn("Dropped 1 of 1 hits with a confidence below 20 (--min-confidence 0 keeps all)", errors)
+            code, output, errors = run("scan", dump_path, "--db", DB_PATH, "--json", "--min-confidence", "0")
+            apis = json.loads(output)["apis"]
+            self.assertEqual(
+                (0, ["InterlockedIncrement"], [10]), (code, [a["api"] for a in apis], [a["confidence"] for a in apis])
+            )
+            self.assertNotIn("Dropped", errors)
 
     def testFilesThatAreNoApiDbs(self):
         with tempfile.TemporaryDirectory() as directory:

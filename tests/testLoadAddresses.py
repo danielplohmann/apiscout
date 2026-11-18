@@ -349,7 +349,9 @@ class DllImageTestSuite(unittest.TestCase):
             path = os.path.join(directory, "dump.bin")
             with open(path, "wb") as f_dump:
                 f_dump.write(dump)
-            code, output, errors = run("scan", path, "--db", db_path, "--base-addr", hex(base), "--json")
+            code, output, errors = run(
+                "scan", "--min-confidence", "0", path, "--db", db_path, "--base-addr", hex(base), "--json"
+            )
             self.assertEqual(0, code, errors)
             document = json.loads(output)
             self.assertEqual(["Api383"], [api["api"] for api in document["apis"]])
@@ -370,7 +372,9 @@ class DllImageTestSuite(unittest.TestCase):
             # without the image in the dump, the DLL is where the DB has it and the pointer is not found
             with open(path, "wb") as f_dump:
                 f_dump.write(dump[:0x3000])
-            document = json.loads(run("scan", path, "--db", db_path, "--base-addr", hex(base), "--json")[1])
+            document = json.loads(
+                run("scan", "--min-confidence", "0", path, "--db", db_path, "--base-addr", hex(base), "--json")[1]
+            )
             self.assertEqual(([], []), (document["apis"], document["placed_dlls"]))
 
     def testImagesDoNotMoveADllThatTheDbHasTheLoadAddressOf(self):
@@ -390,7 +394,7 @@ class DllImageTestSuite(unittest.TestCase):
             path = os.path.join(directory, "dump.bin")
             with open(path, "wb") as f_dump:
                 f_dump.write(dump)
-            arguments = ("scan", path, "--db", db_path, "--base-addr", hex(base), "--json")
+            arguments = ("scan", "--min-confidence", "0", path, "--db", db_path, "--base-addr", hex(base), "--json")
             code, output, errors = run(*arguments)
             self.assertEqual(0, code, errors)
             document = json.loads(output)
@@ -489,7 +493,8 @@ class PlacementTestSuite(unittest.TestCase):
         return path
 
     def _scan(self, *arguments):
-        code, output, errors = run("scan", *arguments, "--json")
+        # every hit, the placement is what is tested here
+        code, output, errors = run("scan", *arguments, "--json", "--min-confidence", "0")
         self.assertEqual(0, code, errors)
         return json.loads(output), errors
 

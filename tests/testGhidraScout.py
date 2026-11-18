@@ -151,7 +151,21 @@ class FakeGhidraScout(ghidra_scout.GhidraScout):
 def scan_with_cli(base_address):
     stdout = io.StringIO()
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
-        code = cli.main(["scan", DUMP_PATH, "--db", DB_PATH, "--base-addr", hex(base_address), "--json", "--quiet"])
+        # the script annotates every hit, so compare with all of them
+        code = cli.main(
+            [
+                "scan",
+                DUMP_PATH,
+                "--db",
+                DB_PATH,
+                "--base-addr",
+                hex(base_address),
+                "--json",
+                "--quiet",
+                "--min-confidence",
+                "0",
+            ]
+        )
     assert code == 0
     return json.loads(stdout.getvalue())["apis"]
 

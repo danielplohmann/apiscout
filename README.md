@@ -15,7 +15,7 @@ Python 3.10 or newer:
 ```bash
 pip install apiscout
 apiscout dbs download
-apiscout scan trickbot_dump_0x00400000 --db win7_prof-n_sp1_example.json
+apiscout scan trickbot_dump_0x00400000 --db win7_prof-n_sp1_example.json --min-confidence 0
 ```
 
 ```text
@@ -50,9 +50,9 @@ A Windows minidump (`MDMP` signature, e.g. `crash.dmp`) is scanned as it is, ran
 | `#ref` | The location itself plus the `call` and `jmp` instructions that go through it. |
 | `DLL` | The DLL, the address it is loaded at according to the DB, and whether it is the 32bit or 64bit one. |
 
-A single API far away from all others, like the first row, is usually a chance hit: bytes that happen to equal an API address. `--filter 32` drops APIs that have no other API within 32 bytes.
+A single API far away from all others, like the first row, is usually a chance hit: bytes that happen to equal an API address. The example keeps it with `--min-confidence 0`; a plain `apiscout scan` drops it. `--filter 32` drops APIs that have no other API within 32 bytes.
 
-`--min-confidence 30` is the finer tool: every hit gets a confidence from 0 to 100 (`confidence` in `--json`) from its neighbours, calls through it, the import table, its alignment and agreeing API DBs, and hits below N are dropped (`apiscout scan --help` has the formula).
+`--min-confidence N` is the finer tool: every hit gets a confidence from 0 to 100 (`confidence` in `--json`) from its neighbours, calls through it, the import table, its alignment and agreeing API DBs, and hits below N are dropped (`apiscout scan --help` has the formula). The default is 20, which drops the chance hits of a scan with the right API DB; `--min-confidence 0` keeps every hit.
 
 `Confidence` (0 to 100) says how much a vector is worth as a fingerprint. It is low when only few or only very common APIs were found.
 
