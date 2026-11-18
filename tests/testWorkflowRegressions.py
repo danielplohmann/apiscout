@@ -1,3 +1,4 @@
+import errno
 import importlib.util
 import json
 import os
@@ -119,6 +120,23 @@ class WorkflowRegressionTests(unittest.TestCase):
             )
         self.assertEqual(0, completed.returncode, completed.stderr)
         self.assertEqual("", completed.stderr)
+
+    def testWindowsInvalidArgumentIsOnlyABrokenPipeForPipeOutput(self):
+        reader, writer = os.pipe()
+        os.close(reader)
+        with os.fdopen(writer, "wb") as pipe, (self.folder / "regular.txt").open("wb") as regular:
+            for stream, expected in ((pipe, BrokenPipeError), (regular, OSError)):
+                stdout = mock.Mock()
+                stdout.fileno.return_value = stream.fileno()
+                stdout.flush.side_effect = OSError(errno.EINVAL, "Invalid argument")
+                with (
+                    self.subTest(stream=stream),
+                    mock.patch.object(sys, "platform", "win32"),
+                    mock.patch.object(sys, "stdout", stdout),
+                    self.assertRaises(expected) as caught,
+                ):
+                    cli.flush_stdout()
+                self.assertIs(type(caught.exception), expected)
 
     def testFlatDumpRecognizesPointersToACompletePlacedDll(self):
         base = 0x400000

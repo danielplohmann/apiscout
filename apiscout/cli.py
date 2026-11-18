@@ -1,11 +1,14 @@
 """the apiscout command line tool, see `apiscout --help`"""
 
 import argparse
+import errno
 import json
 import logging
 import os
 import re
+import stat
 import sys
+from contextlib import contextmanager
 
 from . import db_index
 
@@ -353,13 +356,35 @@ def dynamic_to_records(dynamic_results):
     ]
 
 
+@contextmanager
+def stdout_pipe_errors():
+    """Normalize the Windows CRT error for writing to a pipe whose reader closed."""
+    try:
+        yield
+    except OSError as exc:
+        if sys.platform == "win32" and exc.errno == errno.EINVAL:
+            try:
+                is_pipe = stat.S_ISFIFO(os.fstat(sys.stdout.fileno()).st_mode)
+            except (AttributeError, OSError, ValueError):
+                is_pipe = False
+            if is_pipe:
+                raise BrokenPipeError(errno.EPIPE, "Broken pipe") from exc
+        raise
+
+
+def flush_stdout():
+    with stdout_pipe_errors():
+        sys.stdout.flush()
+
+
 def write_output(text, output_path):
     """to the file given with --output, or to standard output"""
     if output_path and output_path != "-":
         with open(output_path, "w", encoding="utf-8") as f_out:
             f_out.write(text)
     else:
-        sys.stdout.write(text)
+        with stdout_pipe_errors():
+            sys.stdout.write(text)
 
 
 def write_file(write, output_path):
@@ -373,10 +398,11 @@ def write_file(write, output_path):
     with tempfile.TemporaryDirectory() as directory:
         temp_path = os.path.join(directory, "output")
         write(temp_path)
-        with open(temp_path, "rb") as f_result:
+        with open(temp_path, "rb") as f_result, stdout_pipe_errors():
             sys.stdout.flush()
             shutil.copyfileobj(f_result, sys.stdout.buffer)
-    sys.stdout.buffer.flush()
+    with stdout_pipe_errors():
+        sys.stdout.buffer.flush()
 
 
 def report(args, message):
@@ -1304,9 +1330,9 @@ def main(argv=None):
             result = _dispatch(argv)
         except SystemExit as exc:
             if exc.code == 0:
-                sys.stdout.flush()
+                flush_stdout()
             raise
-        sys.stdout.flush()
+        flush_stdout()
         return result
     except CliError as exc:
         print(f"apiscout: error: {exc}", file=sys.stderr)

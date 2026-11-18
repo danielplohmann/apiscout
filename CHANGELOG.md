@@ -12,6 +12,10 @@ hits that were reported before, which a release says here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Handle early stdout pipe closure on Windows without an error or shutdown traceback.
+
 ### Changed
 
 - Shorter README with a runnable example and separate usage, database, and integration guides.
