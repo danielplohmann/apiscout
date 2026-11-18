@@ -43,7 +43,8 @@ apiscout = ["data/*"]
 
 [tool.ruff]
 line-length = 120
-extend-exclude = ["apiscout/db_builder/_vendor"]
+# research/: spike scripts kept as they ran, so that their numbers reproduce
+extend-exclude = ["apiscout/db_builder/_vendor", "research"]
 
 [tool.ruff.lint]
 select = ["E", "F", "UP", "B", "SIM", "I"]
@@ -54,7 +55,7 @@ known-first-party = ["apiscout"]
 
 [tool.ty.src]
 # .github: release_guard.py runs on the Python 3.11 of publish-release.yml and reads tomllib, which 3.10 lacks
-exclude = ["apiscout/db_builder", ".github"]
+exclude = ["apiscout/db_builder", ".github", "research"]
 
 [tool.ty.analysis]
 allowed-unresolved-imports = ["idaapi", "idc", "idautils", "ida_*", "binaryninja", "binaryninja.*", "ghidra.**", "java.**", "jpype"]
