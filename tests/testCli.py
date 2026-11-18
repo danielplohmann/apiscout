@@ -221,6 +221,62 @@ class CliTestSuite(unittest.TestCase):
         self.assertEqual(1, code)
         self.assertIn("Not a valid ApiVector", errors)
 
+    def testExplain(self):
+        # the default output does not change
+        code, output, _ = run("match", VECTOR, OTHER_VECTOR)
+        self.assertEqual(0, code)
+        self.assertEqual(3, len(output.splitlines()))
+        code, output, _ = run("match", VECTOR, OTHER_VECTOR, "--explain")
+        self.assertEqual(0, code)
+        self.assertIn("Score: 0.5", output)
+        self.assertIn("Shared APIs, top 9 of 9 by weight:\n", output)
+        self.assertIn("APIs only in vector A, top 3 of 3 by weight:\n", output)
+        self.assertIn("APIs only in vector B, top 4 of 4 by weight:\n", output)
+        self.assertRegex(output, r"\n  +\d+  \w+\.dll!\w+\n")
+        document = json.loads(run("match", VECTOR, OTHER_VECTOR, "--explain", "--json")[1])
+        self.assertEqual(json.loads(run("match", VECTOR, OTHER_VECTOR, "--json")[1])["score"], document["score"])
+        self.assertEqual({"vector_a", "vector_b", "score", "shared", "only_a", "only_b"}, set(document))
+        self.assertEqual(
+            [entry["weight"] for entry in document["shared"]],
+            sorted((entry["weight"] for entry in document["shared"]), reverse=True),
+        )
+        self.assertEqual(1.0, json.loads(run("match", VECTOR, VECTOR, "--explain", "--json")[1])["score"])
+        with tempfile.TemporaryDirectory() as directory:
+            collection = os.path.join(directory, "collection.csv")
+            with open(collection, "w") as f_collection:
+                f_collection.write(f"family;sample;1;1;{OTHER_VECTOR}\nother;sample;1;1;{VECTOR}\n")
+            code, output, _ = run("match", VECTOR, "--collection", collection, "--explain")
+            self.assertEqual(0, code)
+            self.assertIn("Top 5 individual matches", output)
+            self.assertIn("Best match: other - sample - 1.000", output)
+            self.assertIn("Shared APIs, top 5 of 12 by weight:\n", output)
+            document = json.loads(run("match", VECTOR, "--collection", collection, "--explain", "--json")[1])
+            self.assertEqual("other", document["best_match"]["family"])
+            self.assertEqual(1.0, document["best_match"]["score"])
+            self.assertNotIn("best_match", json.loads(run("match", VECTOR, "--collection", collection, "--json")[1]))
+        self.assertEqual(1, run("match", VECTOR, OTHER_VECTOR, "--collection", "x.csv", "--explain")[0])
+
+    def testScanExplainsBestCollectionMatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            collection = os.path.join(directory, "collection.csv")
+            with open(collection, "w") as f_collection:
+                f_collection.write(f"family;sample;1;1;{VECTOR}\n")
+            args = ["scan", DUMP_PATH, "--db", DB_PATH, "--base-addr", "0x1000", "-c", collection]
+            code, output, _ = run(*args, "--explain")
+            self.assertEqual(0, code)
+            self.assertIn("Best match: family - sample - ", output)
+            self.assertIn("Best match: family - sample - ", output)
+            self.assertIn("APIs only in vector B, top", output)
+            document = json.loads(run(*args, "--explain", "--json")[1])
+            self.assertEqual("family", document["best_match"]["family"])
+            self.assertEqual([], document["best_match"]["shared"])
+            self.assertEqual(document["collection_matches"]["match_results"][0][2], document["best_match"]["score"])
+            self.assertNotIn("best_match", json.loads(run(*args, "--json")[1]))
+            # without a collection there is no best match to explain
+            code, _, errors = run("scan", DUMP_PATH, "--db", DB_PATH, "--explain")
+            self.assertEqual(1, code)
+            self.assertIn("--collection", errors)
+
     def testExport(self):
         with tempfile.TemporaryDirectory() as directory:
             png, html = os.path.join(directory, "vector.png"), os.path.join(directory, "vector.html")
