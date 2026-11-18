@@ -337,7 +337,7 @@ class ApiScout:
         callers_by_offset = {}
         if PeTools.getMachine(mapped_binary) in PeTools.BITNESS_MAP:
             targets = {offset for offset in self._import_table if offset < len(mapped_binary)}
-            callers_by_offset = self._getCodeReferences(mapped_binary, targets)[bitness]
+            callers_by_offset = self._getCodeReferences(mapped_binary, targets).get(bitness, {})
         for offset, import_entry in sorted(self._import_table.items()):
             if not import_entry["name"]:
                 # import by an ordinal without known name

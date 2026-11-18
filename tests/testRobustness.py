@@ -476,6 +476,11 @@ class SecondAuditTestSuite(unittest.TestCase):
         self.assertEqual(EXPECTED_IMPORTS, {(entry[0], entry[2], entry[3]) for entry in imports})
         self.assertTrue(all(entry[6:] == (1, set()) for entry in imports))
 
+    def testX86MachineWithAnUnknownOptionalHeader(self):
+        pe = bytearray(build_pe32())
+        struct.pack_into("<H", pe, 0x58, 0x107)  # ROM image magic, the Machine is still x86
+        self.assertEqual({"import_table": []}, ApiScout().evaluateImportTable(bytes(pe)))
+
     def testImportTableOfMappedImage(self):
         mapped = PeTools.mapBinary(build_pe32())
         imports = set(

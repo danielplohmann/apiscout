@@ -212,11 +212,14 @@ def _readImage(binary, offset, load_address):
     header = offset + pe_offset
     if binary[header : header + 4] != b"PE\x00\x00":
         return None
-    optional_header_size = struct.unpack_from("<H", binary, header + 0x14)[0]
+    machine, _, _, _, _, optional_header_size = struct.unpack_from("<HHIIIH", binary, header + 4)
     magic = struct.unpack_from("<H", binary, header + 0x18)[0]
     bitness = PeTools.OPTIONAL_MAGIC_BITNESS.get(magic)
     directory_offset = {0x10B: 0x60, 0x20B: 0x70}.get(magic)
     if not bitness or directory_offset is None or optional_header_size < directory_offset + 8:
+        return None
+    # the API DBs hold x86 and x64 DLLs only, an image of another machine must not place one of them
+    if PeTools.BITNESS_MAP.get(machine) != bitness:
         return None
     export_rva = struct.unpack_from("<I", binary, header + 0x18 + directory_offset)[0]
     if not export_rva or export_rva + 40 > limit:

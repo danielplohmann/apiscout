@@ -20,7 +20,7 @@ import unittest
 from unittest import mock
 
 import apiscout
-from apiscout.ApiVector import ApiVector
+from apiscout.ApiVector import NUMPY_AVAILABLE, ApiVector
 
 LOG = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)-15s %(message)s")
@@ -71,6 +71,18 @@ class ApiVectorTestSuite(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "binary values"),
             ):
                 vector.matchVectors(candidate, valid)
+
+    def testMatchAcceptsBinaryFloats(self):
+        vector = ApiVector(os.path.join(os.path.dirname(apiscout.__file__), "data", "winapi1024v1.txt"))
+        ints = [1, 0, 0, 1] * 256
+        floats = [float(bit) for bit in ints]
+        self.assertEqual(1.0, vector.matchVectors(floats, ints))
+        if NUMPY_AVAILABLE:
+            import numpy
+
+            self.assertEqual(1.0, vector.matchVectors(numpy.array(floats), ints))
+        with mock.patch("apiscout.ApiVector.NUMPY_AVAILABLE", False):
+            self.assertEqual(1.0, vector.matchVectors(floats, ints))
 
     def testListConversions(self):
         # from list to vector

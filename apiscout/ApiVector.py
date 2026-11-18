@@ -307,12 +307,15 @@ class ApiVector:
             if NUMPY_AVAILABLE and isinstance(vector, np.ndarray):
                 if (
                     vector.shape == (self._getVectorLength(),)
-                    and vector.dtype.kind in "biu"
+                    and vector.dtype.kind in "biuf"
                     and np.all((vector == 0) | (vector == 1))
                 ):
                     return vector
             elif len(vector) == self._getVectorLength():
-                bits = tuple(map(operator.index, vector))
+                # 0.0 and 1.0 are accepted as they always were in numpy arrays, strings and other values are not
+                bits = tuple(
+                    int(bit) if isinstance(bit, float) and bit in (0, 1) else operator.index(bit) for bit in vector
+                )
                 if all(bit in (0, 1) for bit in bits):
                     return bits
         except (TypeError, ValueError):

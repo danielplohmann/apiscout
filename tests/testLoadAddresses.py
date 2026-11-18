@@ -303,6 +303,14 @@ class DllImageTestSuite(unittest.TestCase):
         images = find_dll_images(bytes(0xF80) + dll, 0x400080)
         self.assertEqual([(0x401000, "test.dll")], [(image.load_address, image.name) for image in images])
 
+    def testImagesOfOtherMachinesAreNotLookedAt(self):
+        # ARM64, ARM and a Machine that contradicts the optional header
+        for machine, bitness in ((0xAA64, 64), (0x1C4, 32), (0x14C, 64), (0x8664, 32)):
+            image = bytearray(build_dll_image("test.dll", {1: 0x1500}, bitness))
+            struct.pack_into("<H", image, 0x84, machine)
+            with self.subTest(machine=hex(machine), bitness=bitness):
+                self.assertEqual([], find_dll_images(bytes(0x1000) + bytes(image), 0))
+
     def testPlacesTheDllByItsExports(self):
         exports = {383: 0x6A50, 384: 0x6A80, 390: 0x7000}
         with tempfile.TemporaryDirectory() as directory:
