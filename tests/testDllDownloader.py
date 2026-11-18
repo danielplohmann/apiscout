@@ -768,6 +768,8 @@ class RunTestSuite(unittest.TestCase):
         # without a DB there is nothing to name
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             self.run_main("--windows", "11-24H2", "--update", "10.0.26100.2000", "--download-only", "--def32", def_file)
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self.run_main("--list", "--def32", def_file)
 
     def test_first_release_is_named_by_its_ntdll(self):
         base = {"windowsVersionInfo": {"releaseDate": "2024-09-30"}, "sourcePaths": ["Windows\\System32\\ntdll.dll"]}

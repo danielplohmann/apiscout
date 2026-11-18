@@ -717,8 +717,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if not 1 <= args.jobs <= 8:
         parser.error("--jobs is between 1 and 8.")
-    if args.download_only and (args.def32 or args.def64):
-        parser.error("--def32 and --def64 name exports in the API DB, which --download-only does not build.")
+    if (args.download_only or args.list is not None) and (args.def32 or args.def64):
+        parser.error("--def32 and --def64 name exports in the API DB, which --list and --download-only do not build.")
     try:
         if args.list is None and args.out:
             clean_partial_files(args.out)

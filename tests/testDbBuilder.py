@@ -483,6 +483,13 @@ class DatabaseBuilderTests(unittest.TestCase):
         with open(path, "wb") as f_def:
             f_def.write("LIBRARY wide\r\nEXPORTS\r\n\tWide @7 NONAME\r\n".encode("utf-16"))
         self.assertEqual(("wide.dll", {7: "Wide"}), DatabaseBuilder.read_def_file(path))
+        for encoding in ("utf-16-le", "utf-16-be"):
+            with open(path, "wb") as f_def:
+                f_def.write("LIBRARY wide\r\nEXPORTS\r\n\tWide @7 NONAME\r\n".encode(encoding))
+            self.assertEqual(("wide.dll", {7: "Wide"}), DatabaseBuilder.read_def_file(path), encoding)
+        # a ; in quotes is not a comment, and of two ordinals the first counts
+        path = self.writeDef("odd.def", 'EXPORTS\n "semi;colon" @1 ; @9\n Twice @2 @3\n')
+        self.assertEqual(("odd.dll", {1: "semi;colon", 2: "Twice"}), DatabaseBuilder.read_def_file(path))
         path = self.writeDef("empty.def", "LIBRARY x.dll\nEXPORTS\n  ByName\n")
         with self.assertRaisesRegex(ValueError, "no exports with an ordinal"):
             DatabaseBuilder.read_def_file(path)
@@ -513,6 +520,40 @@ class DatabaseBuilderTests(unittest.TestCase):
         code, errors = self.run_main(*offline, "--def64", os.path.join(self.directory.name, "missing.def"))
         self.assertEqual(2, code)
         self.assertIn("--def64:", errors)
+        # only where a DB is built
+        for other in (["--aslr_check"], []):
+            code, errors = self.run_main(*other, "--def32", def_file)
+            self.assertEqual(2, code)
+            self.assertIn("--def32 and --def64 name exports in the DB", errors)
+
+    def testDefFilesOfSeveralDllsAndOfOtherBuilds(self):
+        dll_dir = os.path.join(self.directory.name, "dlls")
+        os.makedirs(dll_dir)
+        for name in ("mfc42.dll", "mfc42u.dll"):
+            with open(os.path.join(dll_dir, name), "wb") as f_dll:
+                f_dll.write(build_dll([0x1000, 0x1010], [(b"DllMain", 0)], 32, base=256))
+        fitting = self.writeDef("mfc42.def", "EXPORTS\n DllMain @256\n Other @257 NONAME\n")
+        # the DEF file of another build: its export at 256 is called otherwise
+        other_build = self.writeDef("mfc42u.def", "EXPORTS\n Renamed @256\n Other @257 NONAME\n")
+        missing_dll = self.writeDef("mfc71.def", "EXPORTS\n Other @257 NONAME\n")
+        outfile = os.path.join(self.directory.name, "db.json")
+        offline = ["--paths", dll_dir, "--os_name", "Test", "--os_version", "1.0", "--outfile", outfile]
+        arguments = (*offline, "--def32", fitting, "--def32", other_build, "--def32", missing_dll)
+        logging.disable(logging.NOTSET)
+        with self.assertLogs(DatabaseBuilder.LOG, logging.INFO) as logs:
+            self.assertEqual((0, ""), self.run_main(*arguments))
+        logging.disable(logging.CRITICAL)
+        with open(outfile, encoding="utf-8") as f_db:
+            api_db = json.load(f_db)
+        names = {
+            os.path.basename(dll["filepath"]): [export["name"] for export in dll["exports"]]
+            for dll in api_db["dlls"].values()
+        }
+        self.assertEqual({"mfc42.dll": ["DllMain", "Other"], "mfc42u.dll": ["DllMain", "None"]}, names)
+        output = "\n".join(logs.output)
+        self.assertIn("which has the names of 1 of its named exports.", output)
+        self.assertIn("1 of 1 exports with a name there are called otherwise (ordinal 256 is DllMain, the DEF", output)
+        self.assertIn("No 32bit mfc71.dll in the DB, its DEF file is not used.", output)
 
 
 def reference_summary_or_failure(path):
