@@ -514,12 +514,12 @@ class CliTestSuite(unittest.TestCase):
             real_create = cli.create_crawler
             calls = []
 
-            def create_once(*arguments):
+            def create_once(*arguments, **keywords):
                 # the main process succeeds, its workers do not
                 if calls:
                     raise OSError("API DB vanished")
                 calls.append(1)
-                return real_create(*arguments)
+                return real_create(*arguments, **keywords)
 
             with unittest.mock.patch.object(cli, "create_crawler", create_once):
                 code, _, errors = run("collect", directory, "--db", DB_PATH, "-o", target)

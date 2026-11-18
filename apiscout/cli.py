@@ -617,9 +617,12 @@ def cmd_collect(args):
     for destination in destinations:
         check_output(destination)
     db_paths = []
+    # the DBs are parsed once here, the crawler of this process takes them from this dict (the workers read their own)
+    api_dbs = {}
     for db_path in resolve_db_files(args):
         try:
-            has_aslr_offsets = FingerprintCrawler.dbHasAslrOffsets(db_path)
+            api_db = FingerprintCrawler.readApiDb(db_path)
+            has_aslr_offsets = FingerprintCrawler.apiDbHasAslrOffsets(api_db)
         except (ValueError, KeyError, TypeError, AttributeError):
             raise not_an_api_db(db_path) from None
         if has_aslr_offsets and not (args.use_aslr_dbs or args.ignore_aslr):
@@ -627,14 +630,19 @@ def cmd_collect(args):
             report(args, f"Skipping API DB with ASLR offsets (--use-aslr-dbs or --ignore-aslr includes it): {db_path}")
             continue
         db_paths.append(db_path)
+        api_dbs[db_path] = api_db
+    api_db = None
     if not db_paths:
         raise CliError("all API DBs carry ASLR offsets. Pass --use-aslr-dbs or --ignore-aslr to use them.")
     winapi1024_path = os.path.join(os.path.dirname(__file__), "data", "winapi1024v1.txt")
     crawler_arguments = (db_paths, winapi1024_path, args.folder, args.filter, args.ignore_aslr, args.update)
     try:
-        crawler = create_crawler(*crawler_arguments)
+        crawler = create_crawler(*crawler_arguments, api_dbs=api_dbs)
     except (ValueError, KeyError, TypeError, AttributeError):
         raise CliError("one of the API DBs can not be loaded, `apiscout dbs` shows which are usable.") from None
+    finally:
+        # not needed any more, and the workers forked next would carry them
+        api_dbs.clear()
     file_list = []
     for root, _, files in os.walk(args.folder):
         file_list.extend(os.path.join(root, name) for name in files if args.require in name)
@@ -674,10 +682,12 @@ WORKER_CRAWLER = None
 WORKER_ERROR = None
 
 
-def create_crawler(db_paths, winapi1024_path, folder, filter_size, ignore_aslr, known_collection):
+def create_crawler(db_paths, winapi1024_path, folder, filter_size, ignore_aslr, known_collection, api_dbs=None):
     from .FingerprintCrawler import FingerprintCrawler
 
-    crawler = FingerprintCrawler(db_paths, winapi1024_path, folder, filter_size, ignore_aslr_offsets=ignore_aslr)
+    crawler = FingerprintCrawler(
+        db_paths, winapi1024_path, folder, filter_size, ignore_aslr_offsets=ignore_aslr, api_dbs=api_dbs
+    )
     if known_collection and os.path.isfile(known_collection):
         crawler.loadIgnoreList(known_collection)
     return crawler
@@ -1069,10 +1079,12 @@ def build_parser():
         help="drop APIs without another API within N bytes (default: 32)",
     )
     collect.add_argument("--skip-empty", action="store_true", help="leave out dumps without any API")
-    collect.add_argument(
+    # the two ways to use a DB with ASLR offsets exclude each other, one of them would silently win
+    aslr_options = collect.add_mutually_exclusive_group()
+    aslr_options.add_argument(
         "--use-aslr-dbs", action="store_true", help="also use API DBs with ASLR offsets and apply the offsets"
     )
-    collect.add_argument(
+    aslr_options.add_argument(
         "--ignore-aslr", action="store_true", help="also use API DBs with ASLR offsets, without the offsets"
     )
     collect.set_defaults(run=cmd_collect)

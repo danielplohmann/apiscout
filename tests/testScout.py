@@ -153,8 +153,10 @@ class ApiScoutTestSuite(unittest.TestCase):
             with open(db_path, "w", encoding="utf-8") as f_db:
                 json.dump(db, f_db)
             scout = ApiScout()
-            with self.assertLogs("apiscout.ApiScout", logging.WARNING):
+            # both DLLs are at their own ASLR offset, which is only a note
+            with self.assertLogs("apiscout.ApiScout", logging.INFO) as logs:
                 scout.loadDbFile(db_path)
+            self.assertEqual([], [record for record in logs.records if record.levelno >= logging.WARNING])
             self.assertEqual(
                 {0x1000: b_entry, 0x1010: a_entries[1], 0x1020: a_entries[3]}, scout.api_maps["Test Windows"]
             )
@@ -166,7 +168,8 @@ class ApiScoutTestSuite(unittest.TestCase):
             self.assertTrue(scout.has_64bit)
             scout = ApiScout()
             scout.ignoreAslrOffsets(True)
-            scout.loadDbFile(db_path)
+            with self.assertLogs("apiscout.ApiScout", logging.WARNING):
+                scout.loadDbFile(db_path)
             self.assertEqual(
                 {0x1010: b_entry, 0x1020: a_entries[1], 0x1030: a_entries[3]}, scout.api_maps["Test Windows"]
             )
@@ -390,6 +393,67 @@ class ApiScoutTestSuite(unittest.TestCase):
         results = scout.crawl(bytes(binary))
         confidences = scout.getConfidences(results)["db"]
         self.assertEqual({(0x40, 32): 60, (0x44, 32): 60, (0x48, 32): 60, (0x180, 32): 10}, confidences)
+
+    def testLoadedApiMapsAreDicts(self):
+        """the maps are plain dicts, which can be copied, pickled and written as JSON"""
+        import copy
+        import pickle
+
+        scout = ApiScout(os.path.join(os.path.dirname(__file__), "minimal_db.json"))
+        api_map = scout.api_maps["Windows 7"]
+        self.assertIs(dict, type(api_map))
+        self.assertEqual(api_map, pickle.loads(pickle.dumps(api_map)))
+        self.assertEqual(api_map, copy.deepcopy(api_map))
+        self.assertEqual(len(api_map), len(json.loads(json.dumps({str(k): v for k, v in api_map.items()}))))
+
+    def testReplacedApiMapDoesNotKeepWhatWasCollectedForTheOldOne(self):
+        """the other bitness map and the export names that loadDbFile() collected belong to its map"""
+        db = {
+            "os_name": "Test Windows",
+            "dlls": {
+                "32_1.0_a.dll_0x1000": {
+                    "aslr_offset": 0,
+                    "base_address": 0x7C000000,
+                    "bitness": 32,
+                    "exports": [{"address": 0x10, "name": "VirtualAlloc", "ordinal": 1}],
+                },
+                "64_1.0_b.dll_0x1000": {
+                    "aslr_offset": 0,
+                    "base_address": 0x7C000000,
+                    "bitness": 64,
+                    "exports": [{"address": 0x10, "name": "VirtualFree", "ordinal": 1}],
+                },
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = os.path.join(directory, "db.json")
+            with open(db_path, "w", encoding="utf-8") as f_db:
+                json.dump(db, f_db)
+            scout = ApiScout(db_path)
+        binary = struct.pack("<I", 0x7C000010)
+        self.assertEqual(["VirtualAlloc"], [row[3] for row in scout.crawl(binary)["Test Windows"]])
+        self.assertEqual(["VirtualAlloc", "VirtualFree"], scout._getDynamicFinder().indexes["Test Windows"].names)
+        # a map of another DB under the name: its addresses and names are searched, not those of the old DB
+        scout.api_maps["Test Windows"] = {0x7C000010: ("c.dll", "CreateFileW", 64), 0x7C000020: ("c.dll", "Other", 64)}
+        self.assertEqual([], scout.crawl(binary)["Test Windows"])
+        self.assertEqual(["CreateFileW", "Other"], scout._getDynamicFinder().indexes["Test Windows"].names)
+
+    def testReplacedApiMapIsSearchedAgain(self):
+        """a map of the same size under the same name, in a scan that has cached the search for the first"""
+        scout = ApiScout()
+        scout.api_maps["db"] = {0x7C000000: ("a.dll", "First", 32), 0x7C000100: ("a.dll", "Second", 32)}
+        binary = struct.pack("<II", 0x7C000000, 0x7C000200)
+        self.assertEqual([0], [row[0] for row in scout.crawl(binary)["db"]])
+        scout.api_maps["db"] = {0x7C000000: ("a.dll", "First", 32), 0x7C000200: ("a.dll", "Third", 32)}
+        self.assertEqual([("First", 0), ("Third", 4)], [(row[3], row[0]) for row in scout.crawl(binary)["db"]])
+
+    def testReplacedApiMapGivesNewDynamicApis(self):
+        scout = ApiScout()
+        scout.api_maps["db"] = {0x1000: ("a.dll", "VirtualAlloc", 32)}
+        first_finder = scout._getDynamicFinder()
+        scout.api_maps["db"] = {0x1000: ("a.dll", "VirtualProtect", 32)}
+        self.assertIsNot(first_finder, scout._getDynamicFinder())
+        self.assertIs(scout._getDynamicFinder(), scout._getDynamicFinder())
 
     def testCompleteCoverage(self):
         scout = ApiScout()

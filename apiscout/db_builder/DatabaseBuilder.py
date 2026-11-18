@@ -34,8 +34,29 @@ LOG = logging.getLogger(__name__)
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)-15s %(message)s")
 
 
+# the bitness of the machine types of a PE file (IMAGE_FILE_MACHINE_*): x86 and the 32bit ARM types (ARM, ARMNT, ARMT)
+# have 32bit pointers, AMD64 and ARM64 64bit pointers, as does anything else there is (IA-64, ARM64EC)
+MACHINE_BITNESS = {0x14C: 32, 0x1C0: 32, 0x1C2: 32, 0x1C4: 32, 0x8664: 64, 0xAA64: 64}
+# DllBaseChecker32.exe is an x86 and DllBaseChecker64.exe an AMD64 program. Neither loads a 32bit ARM DLL, while an
+# ARM64 DLL (Windows 11 on ARM has ARM64X ones in System32) can be loaded by the AMD64 one under x64 emulation
+ARM32_MACHINES = (0x1C0, 0x1C2, 0x1C4)
+
+
+def get_bitness(machine):
+    return MACHINE_BITNESS.get(machine, 64)
+
+
 def is_windows():
     return platform.system() == "Windows"
+
+
+# characters that Windows does not allow in a file name, and so no DB that is shared is named with them on any OS
+INVALID_FILE_NAME_CHARACTERS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def default_file_stem(os_version):
+    """the start of the name of the DB file that is written without --outfile: the first two numbers of the version"""
+    return ".".join(os_version.split(".")[:2])
 
 
 def get_system_info():
@@ -113,8 +134,7 @@ def check_aslr():
         pe = pefile.PE(module_path.value)
         pe_header_base_addr = pe.OPTIONAL_HEADER.ImageBase
         offsets.append(pe_header_base_addr - h_module_base)
-    # the DB builder also runs on the Python 3.8 of old analysis systems, which has no zip(strict=)
-    for dll_name, offset in zip(check_dlls, offsets):  # noqa: B905
+    for dll_name, offset in zip(check_dlls, offsets, strict=True):
         LOG.debug("Memory vs. File ImageBase offset (%s): 0x%x", dll_name, offset)
         is_aslr |= offset != 0
     return is_aslr
@@ -132,6 +152,8 @@ EXPORT_NAMES = re.compile(rb"[A-Za-z0-9_?@$()<>\0]*")
 # pefile gives up on a resource directory with more entries, and on an export table with more symbols
 MAX_DIRECTORY_ENTRIES = 4096
 MAX_EXPORTS = 0x2000
+# 64bit DLLs that Windows 7 loads below 4 GB (in every process); any other 64bit DLL there is the 32bit copy of a DLL
+LOW_64BIT_DLLS = ("ntdll.dll", "kernel32.dll", "user32.dll")
 
 
 class PlainPe:
@@ -434,6 +456,8 @@ def dumps_api_db(api_db):
 class DatabaseBuilder:
     def __init__(self):
         self._duplicate_paths = {}
+        # the machine type of each DLL that was read, by path: the DB does not store it
+        self._machines = {}
 
     def _extractPlainPe(self, filepath):
         """the summary of a DLL by PlainPe, None if it has no exports, an exception if pefile has to read it"""
@@ -445,10 +469,11 @@ class DatabaseBuilder:
             if exports is None:
                 return None
             version = pe.product_version()
+            self._machines[filepath] = pe.machine
             exports.sort(key=itemgetter(1))
             return {
                 "base_address": pe.image_base,
-                "bitness": 32 if pe.machine == 0x14C else 64,
+                "bitness": get_bitness(pe.machine),
                 "version": version,
                 "filepath": filepath,
                 "aslr_offset": 0,
@@ -479,9 +504,10 @@ class DatabaseBuilder:
                 if "export" in warning.lower():
                     LOG.warning("pefile warning for %s: %s", filepath, warning)
             if hasattr(pe, "DIRECTORY_ENTRY_EXPORT"):
+                self._machines[filepath] = pe.FILE_HEADER.Machine
                 dll_entry = {}
                 dll_entry["base_address"] = pe.OPTIONAL_HEADER.ImageBase
-                dll_entry["bitness"] = 32 if pe.FILE_HEADER.Machine == 0x14C else 64
+                dll_entry["bitness"] = get_bitness(pe.FILE_HEADER.Machine)
                 dll_entry["version"] = get_product_version(pe)
                 dll_entry["filepath"] = filepath
                 dll_entry["aslr_offset"] = 0
@@ -574,13 +600,22 @@ class DatabaseBuilder:
         if check_aslr():
             LOG.info(" looks like ASLR is active, let's extract some offsets!")
             num_offsets = {32: 0, 64: 0}
+            arm32_dlls = 0
             for dll_key in api_db["dlls"]:
                 dll = api_db["dlls"][dll_key]
-                if dll["bitness"] in [32, 64]:
-                    offset = self.getAslrOffsetForDll(dll)
-                    dll["aslr_offset"] = offset
-                    if offset:
-                        num_offsets[dll["bitness"]] += 1
+                if self._machines.get(dll["filepath"]) in ARM32_MACHINES:
+                    arm32_dlls += 1
+                    continue
+                offset = self.getAslrOffsetForDll(dll)
+                dll["aslr_offset"] = offset
+                if offset:
+                    num_offsets[dll["bitness"]] += 1
+            if arm32_dlls:
+                LOG.warning(
+                    "DllBaseChecker can not load 32bit ARM DLLs, the ASLR offset of %d of them is left as 0, "
+                    "--load_addresses can take it from a module list.",
+                    arm32_dlls,
+                )
             LOG.info("Found %d 32bit and %d 64bit ASLR offsets.", num_offsets[32], num_offsets[64])
             api_db["aslr_offsets"] = True
         return api_db
@@ -634,6 +669,7 @@ class DatabaseBuilder:
         for dll_path in sorted(ambiguous_paths):
             LOG.warning("Load address of %s fits DLLs of both bitnesses, it is not applied.", dll_path)
         num_offsets = 0
+        applied = []
         used_paths = set(ambiguous_paths)
         unmatched_dlls = {}
         for dll_key, dll in api_db["dlls"].items():
@@ -642,6 +678,7 @@ class DatabaseBuilder:
                 if load_address is not None:
                     dll["aslr_offset"] = dll["base_address"] - load_address
                     num_offsets += 1
+                    applied.append((dll, load_address))
                     used_paths.add(dll_path)
                     break
             else:
@@ -663,10 +700,33 @@ class DatabaseBuilder:
             if len(candidates) == 1:
                 candidates[0]["aslr_offset"] = candidates[0]["base_address"] - load_address
                 num_offsets += 1
+                applied.append((candidates[0], load_address))
+        if not has_wow64_dlls:
+            self._warnAboutLow64bitDlls(applied)
         log = LOG.warning if load_addresses and not num_offsets else LOG.info
         log("Applied load addresses to %d of %d DLLs.", num_offsets, len(api_db["dlls"]))
         api_db["aslr_offsets"] = num_offsets > 0
         return api_db
+
+    @staticmethod
+    def _warnAboutLow64bitDlls(applied):
+        """The module list of a 32bit process names the 32bit copies in SysWOW64 by their System32 path. Without a
+        SysWOW64 folder in the DB, such a list fits the 64bit DLLs of System32 by name, and every offset of them is
+        wrong. An address below 4 GB is no proof, as Windows 7 loads 64bit ntdll, kernel32 and user32 there, so this
+        only warns. The same as in apiscout/LoadAddresses.py."""
+        low = sorted(
+            (normalize_dll_path(dll["filepath"]).rsplit("/", 1)[-1], load_address)
+            for dll, load_address in applied
+            if dll.get("bitness") == 64 and load_address < 0x100000000
+        )
+        low = [(name, load_address) for name, load_address in low if name not in LOW_64BIT_DLLS]
+        if low:
+            LOG.warning(
+                "%d 64bit DLLs got a load address below 4 GB (%s): the DB has no SysWOW64 folder, so if the list is "
+                "the one of a 32bit process, these offsets are those of the 32bit copies and wrong.",
+                len(low),
+                ", ".join(f"{name} 0x{address:x}" for name, address in low[:3]) + (", ..." if len(low) > 3 else ""),
+            )
 
     def getAslrOffsetForDll(self, dll_entry):
         this_file = str(os.path.abspath(__file__))
@@ -696,7 +756,7 @@ class DatabaseBuilder:
     def persistApiDb(self, api_db, filepath=None):
         if filepath is None:
             filtered = "_filtered" if api_db["filtered"] else ""
-            filepath = "." + os.sep + ".".join(api_db["os_version"].split(".")[:2]) + filtered + ".json"
+            filepath = "." + os.sep + default_file_stem(api_db["os_version"]) + filtered + ".json"
         if not filepath.endswith(".json"):
             filepath += ".json"
         # the same bytes on every OS, as the DBs are shared and checked against SHA256SUMS
@@ -704,7 +764,19 @@ class DatabaseBuilder:
             f_out.write(dumps_api_db(api_db))
 
 
+def check_python_version(script):
+    """stops at once on a Python older than 3.10, instead of with a TypeError (zip(strict=)) after the crawl"""
+    # ruff knows requires-python and takes this for dead code, but this runs with any interpreter that starts it
+    if sys.version_info < (3, 10):  # noqa: UP036
+        sys.exit(
+            f"{script} needs Python 3.10 or newer, this is Python {sys.version_info[0]}.{sys.version_info[1]}. "
+            "For a system that has none, build the DB from a copy of its DLLs on another system "
+            "(--os_name, --os_version, --load_addresses)."
+        )
+
+
 def main():
+    check_python_version("DatabaseBuilder.py")
     parser = argparse.ArgumentParser(description="Build a database to be used by apiscout.")
     parser.add_argument(
         "--filter", dest="filter_dlls", action="store_true", help="(optional) filter DLLs by name (see config.py)"
@@ -756,6 +828,17 @@ def main():
     if bool(args.os_name) != bool(args.os_version):
         parser.error("--os_name and --os_version have to be given together.")
     offline = bool(args.os_name and args.os_version)
+    if (
+        offline
+        and not args.output_file
+        and (args.auto or args.paths)
+        and INVALID_FILE_NAME_CHARACTERS.search(default_file_stem(args.os_version))
+    ):
+        # the version names the file that is written without --outfile, which would fail after all DLLs were read
+        parser.error(
+            f'--os_version {args.os_version!r} can not be part of a file name (not / \\ < > : " | ? * or a control '
+            "character), give --outfile."
+        )
     if not is_windows() and (not offline or args.aslr_check):
         parser.error(
             "on systems other than Windows, --os_name and --os_version of the system the DLLs were taken from are required, and --aslr_check is not available."

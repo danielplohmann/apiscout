@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import logging
 import os
@@ -30,7 +32,7 @@ def reference_summary(path):
         exports.append({"address": exp.address, "name": name, "ordinal": exp.ordinal})
     return {
         "base_address": pe.OPTIONAL_HEADER.ImageBase,
-        "bitness": 32 if pe.FILE_HEADER.Machine == 0x14C else 64,
+        "bitness": 32 if pe.FILE_HEADER.Machine in (0x14C, 0x1C0, 0x1C2, 0x1C4) else 64,
         "version": DatabaseBuilder.get_product_version(pe),
         "filepath": path,
         "aslr_offset": 0,
@@ -92,10 +94,12 @@ def build_dll(
     with_resources=True,
     named_types=0,
     with_exports=True,
+    machine=None,
 ):
     """
     A DLL with a section of code, one of the export directory at 0x2000 and one of resources at 0x3000.
     functions: the address of each function by ordinal - base (0: none), names: (name, index in functions)
+    machine: the machine type of the header, by default the one of x86 for bits=32 and of AMD64 for bits=64
     """
     export = bytearray()
     count = len(names)
@@ -141,7 +145,7 @@ def build_dll(
     header[0:2] = b"MZ"
     struct.pack_into("<I", header, 0x3C, 0x80)
     header[0x80:0x84] = b"PE\0\0"
-    machine = 0x14C if bits == 32 else 0x8664
+    machine = machine or (0x14C if bits == 32 else 0x8664)
     struct.pack_into("<HHIIIHH", header, 0x84, machine, 3, 0x5F000000, 0, 0, optional_size, 0x2102)
     optional = 0x98
     struct.pack_into("<HBB", header, optional, 0x10B if bits == 32 else 0x20B, 14, 0)
@@ -224,6 +228,116 @@ class DatabaseBuilderTests(unittest.TestCase):
                 [(e["name"], e["ordinal"]) for e in summary["exports"]],
             )
 
+    def testBitnessOfTheMachineTypes(self):
+        """32bit ARM DLLs are 32bit, as the DLLs of x86; ARM64 and AMD64 are 64bit; by PlainPe and by pefile"""
+        machines = {
+            0x14C: ("x86", 32),
+            0x1C0: ("ARM", 32),
+            0x1C2: ("ARM Thumb", 32),
+            0x1C4: ("ARM Thumb-2 (ARMNT)", 32),
+            0x8664: ("AMD64", 64),
+            0xAA64: ("ARM64", 64),
+        }
+        for machine, (label, bitness) in machines.items():
+            # the optional header of a 32bit machine is PE32, the one of a 64bit machine PE32+
+            content = build_dll([0x1000], [(b"A", 0)], bitness, machine=machine)
+            with self.subTest(label):
+                self.assertEqual(bitness, self.assertSameAsPefile(content, plain=True)["bitness"])
+                self.assertEqual(bitness, DatabaseBuilder.get_bitness(machine))
+                # not plain: pefile reads it
+                changed = bytearray(content)
+                # 15 data directories instead of 16 is not what the linker writes
+                struct.pack_into("<I", changed, 0x98 + (92 if bitness == 32 else 108), 15)
+                path = self.write(bytes(changed))
+                with self.assertRaises(DatabaseBuilder.NotPlainPe):
+                    DatabaseBuilder.PlainPe(bytes(changed))
+                builder = DatabaseBuilder.DatabaseBuilder()
+                summary = builder._extractPeExports(path)
+                self.assertEqual(bitness, summary["bitness"])
+                # the machine is remembered by the builder, and not part of what goes into the DB
+                self.assertEqual({path: machine}, builder._machines)
+                self.assertNotIn("machine", summary)
+                plain_path = self.write(content)
+                builder._extractPlainPe(plain_path)
+                self.assertEqual(machine, builder._machines[plain_path])
+        # a machine type that is not known is 64bit as before
+        self.assertEqual(64, DatabaseBuilder.get_bitness(0x200))
+
+    def testDllBaseCheckerIsNotAskedForArm32Dlls(self):
+        """ARM64 DLLs go to the 64bit DllBaseChecker, which loads the ARM64X DLLs of Windows 11 on ARM"""
+        builder = DatabaseBuilder.DatabaseBuilder()
+        api_db = {"dlls": {}}
+        names = {}
+        for machine, bits in ((0x14C, 32), (0x8664, 64), (0x1C4, 32), (0xAA64, 64), (0x1C2, 32)):
+            path = self.write(build_dll([0x1000], [(b"A", 0)], bits, machine=machine))
+            names[path] = machine
+            api_db["dlls"][f"{bits}_{self.counter}"] = builder._extractPeExports(path)
+        checked = []
+
+        def get_offset(dll):
+            checked.append(names[dll["filepath"]])
+            return 0x1000
+
+        logging.disable(logging.NOTSET)
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(unittest.mock.patch.object(DatabaseBuilder, "check_aslr", return_value=True))
+            stack.enter_context(unittest.mock.patch.object(builder, "getAslrOffsetForDll", side_effect=get_offset))
+            logs = stack.enter_context(self.assertLogs("DatabaseBuilder", logging.WARNING))
+            builder.extractAslrOffsets(api_db)
+        self.assertEqual([0x14C, 0x8664, 0xAA64], checked)
+        self.assertEqual(1, len(logs.records))
+        self.assertIn("offset of 2 of them is left as 0", logs.records[0].getMessage())
+        self.assertEqual(
+            [0x1000, 0x1000, 0x1000, 0, 0],
+            sorted((dll["aslr_offset"] for dll in api_db["dlls"].values()), reverse=True),
+        )
+
+    def run_main(self, *arguments):
+        """DatabaseBuilder.main with the arguments, in the temporary folder: (exit code, standard error)"""
+        stderr = io.StringIO()
+        previous = os.getcwd()
+        os.chdir(self.directory.name)
+        self.addCleanup(os.chdir, previous)
+        try:
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(unittest.mock.patch.object(sys, "argv", ["DatabaseBuilder.py", *arguments]))
+                stack.enter_context(contextlib.redirect_stderr(stderr))
+                try:
+                    DatabaseBuilder.main()
+                    code = 0
+                except SystemExit as exit_request:
+                    code = exit_request.code
+        finally:
+            os.chdir(previous)
+        return code, stderr.getvalue()
+
+    def testOsVersionThatNamesTheDefaultFileIsCheckedBeforeTheCrawl(self):
+        dll_dir = os.path.join(self.directory.name, "dlls")
+        os.mkdir(dll_dir)
+        with open(os.path.join(dll_dir, "a.dll"), "wb") as f_dll:
+            f_dll.write(build_dll([0x1000], [(b"A", 0)]))
+        offline = ["--paths", dll_dir, "--os_name", "Test"]
+
+        def crawl(*unused):
+            raise AssertionError("the DLLs are read before the version is checked")
+
+        invalid = ("10.0/1", "10/0.1", "1\\2.0", "10.0\\1.2", "10.0:1", "1<0.0", '10."0', "10|0.0", "10.0?", "1*.0")
+        for version in invalid + ("10.0\x01", "10\x1f.0", "10.0\x00"):
+            with self.subTest(version):
+                with unittest.mock.patch.object(DatabaseBuilder.DatabaseBuilder, "extractRecursively", crawl):
+                    code, errors = self.run_main(*offline, "--os_version", version)
+                self.assertEqual(2, code)
+                self.assertIn("can not be part of a file name (not", errors)
+                self.assertFalse(any(name.endswith(".json") for name in os.listdir(self.directory.name)))
+        # only the first two numbers name the file, and --outfile names it otherwise
+        self.assertEqual("10.0", DatabaseBuilder.default_file_stem("10.0.19041/1"))
+        self.assertEqual((0, ""), self.run_main(*offline, "--os_version", "10.0.19041/1:*"))
+        self.assertTrue(os.path.isfile(os.path.join(self.directory.name, "10.0.json")))
+        outfile = os.path.join(self.directory.name, "out.json")
+        self.assertEqual((0, ""), self.run_main(*offline, "--os_version", "10.0/1", "--outfile", outfile))
+        with open(outfile, encoding="utf-8") as f_db:
+            self.assertEqual("10.0/1", json.load(f_db)["os_version"])
+
     def testNoResourcesAndNoExports(self):
         summary = self.assertSameAsPefile(build_dll([0x1000], [(b"A", 0)], with_resources=False), plain=True)
         self.assertEqual("0.0.0.0", summary["version"])
@@ -283,6 +397,25 @@ class DatabaseBuilderTests(unittest.TestCase):
         ]
         for document in documents:
             self.assertEqual(json.dumps(document, indent=1, sort_keys=True), DatabaseBuilder.dumps_api_db(document))
+
+    def testOldPythonStopsBeforeAnythingIsDone(self):
+        for old_version in ((3, 8, 20, "final", 0), (3, 9, 0, "final", 0)):
+            with self.subTest(old_version):
+                crawl = unittest.mock.Mock(side_effect=AssertionError("crawled"))
+                with contextlib.ExitStack() as stack:
+                    stack.enter_context(unittest.mock.patch.object(sys, "version_info", old_version))
+                    stack.enter_context(unittest.mock.patch.object(sys, "argv", ["DatabaseBuilder.py", "--paths", "x"]))
+                    stack.enter_context(
+                        unittest.mock.patch.object(DatabaseBuilder.DatabaseBuilder, "extractRecursively", crawl)
+                    )
+                    with self.assertRaises(SystemExit) as stopped:
+                        DatabaseBuilder.main()
+                self.assertIn(
+                    "needs Python 3.10 or newer, this is Python {}.{}".format(*old_version[:2]),
+                    str(stopped.exception.code),
+                )
+                self.assertIn("--load_addresses", str(stopped.exception.code))
+                crawl.assert_not_called()
 
     def testFilterIsNotCaseSensitive(self):
         builder = DatabaseBuilder.DatabaseBuilder()

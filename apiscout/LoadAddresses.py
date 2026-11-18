@@ -40,6 +40,8 @@ PAGE_SIZE = 0x1000
 MIN_EXPORT_MATCH = 0.9
 MAX_EXPORTS = 0x20000
 MIN_EXPORTS_BY_EXPORTS_ONLY = 8
+# 64bit DLLs that Windows 7 loads below 4 GB (in every process); any other 64bit DLL there is the 32bit copy of a DLL
+LOW_64BIT_DLLS = ("ntdll.dll", "kernel32.dll", "user32.dll")
 
 
 def normalize_dll_path(path):
@@ -146,6 +148,29 @@ def match_load_addresses(dlls, load_addresses):
         if len(candidates) == 1:
             placements[candidates[0][0]] = load_address
     return placements
+
+
+def warn_about_low_64bit_dlls(dlls, placements):
+    """The module list of a 32bit process names the 32bit copies in SysWOW64 by their System32 path. Without a SysWOW64
+    folder in the DB, such a list fits the 64bit DLLs of System32 by name, and every offset of them is wrong. An address
+    below 4 GB is no proof, as Windows 7 loads 64bit ntdll, kernel32 and user32 there, so this only warns. It is
+    called once for the placements of a DB that were chosen, not for each source that has some."""
+    if any(normalize_dll_path(dll.get("filepath", "")).startswith("syswow64/") for dll in dlls.values()):
+        return
+    low = sorted(
+        (normalize_dll_path(dlls[dll_key].get("filepath", "")).rsplit("/", 1)[-1], load_address)
+        for dll_key, load_address in placements.items()
+        if dlls[dll_key].get("bitness") == 64 and load_address < 0x100000000
+    )
+    low = [(name, load_address) for name, load_address in low if name not in LOW_64BIT_DLLS]
+    if low:
+        LOG.warning(
+            "%d 64bit DLLs got a load address below 4 GB (%s): the DB has no SysWOW64 folder, so if the list is the "
+            "one of a 32bit process, these offsets are those of the 32bit copies and wrong.",
+            len(low),
+            ", ".join(f"{name} 0x{load_address:x}" for name, load_address in low[:3])
+            + (", ..." if len(low) > 3 else ""),
+        )
 
 
 @dataclass(frozen=True)
@@ -306,5 +331,6 @@ class DllPlacer:
                     self.placed.append(
                         {"api_db": db_path, "dll": dll_key, "load_address": load_address, "source": source}
                     )
+        warn_about_low_64bit_dlls(dlls, placements)
         self.summaries.append((db_path, api_db.get("os_name", ""), len(dlls), counts))
         return placements
