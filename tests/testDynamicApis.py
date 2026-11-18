@@ -1114,7 +1114,7 @@ class DynamicCliTestSuite(unittest.TestCase):
     def testDefaultOutputIsUnchanged(self):
         from tests.testCli import DB_PATH, DUMP_PATH, run
 
-        code, output, _ = run("scan", DUMP_PATH, "--db", DB_PATH, "--base-addr", "0x1000")
+        code, output, _ = run("scan", "--min-confidence", "0", DUMP_PATH, "--db", DB_PATH, "--base-addr", "0x1000")
         self.assertEqual(0, code)
         # the output of the commit before --dynamic
         self.assertEqual(
@@ -1131,7 +1131,9 @@ class DynamicCliTestSuite(unittest.TestCase):
             "\n",
             output,
         )
-        code, output, _ = run("scan", DUMP_PATH, "--db", DB_PATH, "--base-addr", "0x1000", "--json")
+        code, output, _ = run(
+            "scan", "--min-confidence", "0", DUMP_PATH, "--db", DB_PATH, "--base-addr", "0x1000", "--json"
+        )
         self.assertEqual(
             {
                 "base_address": 4096,

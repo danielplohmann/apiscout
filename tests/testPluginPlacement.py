@@ -84,8 +84,10 @@ class PlacementCase:
                 f_modules.write(f"{self.DUMP_BOOT[name]:x} C:\\Windows\\SysWOW64\\{name}\n")
 
     def cli_apis(self, *arguments, dump_path=None):
-        """what `apiscout scan` finds in the dump of the case: [(address, API)]"""
-        code, output, _ = run("scan", dump_path or self.dump_path, "--db", self.db_path, "--json", *arguments)
+        """what `apiscout scan` finds in the dump of the case: [(address, API)], every hit like the plugins"""
+        code, output, _ = run(
+            "scan", dump_path or self.dump_path, "--db", self.db_path, "--json", "--min-confidence", "0", *arguments
+        )
         assert code == 0
         return [(BASE + api["offset"], api["api"]) for api in json.loads(output)["apis"]]
 

@@ -406,10 +406,10 @@ def function_type(name="prototype"):
 
 
 def cli_hits(dump, db):
-    """the number of API references `apiscout scan --json` reports"""
+    """the number of API references `apiscout scan --json` reports, all of them like the plugin"""
     output = io.StringIO()
     with contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
-        code = cli.main(["scan", dump, "--db", db, "--json", "--quiet"])
+        code = cli.main(["scan", dump, "--db", db, "--json", "--quiet", "--min-confidence", "0"])
     assert code == 0
     return json.loads(output.getvalue())
 

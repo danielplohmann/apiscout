@@ -290,7 +290,7 @@ class MinidumpScanTestSuite(unittest.TestCase):
     def testScanReportsVirtualAddresses(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self._writeDump(directory, self._buildDump())
-            code, output, errors = run("scan", path, "--db", DB_PATH, "--json")
+            code, output, errors = run("scan", "--min-confidence", "0", path, "--db", DB_PATH, "--json")
             self.assertEqual(0, code, errors)
             document = json.loads(output)
             found = [(hex(api["offset"]), api["api"]) for api in document["apis"]]
@@ -306,10 +306,12 @@ class MinidumpScanTestSuite(unittest.TestCase):
             self.assertIn("minidump", errors)
             self.assertIn("1 hits in the images of 1 system DLLs left out", errors)
             # a base address makes the offsets relative to it
-            code, output, _ = run("scan", path, "--db", DB_PATH, "--json", "--base-addr", "0x400000")
+            code, output, _ = run(
+                "scan", "--min-confidence", "0", path, "--db", DB_PATH, "--json", "--base-addr", "0x400000"
+            )
             self.assertEqual([0x20, 0xFFE, 0x1FC00080], [api["offset"] for api in json.loads(output)["apis"]])
             # the listing shows the address of every hit
-            code, output, _ = run("scan", path, "--db", DB_PATH, "--base-addr", "0x400000")
+            code, output, _ = run("scan", "--min-confidence", "0", path, "--db", DB_PATH, "--base-addr", "0x400000")
             self.assertIn("0x00400ffe", output)
             self.assertIn("0x20000080", output)
 
@@ -318,33 +320,33 @@ class MinidumpScanTestSuite(unittest.TestCase):
             path = os.path.join(directory, "crash_0x00400000")
             with open(path, "wb") as f_dump:
                 f_dump.write(self._buildDump())
-            document = json.loads(run("scan", path, "--db", DB_PATH, "--json")[1])
+            document = json.loads(run("scan", "--min-confidence", "0", path, "--db", DB_PATH, "--json")[1])
             self.assertEqual(0, document["base_address"])
             self.assertEqual(0x400020, document["apis"][0]["offset"])
 
     def testSystemWithoutQwords(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self._writeDump(directory, self._buildDump(architecture=0))
-            document = json.loads(run("scan", path, "--db", DB_PATH, "--json")[1])
+            document = json.loads(run("scan", "--min-confidence", "0", path, "--db", DB_PATH, "--json")[1])
             self.assertEqual({"InterlockedIncrement"}, {api["api"] for api in document["apis"]})
 
     def testScanErrors(self):
         dump = self._buildDump()
         with tempfile.TemporaryDirectory() as directory:
             path = self._writeDump(directory, dump[:40])
-            code, output, errors = run("scan", path, "--db", DB_PATH)
+            code, output, errors = run("scan", "--min-confidence", "0", path, "--db", DB_PATH)
             self.assertEqual((1, ""), (code, output))
             self.assertIn("can not read", errors)
             self.assertNotIn("Traceback", errors)
             path = self._writeDump(directory, b"MDMP" + bytes(range(256)) * 4)
-            self.assertEqual(1, run("scan", path, "--db", DB_PATH)[0])
+            self.assertEqual(1, run("scan", "--min-confidence", "0", path, "--db", DB_PATH)[0])
             path = self._writeDump(directory, dump)
-            code, _, errors = run("scan", path, "--import-table")
+            code, _, errors = run("scan", "--min-confidence", "0", path, "--import-table")
             self.assertEqual(1, code)
             self.assertIn("minidump", errors)
             # a truncated dump is scanned as far as it goes
             path = self._writeDump(directory, dump[:-0x1800])
-            code, output, errors = run("scan", path, "--db", DB_PATH, "--json")
+            code, output, errors = run("scan", "--min-confidence", "0", path, "--db", DB_PATH, "--json")
             self.assertEqual(0, code)
             self.assertIn("cut off", errors)
             self.assertEqual(2, len(json.loads(output)["apis"]))
@@ -358,8 +360,9 @@ class MinidumpScanTestSuite(unittest.TestCase):
         db_path = os.path.join(THIS_DIR, "..", "dbs", "win7_prof-n_sp1_example.json")
         with tempfile.TemporaryDirectory() as directory:
             dump_path = self._writeDump(directory, build_minidump([(0x400000, sample)], architecture=0))
-            from_minidump = json.loads(run("scan", dump_path, "--db", db_path, "--json")[1])
-        flat = json.loads(run("scan", path, "--db", db_path, "--json")[1])
+            from_minidump = json.loads(run("scan", dump_path, "--db", db_path, "--json", "--min-confidence", "0")[1])
+        # every hit, the count of 2.x
+        flat = json.loads(run("scan", path, "--db", db_path, "--json", "--min-confidence", "0")[1])
         self.assertEqual(183, len({api["api"] for api in flat["apis"]}))
         # the offsets of the minidump are virtual addresses, those of the flat dump relative to its base address
         for api in flat["apis"]:
