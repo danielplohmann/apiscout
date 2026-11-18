@@ -86,6 +86,8 @@ VECTOR=$(apiscout scan trickbot_dump_0x00400000 --db win7_prof-n_sp1_example.jso
 apiscout export "$VECTOR" --png vector.png --html vector.html
 ```
 
+**Find what is resolved at run time.** `--dynamic` also looks for APIs that a program never stores as pointers: hashes of their names (ROR13, Metasploit block_api, CRC32, djb2, FNV-1a) in groups of at least three, as shellcode and loaders compare them, and their names as strings, in runs of at least three. They are listed after the pointers and added to the ApiVector.
+
 **Script it.** `--json` gives machine-readable output, `-` reads standard input:
 
 ```bash

@@ -58,6 +58,8 @@ class ApiScout:
         self._api_map_sources = {}
         self._other_bitness_maps = {}
         self._sorted_addresses = {}
+        self._export_entries = {}
+        self._dynamic_finder = None
         self.has_64bit = False
         self.base_address = 0
         self._binary_length = 0
@@ -88,6 +90,7 @@ class ApiScout:
         num_collisions = 0
         api_map = {}
         other_bitness_map = {}
+        export_entries = []
         for dll_entry in api_db["dlls"]:
             LOG.debug("  building address map for: %s", dll_entry)
             aslr_offset = 0
@@ -114,6 +117,8 @@ class ApiScout:
                         # a 32bit and a 64bit DLL can share an address, both stay resolvable for their pointer size
                         other_bitness_map[virtual_address] = api_map[virtual_address]
                 api_map[virtual_address] = (dll_name, api_name, bitness)
+                # the map keeps one export per address, the names of all of them are needed to find APIs by name
+                export_entries.append(api_map[virtual_address])
             LOG.debug("loaded %d exports", num_apis_loaded)
         LOG.debug(
             "loaded %d exports from %d DLLs (%s) with %d potential collisions.",
@@ -136,6 +141,8 @@ class ApiScout:
         api_map_name = self._getApiMapName(api_db["os_name"], db_filepath)
         self.api_maps[api_map_name] = api_map
         self._other_bitness_maps[api_map_name] = other_bitness_map
+        self._export_entries[api_map_name] = export_entries
+        self._dynamic_finder = None
 
     def _getApiMapName(self, os_name, db_filepath):
         """API maps are named by the OS they were built on. Several DBs for the same OS (e.g. one per boot with ASLR) must not replace each other."""
@@ -391,6 +398,110 @@ class ApiScout:
         for recovered_apis in results.values():
             recovered_apis.sort(key=lambda entry: (entry[0], entry[4]))
         return results
+
+    def _getDynamicFinder(self):
+        try:
+            # numpy is needed to hash the export names and to search the binary, other functions do without it
+            from .DynamicApis import ApiNameIndex, DynamicApiFinder
+        except ImportError:  # pragma: no cover - numpy is a dependency
+            raise RuntimeError("Finding dynamically resolved APIs needs numpy.") from None
+        key = tuple((name, id(api_map), len(api_map)) for name, api_map in self.api_maps.items())
+        if self._dynamic_finder is None or self._dynamic_finder[0] != key:
+            indexes = {
+                name: ApiNameIndex(self._export_entries.get(name) or api_map.values())
+                for name, api_map in self.api_maps.items()
+            }
+            self._dynamic_finder = (key, DynamicApiFinder(indexes))
+        return self._dynamic_finder[1]
+
+    def findDynamicApis(
+        self,
+        binary,
+        hashes=True,
+        strings=True,
+        min_string_length=None,
+        min_hits=None,
+        algorithms=None,
+        min_string_run=None,
+    ):
+        """APIs that the binary does not refer to by pointer but resolves at run time, per API map as {name: [DynamicApi]}, by offset
+
+        hashes: APIs of which the hash of the name (algorithms, by default all of DynamicApis.HASH_ALGORITHMS) is in the binary, in a
+        region of several hashes (min_hits sets the number, see DynamicApis.getMinimumHits). strings: APIs of which the name, at least
+        min_string_length characters long (default: DynamicApis.DEFAULT_MIN_STRING_LENGTH), is a whole ASCII or UTF-16LE string that is in a
+        run of at least min_string_run different names (default: DynamicApis.MIN_STRING_RUN, see DynamicApis.getStringRuns).
+        The hashes of an API DB are computed at the first call after loading it."""
+        finder = self._getDynamicFinder()
+        results = {name: [] for name in self.api_maps}
+        found = []
+        if hashes:
+            found.append(finder.findHashes(binary, algorithms, min_hits, self.load_offset))
+        if strings:
+            found.append(finder.findStrings(binary, min_string_length, self.load_offset, min_string_run))
+        for found_in_map in found:
+            for name, apis in found_in_map.items():
+                results[name].extend(apis)
+        for apis in results.values():
+            apis.sort(key=lambda api: (api.offset, api.kind, api.algorithm, api.api))
+        return results
+
+    def findDynamicApisInRegions(self, regions, exclude_ranges=()):
+        """findDynamicApis() over memory regions given as (start address, buffer), like crawlRegions(); APIs found in
+        exclude_ranges, (start, end) addresses such as the images of DLLs with their own export names, are dropped"""
+        base_address, load_offset = self.base_address, self.load_offset
+        results = {name: [] for name in self.api_maps}
+        try:
+            for start, binary in regions:
+                self.setLoadOffset(start - base_address)
+                for name, apis in self.findDynamicApis(binary).items():
+                    results[name].extend(apis)
+        finally:
+            self.base_address, self.load_offset = base_address, load_offset
+        for name, apis in results.items():
+            results[name] = sorted(
+                (
+                    api
+                    for api in apis
+                    if not any(start <= base_address + api.offset < end for start, end in exclude_ranges)
+                ),
+                key=lambda api: (api.offset, api.kind, api.algorithm, api.api),
+            )
+        return results
+
+    def addDynamicApisToResults(self, results, dynamic_results):
+        """a copy of the results of crawl() with the dynamic APIs added as references without address, for the ApiVector
+
+        A hash of a name does not tell which DLL exports the API. The DLLs of the WinApi1024 vector are used where there are some, so
+        that the number of APIs does not grow with the number of DLLs that export the same name; otherwise the first DLL."""
+        combined = {name: list(apis) for name, apis in results.items()}
+        for name, dynamic_apis in dynamic_results.items():
+            for api in dynamic_apis:
+                dlls = [dll for dll in api.dlls if self._apivector.isInWinApi1024(dll, api.api)] or api.dlls[:1]
+                for dll in dlls:
+                    combined.setdefault(name, []).append((api.offset, 0, dll + "_0x0", api.api, 0, None, 1, set()))
+        return combined
+
+    def renderDynamicApis(self, dynamic_results, max_dlls=3):
+        output = ""
+        for api_map_name, apis in dynamic_results.items():
+            if not apis:
+                output += f"No dynamically resolved APIs for API DB: {api_map_name}\n"
+                continue
+            output += f"Dynamically resolved APIs for API DB: {api_map_name}\n"
+            output += "{:3}: {:10}; {:6}; {:9}; {:10}; {:40}; {:60}\n".format(
+                "idx", "offset", "type", "algorithm", "value", "DLL", "API"
+            )
+            for index, api in enumerate(apis):
+                dlls = ", ".join(api.dlls[:max_dlls]) + (
+                    f" (+{len(api.dlls) - max_dlls})" if len(api.dlls) > max_dlls else ""
+                )
+                value = "" if api.value is None else f"0x{api.value:08x}"
+                output += f"{index + 1:3}: 0x{self.base_address + api.offset:08x}; {api.kind:6}; {api.algorithm:9}; {value:10}; {dlls:40}; {api.api:60}\n"
+            num_hashes = sum(api.kind == "hash" for api in apis)
+            output += (
+                f"APIs: {len({api.api for api in apis})}, by hash: {num_hashes}, by string: {len(apis) - num_hashes}\n"
+            )
+        return output
 
     @staticmethod
     def _getFilteredList(distance, list_to_filter):

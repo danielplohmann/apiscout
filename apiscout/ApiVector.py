@@ -33,6 +33,7 @@ class ApiVector:
         self._winapi1024 = self._loadWinApi1024(winapi1024_filepath)
         # DLL names are matched in lower case, see _uniquify_api_name()
         self._dllapi_only = [(entry[0].lower(), entry[1]) for entry in self._winapi1024]
+        self._dllapi_set = set(self._dllapi_only)
         # linear
         self._vector_ranks_only = [entry[3] for entry in self._winapi1024]
         self._n_vector_ranks_only = []
@@ -90,6 +91,10 @@ class ApiVector:
 
     def getWinApi1024(self):
         return self._winapi1024
+
+    def isInWinApi1024(self, dll_name, api_name):
+        """whether an API of a DLL (file name, e.g. kernel32.dll) is matched to one of the APIs of the vector"""
+        return self._uniquify_api_name(dll_name, api_name) in self._dllapi_set
 
     def getApiVectors(self, results):
         unique_results = self._get_uniquified_results(results)
