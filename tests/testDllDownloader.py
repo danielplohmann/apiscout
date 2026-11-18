@@ -15,7 +15,6 @@ import unittest.mock
 import urllib.error
 
 THIS_DIR = os.path.abspath(os.path.dirname(__file__))
-sys.path.insert(0, os.path.join(THIS_DIR, "..", "apiscout", "db_builder"))
 
 NAME = "foo.dll"
 DATA_X64 = b"MZ" + b"x64 file" * 40
@@ -24,7 +23,7 @@ DATA_OLD_X64 = b"MZ" + b"old x64" * 50
 
 
 def load_module():
-    import DllDownloader
+    from apiscout.db_builder import DllDownloader
 
     return DllDownloader
 
@@ -791,9 +790,7 @@ class RunTestSuite(unittest.TestCase):
         self.assertIn("files of KB5000002: System32/foo.dll, SysWOW64/other.dll.", out)
 
     def test_db_is_built_from_the_given_files_only(self):
-        sys.path.insert(0, os.path.join(THIS_DIR, "..", "apiscout", "db_builder"))
-        self.addCleanup(sys.path.remove, sys.path[0])
-        import DatabaseBuilder
+        from apiscout.db_builder import DatabaseBuilder
 
         for folder in ("System32", "SysWOW64"):
             os.makedirs(os.path.join(self.out, folder))
@@ -808,9 +805,7 @@ class RunTestSuite(unittest.TestCase):
 
     def test_files_are_matched_in_the_case_of_the_file_system(self):
         """on Windows, a verified kernelbase.dll that is there as KernelBase.dll is the file of the index"""
-        sys.path.insert(0, os.path.join(THIS_DIR, "..", "apiscout", "db_builder"))
-        self.addCleanup(sys.path.remove, sys.path[0])
-        import DatabaseBuilder
+        from apiscout.db_builder import DatabaseBuilder
 
         os.makedirs(os.path.join(self.out, "System32"))
         with open(os.path.join(self.out, "System32", "KernelBase.dll"), "wb") as f_out:

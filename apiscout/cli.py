@@ -967,7 +967,7 @@ def build_parser():
         "--modules",
         metavar="FILE",
         help="lines of '<hex load address> <DLL path>', the module list of the process: the DLLs of the API DBs are "
-        "placed at these addresses instead of those of the DB (as DatabaseBuilder.py --load_addresses does)",
+        "placed at these addresses instead of those of the DB (as the DB builder's --load_addresses does)",
     )
     scan.add_argument(
         "--min-confidence",

@@ -4,7 +4,6 @@ import logging
 import os
 import random
 import struct
-import sys
 import tempfile
 import unittest
 
@@ -26,7 +25,6 @@ from tests.testMinidump import build_minidump, page, run
 THIS_DIR = os.path.abspath(os.path.dirname(__file__))
 DBS_DIR = os.path.join(THIS_DIR, "..", "dbs")
 WIN11_DB = os.path.join(DBS_DIR, "win11_pro_26h2_example.json")
-sys.path.insert(0, os.path.join(THIS_DIR, "..", "apiscout", "db_builder"))
 
 
 def build_dll_image(name, exports, bitness=32, size=0x3000, export_directory=True):
@@ -80,7 +78,7 @@ class MatchingTestSuite(unittest.TestCase):
     """the matching of load addresses is the one of DatabaseBuilder.applyLoadAddresses, whose copy it is"""
 
     def _builderOffsets(self, dlls, addresses):
-        import DatabaseBuilder
+        from apiscout.db_builder import DatabaseBuilder
 
         api_db = {"dlls": copy.deepcopy(dlls)}
         DatabaseBuilder.DatabaseBuilder().applyLoadAddresses(api_db, addresses)
@@ -177,7 +175,7 @@ class MatchingTestSuite(unittest.TestCase):
         self.assertTrue(self._builderOffsets(*scenarios[0]))
 
     def testSameModuleListFormatAsTheDbBuilder(self):
-        import DatabaseBuilder
+        from apiscout.db_builder import DatabaseBuilder
 
         content = '# list\n0x7ffb11110000 "C:\\Windows\\System32\\kernel32.dll"\r\n75990000 C:\\Windows\\SysWOW64\\kernel32.dll\r\nzz bad\r\n\r\n'
         expected = [("system32/kernel32.dll", 0x7FFB11110000), ("syswow64/kernel32.dll", 0x75990000)]
@@ -193,7 +191,7 @@ class MatchingTestSuite(unittest.TestCase):
     def testWarnsAboutThe32bitListOfASystem32OnlyCopy(self):
         """without SysWOW64, the list of a 32bit process is applied to the 64bit DLLs: warn, both in the DB builder
         and at scan time. 64bit ntdll, kernel32 and user32 are loaded below 4 GB by Windows 7, which is no reason."""
-        import DatabaseBuilder
+        from apiscout.db_builder import DatabaseBuilder
 
         def dlls(*names):
             return {
@@ -227,10 +225,14 @@ class MatchingTestSuite(unittest.TestCase):
             ("system32/" + name, 0x77000000 + 0x100000 * index) for index, name in enumerate(names)
         ]
         found = warnings_of(dlls(*names), list_of_32bit_process)
-        self.assertEqual(["DatabaseBuilder", "apiscout.LoadAddresses"], sorted(name for name, _ in found))
+        self.assertEqual(
+            ["apiscout.LoadAddresses", "apiscout.db_builder.DatabaseBuilder"], sorted(name for name, _ in found)
+        )
         # several module lists for one DB are one warning of the scan, the placements are what it is about
         found = warnings_of(dlls(*names), list_of_32bit_process, lists=3)
-        self.assertEqual(["DatabaseBuilder", "apiscout.LoadAddresses"], sorted(name for name, _ in found))
+        self.assertEqual(
+            ["apiscout.LoadAddresses", "apiscout.db_builder.DatabaseBuilder"], sorted(name for name, _ in found)
+        )
         for _, message in found:
             self.assertIn("4 64bit DLLs got a load address below 4 GB", message)
             self.assertIn("advapi32.dll 0x77300000, msvcrt.dll 0x77600000, rpcrt4.dll 0x77400000, ...", message)

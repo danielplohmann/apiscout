@@ -1,7 +1,6 @@
 import json
 import os
 import struct
-import sys
 import tempfile
 import unittest
 import unittest.mock
@@ -16,7 +15,6 @@ from apiscout.utility import get_string
 
 THIS_DIR = os.path.abspath(os.path.dirname(__file__))
 WINAPI1024_PATH = os.path.join(THIS_DIR, "..", "apiscout", "data", "winapi1024v1.txt")
-sys.path.insert(0, os.path.join(THIS_DIR, "..", "apiscout", "db_builder"))
 
 
 def build_pe32():
@@ -271,7 +269,7 @@ class DatabaseBuilderTestSuite(unittest.TestCase):
         import platform
         import unittest.mock
 
-        import DatabaseBuilder
+        from apiscout.db_builder import DatabaseBuilder
 
         uname = platform.uname_result("Windows", "host", "2022Server", "10.0.20348", "AMD64")
         version = unittest.mock.Mock(service_pack="")
@@ -282,7 +280,7 @@ class DatabaseBuilderTestSuite(unittest.TestCase):
             self.assertEqual(("Windows 2022 Server (AMD64)", "10.0.20348"), DatabaseBuilder.get_system_info())
 
     def testLoadAddresses(self):
-        import DatabaseBuilder
+        from apiscout.db_builder import DatabaseBuilder
 
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f_addresses:
             f_addresses.write(
@@ -501,7 +499,7 @@ class SecondAuditTestSuite(unittest.TestCase):
             self.assertEqual(["link.csv", "real.csv"], sorted(os.listdir(directory)))
 
     def testLoadAddressFiles(self):
-        import DatabaseBuilder
+        from apiscout.db_builder import DatabaseBuilder
 
         content = (
             '0x7ffb11110000 "C:\\Windows\\System32\\kernel32.dll"\r\n75990000 C:\\Windows\\SysWOW64\\kernel32.dll\r\n'
@@ -614,7 +612,7 @@ class FourthAuditTestSuite(unittest.TestCase):
             self.assertIn(("fam", name), crawler._ignore_files)
 
     def testLoadAddressesOfA32BitProcess(self):
-        import DatabaseBuilder
+        from apiscout.db_builder import DatabaseBuilder
 
         api_db = {
             "dlls": {
@@ -681,7 +679,7 @@ class FifthAuditTestSuite(unittest.TestCase):
         self.assertEqual([], ApiScout().evaluateImportTable(bytes(pe))["import_table"])
 
     def testLoadAddressesOfRenamedFoldersAndNamesInOtherCase(self):
-        import DatabaseBuilder
+        from apiscout.db_builder import DatabaseBuilder
 
         builder = DatabaseBuilder.DatabaseBuilder()
         api_db = {
@@ -704,11 +702,11 @@ class FifthAuditTestSuite(unittest.TestCase):
                 os.mkdir(os.path.join(directory, folder))
                 with open(os.path.join(directory, folder, name), "wb"):
                     pass
-            builder._extractPeExports = lambda path: {
+            builder._extractPeExports = lambda filepath: {
                 "base_address": 0x180000000,
                 "bitness": 64,
                 "version": "1.0",
-                "filepath": path,
+                "filepath": filepath,
                 "aslr_offset": 0,
                 "exports": [],
             }
@@ -798,7 +796,7 @@ class SixthAuditTestSuite(unittest.TestCase):
         self.assertEqual(len(ordinals), len(loader.get_import_table()))
 
     def testAmbiguousLoadAddressOfA32bitProcess(self):
-        import DatabaseBuilder
+        from apiscout.db_builder import DatabaseBuilder
 
         def build_db():
             return {

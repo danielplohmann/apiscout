@@ -8,11 +8,9 @@ import sys
 import tempfile
 import unittest
 import unittest.mock
+from typing import Any
 
-THIS_DIR = os.path.abspath(os.path.dirname(__file__))
-sys.path.insert(0, os.path.join(THIS_DIR, "..", "apiscout", "db_builder"))
-
-import DatabaseBuilder  # noqa: E402
+from apiscout.db_builder import DatabaseBuilder
 
 pefile = DatabaseBuilder.pefile
 
@@ -23,7 +21,8 @@ RESOURCE_RVA = 0x3000
 
 def reference_summary(path):
     """what the DB builder made of a DLL before it read the exports itself: the whole PE parsed by pefile"""
-    pe = pefile.PE(path)
+    # pefile sets the attributes of the PE while it parses it
+    pe: Any = pefile.PE(path)
     if not hasattr(pe, "DIRECTORY_ENTRY_EXPORT"):
         return None
     exports = []
@@ -282,7 +281,7 @@ class DatabaseBuilderTests(unittest.TestCase):
         with contextlib.ExitStack() as stack:
             stack.enter_context(unittest.mock.patch.object(DatabaseBuilder, "check_aslr", return_value=True))
             stack.enter_context(unittest.mock.patch.object(builder, "getAslrOffsetForDll", side_effect=get_offset))
-            logs = stack.enter_context(self.assertLogs("DatabaseBuilder", logging.WARNING))
+            logs = stack.enter_context(self.assertLogs("apiscout.db_builder.DatabaseBuilder", logging.WARNING))
             builder.extractAslrOffsets(api_db)
         self.assertEqual([0x14C, 0x8664, 0xAA64], checked)
         self.assertEqual(1, len(logs.records))
@@ -300,7 +299,7 @@ class DatabaseBuilderTests(unittest.TestCase):
         self.addCleanup(os.chdir, previous)
         try:
             with contextlib.ExitStack() as stack:
-                stack.enter_context(unittest.mock.patch.object(sys, "argv", ["DatabaseBuilder.py", *arguments]))
+                stack.enter_context(unittest.mock.patch.object(sys, "argv", ["apiscout.db_builder", *arguments]))
                 stack.enter_context(contextlib.redirect_stderr(stderr))
                 try:
                     DatabaseBuilder.main()
@@ -404,7 +403,9 @@ class DatabaseBuilderTests(unittest.TestCase):
                 crawl = unittest.mock.Mock(side_effect=AssertionError("crawled"))
                 with contextlib.ExitStack() as stack:
                     stack.enter_context(unittest.mock.patch.object(sys, "version_info", old_version))
-                    stack.enter_context(unittest.mock.patch.object(sys, "argv", ["DatabaseBuilder.py", "--paths", "x"]))
+                    stack.enter_context(
+                        unittest.mock.patch.object(sys, "argv", ["apiscout.db_builder", "--paths", "x"])
+                    )
                     stack.enter_context(
                         unittest.mock.patch.object(DatabaseBuilder.DatabaseBuilder, "extractRecursively", crawl)
                     )
@@ -419,11 +420,11 @@ class DatabaseBuilderTests(unittest.TestCase):
 
     def testFilterIsNotCaseSensitive(self):
         builder = DatabaseBuilder.DatabaseBuilder()
-        builder._extractPeExports = lambda path: {
+        builder._extractPeExports = lambda filepath: {
             "base_address": 0x180000000,
             "bitness": 64,
             "version": "1.0",
-            "filepath": path,
+            "filepath": filepath,
             "aslr_offset": 0,
             "exports": [],
         }

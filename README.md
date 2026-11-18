@@ -143,13 +143,15 @@ For your own analysis system, run the DB builder on it (Python 3.10 or newer, wh
 
 ```bash
 git clone https://github.com/danielplohmann/apiscout
-cd apiscout/apiscout/db_builder
-python DatabaseBuilder.py --auto
+cd apiscout
+python -m apiscout.db_builder --auto
 ```
+
+The builder needs only the standard library, so on a machine without a clone, a copy of the `apiscout` folder of it is enough: run the command in the folder that holds it.
 
 `--paths` and `--filter` choose folders and DLLs, `--os_name` and `--os_version` build a DB from a copy of the DLLs on another system, and `--load_addresses` then takes the load addresses from a module list.
 
-Without a machine of the build, `python DllDownloader.py --windows 11-24H2 --update KB5046617 --out win11` downloads the DLLs of the filter from Microsoft's symbol server, finds them with [Winbindex](https://github.com/m417z/winbindex), checks each against its SHA-256 and builds the DB (standard library only, no ASLR offsets, so scan with `--modules` or a minidump). `--update` also takes a build such as `26100.2605`, `--list` shows the Windows versions and updates, `--windows 11-24H2 --list` the updates of one.
+Without a machine of the build, `python -m apiscout.db_builder.DllDownloader --windows 11-24H2 --update KB5046617 --out win11` downloads the DLLs of the filter from Microsoft's symbol server, finds them with [Winbindex](https://github.com/m417z/winbindex), checks each against its SHA-256 and builds the DB (standard library only, no ASLR offsets, so scan with `--modules` or a minidump). `--update` also takes a build such as `26100.2605`, `--list` shows the Windows versions and updates, `--windows 11-24H2 --list` the updates of one.
 
 ## IDA Pro
 

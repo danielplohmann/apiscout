@@ -16,8 +16,9 @@ Winbindex (the index of the files of Windows updates) tells which file, identifi
 update, and the timestamp and SizeOfImage of the PE, which make up the address of the file on Microsoft's public symbol
 server. This script looks the DLLs of config.DLL_FILTER up in the index, downloads the 64bit ones for System32 and the
 32bit ones for SysWOW64, verifies each against the hash of the index and writes them to <out>/System32 and
-<out>/SysWOW64, the folders DatabaseBuilder.py --paths takes. Then it builds the API DB from them (--download-only
-stops before). Like DatabaseBuilder.py, it only needs the standard library (Python 3.10 or newer).
+<out>/SysWOW64, the folders `python -m apiscout.db_builder --paths` takes. Then it builds the API DB from them
+(--download-only stops before). Run it from a clone as `python -m apiscout.db_builder.DllDownloader`. Like the DB
+builder, it only needs the standard library (Python 3.10 or newer).
 
 The DB has no ASLR offsets: `apiscout scan` places the DLLs where the dump has them (--modules, minidumps).
 """
@@ -36,7 +37,11 @@ import time
 import urllib.error
 import urllib.request
 
-import config
+if not __package__:
+    # run as a file (python DllDownloader.py) instead of as module, the imports of the package below would fail
+    sys.exit("Run the DllDownloader from the root of the clone: python -m apiscout.db_builder.DllDownloader")
+
+from . import config  # noqa: E402
 
 WINBINDEX_URL = "https://winbindex.m417z.com/data/by_filename_compressed/{name}.json.gz"
 SYMBOL_SERVER_URL = "https://msdl.microsoft.com/download/symbols/{name}/{file_id}/{name}"
@@ -527,9 +532,9 @@ def print_listing(index, name, windows, out=sys.stdout):
 
 
 def build_db(out_dir, update, os_version_hint, outfile, files=None):
-    """the API DB of the folders, with the DatabaseBuilder that lies next to this script. With files, only those files
+    """the API DB of the folders, with the DatabaseBuilder of this package. With files, only those files
     of the folders are used."""
-    import DatabaseBuilder
+    from . import DatabaseBuilder
 
     paths = [
         os.path.join(out_dir, folder) for folder, _, _ in SYSTEM_FOLDERS if os.path.isdir(os.path.join(out_dir, folder))
@@ -655,14 +660,15 @@ def clean_partial_files(out_dir):
 def main(argv=None):
     # the DB is built by DatabaseBuilder, which needs Python 3.10
     if sys.version_info < (3, 10):  # noqa: UP036
-        sys.exit("DllDownloader.py needs Python 3.10 or newer, this is Python {}.{}.".format(*sys.version_info[:2]))
+        sys.exit("The DllDownloader needs Python 3.10 or newer, this is Python {}.{}.".format(*sys.version_info[:2]))
     parser = argparse.ArgumentParser(
         description="Build an API DB for a Windows build from DLLs of Microsoft's symbol server, found with Winbindex.",
-        epilog="examples:\n"
-        "  DllDownloader.py --list                           Windows versions Winbindex knows\n"
-        "  DllDownloader.py --list --windows 11-24H2         the updates of one, with the architectures they have\n"
-        "  DllDownloader.py --windows 11-24H2 --update KB5046617 --out win11\n"
-        "  DllDownloader.py --update 10.0.26100.2605 --out win11     the same, by build\n",
+        prog="python -m apiscout.db_builder.DllDownloader",
+        epilog="examples, after python -m apiscout.db_builder.DllDownloader:\n"
+        "  --list                                        Windows versions Winbindex knows\n"
+        "  --list --windows 11-24H2                      the updates of one, with the architectures they have\n"
+        "  --windows 11-24H2 --update KB5046617 --out win11\n"
+        "  --update 10.0.26100.2605 --out win11          the same, by build\n",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
