@@ -457,6 +457,73 @@ def dumps_api_db(api_db):
         return json.dumps(api_db, indent=1, sort_keys=True)
 
 
+# the statements of a module-definition (.def) file, see "Module-definition (.def) files" in the documentation of MSVC
+DEF_STATEMENTS = {
+    "NAME",
+    "LIBRARY",
+    "DESCRIPTION",
+    "STACKSIZE",
+    "SECTIONS",
+    "SEGMENTS",
+    "EXPORTS",
+    "HEAPSIZE",
+    "VERSION",
+    "STUB",
+    "IMPORTS",
+}
+DEF_TOKEN = re.compile(r'"[^"]*"|\S+')
+DEF_ORDINAL = re.compile(r"@[0-9]+")
+
+
+def def_ordinal(tokens):
+    """the ordinal of the entry of an EXPORTS statement, as @ordinal or @ ordinal after its name, None without one"""
+    ordinal = None
+    for previous, token in itertools.pairwise(["", *tokens[1:]]):
+        if DEF_ORDINAL.fullmatch(token):
+            ordinal = int(token[1:])
+        elif previous == "@" and token.isdecimal():
+            ordinal = int(token)
+    return ordinal
+
+
+def read_def_file(path):
+    """(DLL file name, {ordinal: name}) of a module-definition (.def) file. The DLL is the one LIBRARY names, or the
+    one named like the file. Exports without an ordinal are left out: they are exported by name anyway."""
+    with open(path, "rb") as f_in:
+        data = f_in.read()
+    encoding = "utf-16" if data[:2] in (b"\xff\xfe", b"\xfe\xff") else "utf-8-sig"
+    library = None
+    names = {}
+    statement = None
+    for line in data.decode(encoding, errors="replace").splitlines():
+        tokens = [token.strip('"') for token in DEF_TOKEN.findall(line.split(";", 1)[0])]
+        ordinal = def_ordinal(tokens)
+        # an export can be called like a statement (Description @2)
+        keyword = tokens[0].upper() if tokens else None
+        if keyword == "EXPORTS" or (keyword in DEF_STATEMENTS and not (statement == "EXPORTS" and ordinal is not None)):
+            statement = tokens[0].upper()
+            tokens = tokens[1:]
+            # LIBRARY [library][BASE=address]
+            if statement == "LIBRARY" and tokens and not tokens[0].upper().startswith("BASE="):
+                library = tokens[0]
+                if "." not in library:
+                    library += ".dll"
+            ordinal = def_ordinal(tokens)
+        if statement != "EXPORTS" or not tokens:
+            continue
+        # entryname[=internal_name] [@ordinal [NONAME]] [PRIVATE] [DATA], also with spaces around = and after @
+        name = tokens[0].split("=", 1)[0]
+        if name and ordinal is not None:
+            names.setdefault(ordinal, name)
+    if library is None:
+        library = os.path.splitext(os.path.basename(path))[0]
+        if not library.lower().endswith(".dll"):
+            library += ".dll"
+    if not names:
+        raise ValueError(f"{path} has no exports with an ordinal.")
+    return library, names
+
+
 class DatabaseBuilder:
     def __init__(self):
         self._duplicate_paths = {}
@@ -597,6 +664,25 @@ class DatabaseBuilder:
         api_db["num_apis"] = api_count
         api_db["crawled_paths"] = paths
         api_db["filtered"] = filter_dlls
+        return api_db
+
+    def applyDefFiles(self, api_db, def_files):
+        """names the exports by ordinal only (MFC DLLs have thousands) after a DEF file of their DLL, given as
+        (bitness, DLL file name, {ordinal: name}). Exports that have a name keep it."""
+        for bitness, library, names in def_files:
+            num_dlls = num_named = 0
+            for dll in api_db["dlls"].values():
+                if dll["bitness"] != bitness or os.path.basename(dll["filepath"]).casefold() != library.casefold():
+                    continue
+                num_dlls += 1
+                for export in dll["exports"]:
+                    if export["name"] == "None" and export["ordinal"] in names:
+                        export["name"] = names[export["ordinal"]]
+                        num_named += 1
+            if num_dlls:
+                LOG.info("Named %d exports of %d %dbit %s from its DEF file.", num_named, num_dlls, bitness, library)
+            else:
+                LOG.warning("No %dbit %s in the DB, its DEF file is not used.", bitness, library)
         return api_db
 
     def extractAslrOffsets(self, api_db):
@@ -829,6 +915,18 @@ def main():
         help='File with lines of "<hex load address> <DLL path>" (e.g. the module list of a process), used to derive the ASLR offsets instead of loading the DLLs. DLLs are matched by folder and file name (System32\\kernel32.dll), or by file name alone where it is unique.',
     )
 
+    parser.add_argument(
+        "--def32",
+        metavar="FILE",
+        action="append",
+        default=[],
+        help="Module-definition (.def) file of a 32bit DLL that exports by ordinal only (e.g. MFC42.DEF of Visual C++), "
+        "used to name those exports. Can be given several times.",
+    )
+    parser.add_argument(
+        "--def64", metavar="FILE", action="append", default=[], help="The same as --def32, for a 64bit DLL."
+    )
+
     args = parser.parse_args()
     builder = DatabaseBuilder()
     if bool(args.os_name) != bool(args.os_version):
@@ -850,6 +948,13 @@ def main():
             "on systems other than Windows, --os_name and --os_version of the system the DLLs were taken from are required, and --aslr_check is not available."
         )
     load_addresses = read_load_addresses(args.load_addresses) if args.load_addresses else None
+    def_files = []
+    for bitness, paths in ((32, args.def32), (64, args.def64)):
+        for path in paths:
+            try:
+                def_files.append((bitness, *read_def_file(path)))
+            except (OSError, ValueError) as exc:
+                parser.error(f"--def{bitness}: {exc}")
     if args.auto or args.paths:
         output_folder = os.path.dirname(os.path.abspath(args.output_file)) if args.output_file else os.getcwd()
         if not os.access(output_folder, os.W_OK):
@@ -862,6 +967,8 @@ def main():
         api_db = builder.extractRecursively(paths, filter_dlls, args.os_name, args.os_version)
         if not api_db["dlls"]:
             parser.error("no DLLs found in {}.".format(", ".join(api_db["crawled_paths"])))
+        if def_files:
+            api_db = builder.applyDefFiles(api_db, def_files)
         if load_addresses is not None:
             api_db = builder.applyLoadAddresses(api_db, load_addresses)
         elif not args.ignore_aslr and not offline:

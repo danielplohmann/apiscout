@@ -732,7 +732,7 @@ class RunTestSuite(unittest.TestCase):
     def test_builds_the_db_from_the_rest(self):
         built = {}
 
-        def build_db(out_dir, update, os_version_hint, outfile, files=None):
+        def build_db(out_dir, update, os_version_hint, outfile, files=None, def_files=()):
             built.update(out_dir=out_dir, update=update, hint=os_version_hint, outfile=outfile)
             return {"num_dlls": 2, "num_apis": 3}
 
@@ -743,6 +743,32 @@ class RunTestSuite(unittest.TestCase):
         self.assertEqual(os.path.join(self.out, "win11_24h2_kb5000002.json"), built["outfile"])
         self.assertIn("2 DLLs, 3 APIs", out)
 
+    def test_def_files_go_to_the_db_and_are_read_first(self):
+        def_file = os.path.join(self.out, "MFC42.DEF")
+        os.makedirs(self.out, exist_ok=True)
+        with open(def_file, "w", encoding="utf-8") as f_def:
+            f_def.write("LIBRARY MFC42\nEXPORTS\n ?A@@YGXXZ @256 NONAME\n")
+        built = {}
+
+        def build_db(out_dir, update, os_version_hint, outfile, files=None, def_files=()):
+            built.update(def_files=def_files)
+            return {"num_dlls": 2, "num_apis": 3}
+
+        with unittest.mock.patch.object(self.D, "build_db", build_db):
+            code, _, _ = self.run_main("--windows", "11-24H2", "--update", "10.0.26100.2000", "--def32", def_file)
+        self.assertEqual(0, code)
+        self.assertEqual([(32, "MFC42.dll", {256: "?A@@YGXXZ"})], built["def_files"])
+        # a DEF file that can not be read stops the run before anything is downloaded
+        count = len(self.network.downloads())
+        missing = os.path.join(self.out, "missing.def")
+        code, _, err = self.run_main("--windows", "11-24H2", "--update", "10.0.26100.2000", "--def64", missing)
+        self.assertEqual(1, code)
+        self.assertIn("--def64:", err)
+        self.assertEqual(count, len(self.network.downloads()))
+        # without a DB there is nothing to name
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self.run_main("--windows", "11-24H2", "--update", "10.0.26100.2000", "--download-only", "--def32", def_file)
+
     def test_first_release_is_named_by_its_ntdll(self):
         base = {"windowsVersionInfo": {"releaseDate": "2024-09-30"}, "sourcePaths": ["Windows\\System32\\ntdll.dll"]}
         data = b"MZ ntdll"
@@ -752,7 +778,7 @@ class RunTestSuite(unittest.TestCase):
         self.network.files[symbol_url(9, 0x5000, "ntdll.dll")] = data
         built = {}
 
-        def build_db(out_dir, update, os_version_hint, outfile, files=None):
+        def build_db(out_dir, update, os_version_hint, outfile, files=None, def_files=()):
             built.update(update=update, hint=os_version_hint)
             return {"num_dlls": 1, "num_apis": 1}
 
@@ -769,7 +795,7 @@ class RunTestSuite(unittest.TestCase):
     def test_files_of_an_earlier_run_are_left_out(self):
         built = []
 
-        def build_db(out_dir, update, os_version_hint, outfile, files=()):
+        def build_db(out_dir, update, os_version_hint, outfile, files=(), def_files=()):
             built.append(sorted(os.path.relpath(path, out_dir).replace(os.sep, "/") for path in files))
             return {"num_dlls": len(files), "num_apis": 0}
 

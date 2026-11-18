@@ -531,9 +531,9 @@ def print_listing(index, name, windows, out=sys.stdout):
         )
 
 
-def build_db(out_dir, update, os_version_hint, outfile, files=None):
+def build_db(out_dir, update, os_version_hint, outfile, files=None, def_files=()):
     """the API DB of the folders, with the DatabaseBuilder of this package. With files, only those files
-    of the folders are used."""
+    of the folders are used. def_files name exports by ordinal only, see DatabaseBuilder.applyDefFiles."""
     from . import DatabaseBuilder
 
     paths = [
@@ -544,8 +544,24 @@ def build_db(out_dir, update, os_version_hint, outfile, files=None):
     api_db = builder.extractRecursively(paths, False, os_name, os_version, only_files=files)
     if not api_db["dlls"]:
         raise DownloaderError("no DLLs to build an API DB from in {}.".format(", ".join(paths)))
+    if def_files:
+        api_db = builder.applyDefFiles(api_db, def_files)
     builder.persistApiDb(api_db, outfile)
     return api_db
+
+
+def read_def_files(args):
+    """(bitness, DLL file name, {ordinal: name}) of the DEF files of --def32 and --def64"""
+    from .DatabaseBuilder import read_def_file
+
+    def_files = []
+    for bitness, paths in ((32, args.def32), (64, args.def64)):
+        for path in paths or ():
+            try:
+                def_files.append((bitness, *read_def_file(path)))
+            except (OSError, ValueError) as exc:
+                raise DownloaderError(f"--def{bitness}: {exc}") from None
+    return def_files
 
 
 def run(args, fetch=None, out=None):
@@ -565,6 +581,8 @@ def run(args, fetch=None, out=None):
         return 0
     if not args.update or not args.out:
         raise DownloaderError("--update and --out are required (--list shows the available updates).")
+    # read before the downloads, a DEF file that can not be used stops the run at once
+    def_files = read_def_files(args)
     # ntdll.dll exists in every build, so its index tells which update is meant
     try:
         ntdll_index = load_index("ntdll.dll", cache_dir, fetch)
@@ -623,7 +641,7 @@ def run(args, fetch=None, out=None):
                 update.kb, ", ".join(others[:10]), f" and {len(others) - 10} more" if len(others) > 10 else ""
             )
         )
-    api_db = build_db(args.out, update, os_version_hint, outfile, files=verified)
+    api_db = build_db(args.out, update, os_version_hint, outfile, files=verified, def_files=def_files)
     out.write("API DB {}: {} DLLs, {} APIs.\n".format(outfile, api_db["num_dlls"], api_db["num_apis"]))
     if counts["failed"]:
         out.write(
@@ -689,9 +707,18 @@ def main(argv=None):
     parser.add_argument("--download-only", action="store_true", help="only download the DLLs, do not build the API DB")
     parser.add_argument("--dlls", nargs="+", metavar="NAME", help="DLL file names to get instead of config.DLL_FILTER")
     parser.add_argument("--jobs", type=int, default=4, help="parallel downloads (default 4, at most 8)")
+    parser.add_argument(
+        "--def32",
+        metavar="FILE",
+        action="append",
+        help="DEF file that names the exports by ordinal only of a 32bit DLL (e.g. MFC42.DEF), can be repeated",
+    )
+    parser.add_argument("--def64", metavar="FILE", action="append", help="the same as --def32, for a 64bit DLL")
     args = parser.parse_args(argv)
     if not 1 <= args.jobs <= 8:
         parser.error("--jobs is between 1 and 8.")
+    if args.download_only and (args.def32 or args.def64):
+        parser.error("--def32 and --def64 name exports in the API DB, which --download-only does not build.")
     try:
         if args.list is None and args.out:
             clean_partial_files(args.out)

@@ -437,6 +437,83 @@ class DatabaseBuilderTests(unittest.TestCase):
             sorted(os.path.basename(d["filepath"]).lower() for d in api_db["dlls"].values()),
         )
 
+    def writeDef(self, name, text):
+        path = os.path.join(self.directory.name, name)
+        with open(path, "w", encoding="utf-8") as f_def:
+            f_def.write(text)
+        return path
+
+    def testDefFile(self):
+        path = self.writeDef(
+            "MFC42.DEF",
+            "; a comment\n"
+            "LIBRARY MFC42 BASE=0x5f400000\n"
+            'DESCRIPTION "MFC"\n'
+            "EXPORTS ??0CObject@@QAE@XZ @ 256 NONAME\n"
+            "\t?AfxGetApp@@YGPAVCWinApp@@XZ\t@257 NONAME ; a comment\n"
+            "\tNamed=_Internal@4 @258\n"
+            "\tSpaced = _Internal@8 @ 259 PRIVATE\n"
+            "\tWithoutOrdinal\n"
+            '\t"Quoted" @260 DATA\n'
+            "\tSecond @256\n",
+        )
+        self.assertEqual(
+            (
+                "MFC42.dll",
+                {
+                    256: "??0CObject@@QAE@XZ",
+                    257: "?AfxGetApp@@YGPAVCWinApp@@XZ",
+                    258: "Named",
+                    259: "Spaced",
+                    260: "Quoted",
+                },
+            ),
+            DatabaseBuilder.read_def_file(path),
+        )
+        # without LIBRARY, the DLL is named like the file
+        path = self.writeDef("mfc42u.def", "EXPORTS\n  ?A@@YAXXZ @5 NONAME\n")
+        self.assertEqual(("mfc42u.dll", {5: "?A@@YAXXZ"}), DatabaseBuilder.read_def_file(path))
+        # exports called like statements, LIBRARY with BASE only, and UTF-16
+        path = self.writeDef(
+            "plain.def", "LIBRARY BASE=0x10000000\nEXPORTS\n Description @1\n Version @ 2\nEXPORTS Last @3\n"
+        )
+        self.assertEqual(
+            ("plain.dll", {1: "Description", 2: "Version", 3: "Last"}), DatabaseBuilder.read_def_file(path)
+        )
+        with open(path, "wb") as f_def:
+            f_def.write("LIBRARY wide\r\nEXPORTS\r\n\tWide @7 NONAME\r\n".encode("utf-16"))
+        self.assertEqual(("wide.dll", {7: "Wide"}), DatabaseBuilder.read_def_file(path))
+        path = self.writeDef("empty.def", "LIBRARY x.dll\nEXPORTS\n  ByName\n")
+        with self.assertRaisesRegex(ValueError, "no exports with an ordinal"):
+            DatabaseBuilder.read_def_file(path)
+
+    def testDefFilesNameTheExportsByOrdinalOnly(self):
+        dll_dir = os.path.join(self.directory.name, "dlls")
+        functions = [0x1000, 0x1010, 0x1020, 0x1030]
+        for folder, bits in (("SysWOW64", 32), ("System32", 64)):
+            os.makedirs(os.path.join(dll_dir, folder))
+            with open(os.path.join(dll_dir, folder, "Mfc42.dll"), "wb") as f_dll:
+                f_dll.write(build_dll(functions, [(b"DllMain", 0)], bits, base=256))
+        def_file = self.writeDef(
+            "mfc42.def", "LIBRARY mfc42\nEXPORTS\n DllMain @256\n Other @257 NONAME\n ?Two@@YGXXZ @258 NONAME\n"
+        )
+        outfile = os.path.join(self.directory.name, "db.json")
+        offline = ["--paths", dll_dir, "--os_name", "Test", "--os_version", "1.0", "--outfile", outfile]
+        self.assertEqual((0, ""), self.run_main(*offline, "--def32", def_file))
+        with open(outfile, encoding="utf-8") as f_db:
+            api_db = json.load(f_db)
+        names = {
+            dll["bitness"]: [(export["ordinal"], export["name"]) for export in dll["exports"]]
+            for dll in api_db["dlls"].values()
+        }
+        # only the 32bit DLL, and only its exports without a name
+        self.assertEqual([(256, "DllMain"), (257, "Other"), (258, "?Two@@YGXXZ"), (259, "None")], names[32])
+        self.assertEqual([(256, "DllMain"), (257, "None"), (258, "None"), (259, "None")], names[64])
+        self.assertEqual(4 + 4, api_db["num_apis"])
+        code, errors = self.run_main(*offline, "--def64", os.path.join(self.directory.name, "missing.def"))
+        self.assertEqual(2, code)
+        self.assertIn("--def64:", errors)
+
 
 def reference_summary_or_failure(path):
     """the summary by pefile, None if it can not read the file (the builder skips it with a warning)"""

@@ -12,6 +12,10 @@ hits that were reported before, which a release says here.
 
 ## [Unreleased]
 
+### Added
+
+- DB builder and DllDownloader: `--def32` and `--def64` take the module-definition (`.def`) file of a DLL and use it to name the exports it has by ordinal only. `mfc42.dll` has about 6,400 of them, which a DB listed as `None<ordinal>` until now (#7).
+
 ### Fixed
 
 - IDA plugin: the ApiScout view stays open when `ida_scout.py` is started with `-S`. It was opened while IDA was still loading, and IDA closed it again when it restored its window layout.
