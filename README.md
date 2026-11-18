@@ -57,7 +57,7 @@ A single API far away from all others, like the first row, is usually a chance h
 </details>
 
 > [!IMPORTANT]
-> The DB has to describe the system the dump was taken on: same DLL versions. With ASLR, the load addresses change at every boot, so `scan` places the DLLs where the dump has them: by the module list of a minidump, by `--modules FILE` (lines of `<hex load address> <DLL path>`, as `DatabaseBuilder.py --load_addresses` reads them) or by DLL images it finds in the dump (`placed_dlls` in the JSON output). DLLs it does not find keep the addresses of the DB. See [API DBs](#api-dbs).
+> The DB has to describe the system the dump was taken on: same DLL versions. With ASLR, the load addresses change at every boot, so `scan` places the DLLs where the dump has them: by the module list of a minidump, by `--modules FILE` (lines of `<hex load address> <DLL path>`, as `DatabaseBuilder.py --load_addresses` reads them) or by DLL images it finds in the dump (`placed_dlls` in the JSON output). DLLs it does not find keep the addresses of the DB, and so do DLLs whose load address the DB has from its ASLR offsets (unless `--ignore-aslr`), as an image may be a copy the sample mapped itself. See [API DBs](#api-dbs).
 
 ## Features
 

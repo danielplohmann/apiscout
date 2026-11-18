@@ -354,7 +354,7 @@ def scan_minidump(scout, minidump, args):
 
 def cmd_scan(args):
     check_output(args.output)
-    placer = DllPlacer()
+    placer = DllPlacer(args.ignore_aslr)
     if args.modules:
         if args.import_table:
             raise CliError("--modules places the DLLs of an API DB, which --import-table does not use.")
