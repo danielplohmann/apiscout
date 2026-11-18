@@ -205,7 +205,7 @@ def fake_binaryninja_modules():
 def fake_binaryninja():
     """the stand-in is only visible while the plugin modules are imported"""
     fakes = fake_binaryninja_modules()
-    names = list(fakes) + ["apiscout.BinaryNinjaTools", "apiscout.binja_scout", "binja_scout"]
+    names = list(fakes) + ["apiscout.BinaryNinjaTools", "apiscout.binja_scout", "binja"]
     previous = {name: sys.modules.get(name) for name in names}
     for name in names:
         sys.modules.pop(name, None)
@@ -457,7 +457,7 @@ class BinaryNinjaImportTest(unittest.TestCase):
             plugins = os.path.join(REPO_DIR, "plugins")
             sys.path.insert(0, plugins)
             try:
-                plugin = importlib.import_module("binja_scout")
+                plugin = importlib.import_module("binja")
             finally:
                 sys.path.remove(plugins)
         self.assertTrue(callable(plugin.scan_and_annotate))
@@ -882,8 +882,29 @@ class AnnotationTest(unittest.TestCase):
         self.assertEqual("annotated (no type information)", status[tuple(rows[0][:4])])
         # an undo removes the symbols again
         view.symbols.clear()
-        tools.annotate(view, [], status)
+        view.session_data[tools.SESSION_KEY] = {"rows": rows, "status": status}
+        tools.show_results(view)
         self.assertEqual({}, status)
+        self.assertNotIn("annotated (no type information)", view.reports[-1][1])
+
+    def testRescanOnlyReplacesNamesOwnedByApiscout(self):
+        view = self.makeView(4)
+        first = [
+            [0x1000, 0x7000, "a.dll (32bit)", "First", 0],
+            [0x1004, 0x7004, "a.dll (32bit)", "Second", 0],
+        ]
+        tools.annotate(view, first)
+        renamed = FakeSymbol(SymbolType.ImportAddressSymbol, 0x1004, "analyst_name")
+        view.symbols[0x1004] = [renamed]
+        rescanned = [
+            [0x1000, 0x7000, "b.dll (32bit)", "Replacement", 0],
+            [0x1004, 0x7004, "b.dll (32bit)", "Another", 0],
+        ]
+        status = {}
+        self.assertEqual((1, 1), tools.annotate(view, rescanned, status))
+        self.assertEqual("Replacement", view.get_symbol_at(0x1000).name)
+        self.assertIs(renamed, view.get_symbol_at(0x1004))
+        self.assertIn("analyst_name", status[tuple(rescanned[1][:4])])
 
     def testNoPlatform(self):
         view = FakeBinaryView([FakeSegment(0x1000, 0x10, b"\0" * 0x10)], 4, None)
@@ -1029,7 +1050,41 @@ class CommandTest(unittest.TestCase):
         tools.command_scan(view)
         self.runTasks()
         self.assertNotIn("apiscout", view.session_data)
-        self.assertTrue(any(level == "error" for level, _ in LOG))
+        self.assertTrue(any(level == "error" and db_path in message for level, message in LOG))
+
+    def testMissingCustomDb(self):
+        db_path = os.path.join(self.folder, "missing.json")
+        FakeInteraction.form_handler = lambda fields: (
+            setattr(next(f for f in fields if isinstance(f, OpenFileNameField)), "result", db_path) or True
+        )
+        tools.command_scan(self.makeView())
+        self.assertEqual([], FakeBackgroundTaskThread.started)
+        self.assertIn(("error", f"API DB not found: {db_path}"), LOG)
+
+    def testConfidenceInReportAndOptionalAnnotationFilter(self):
+        view = self.makeView()
+        state = tools.scan_and_annotate(view, [self.db_path], min_confidence=100)
+        self.assertEqual(3, len(state["rows"]))
+        self.assertEqual(3, len(state["confidence"]))
+        self.assertEqual(0, state["annotated"])
+        tools.show_results(view)
+        self.assertIn("| Confidence |", view.reports[-1][1])
+        self.assertIn("confidence ", view.reports[-1][2])
+
+        def answer(fields):
+            fields[0].result = 0
+            fields[1].result = 100
+            return True
+
+        FakeInteraction.form_handler = answer
+        tools.command_annotate_filtered(view)
+        self.runTasks()
+        self.assertEqual({}, view.symbols)
+
+    def testAnnotateBeforeScan(self):
+        tools.command_annotate_all(self.makeView())
+        self.runTasks()
+        self.assertTrue(any(level == "warn" and "no API references" in message for level, message in LOG))
 
     def testShowWithoutResults(self):
         view = self.makeView()
@@ -1094,9 +1149,8 @@ class PlacementTest(unittest.TestCase):
         flat = os.path.join(self.folder, f"flat_0x{BASE:08x}")
         with open(flat, "wb") as f_dump:
             f_dump.write(dump)
-        # the import address table of the image points to ntdll!Api2 like the sample does, and is not a reference
-        # of the sample; `scan` of a flat dump does not leave it out
-        self.assertEqual(3, len(self.case.cli_apis("--modules", modules_path, dump_path=flat)))
+        # The CLI and the plugin both exclude hits within the image of the placed DLL.
+        self.assertEqual(2, len(self.case.cli_apis("--modules", modules_path, dump_path=flat)))
         view = self.makeView(dump)
         self.assertEqual(
             [(0x400010, "Api2"), (0x400014, "Api1")],

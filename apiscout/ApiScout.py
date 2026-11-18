@@ -297,33 +297,32 @@ class ApiScout:
         # try to extract from PE header
         return PeTools.getBaseAddressFromPeHeader(binary)
 
-    def _updateCodeReferences(self, references, binary, base_address, offset, targets):
-        addr_block = binary[offset + 2 : offset + 2 + 4]
-        if len(addr_block) < 4:
-            # opcode bytes at the very end of the buffer, there is no operand left to read
-            return
-        # treat as 32bit code (absolute offsets)
-        function_addr = struct.unpack("<I", addr_block)[0] - base_address
-        if 0 < function_addr < len(binary) and function_addr in targets:
-            references[32].setdefault(function_addr, set()).add(offset)
-        # treat as 64bit code (this means relative offsets for jmps/calls)
-        # RIP-relative: target is relative to the end of the 6 byte instruction (ff 25|15 ** ** ** **),
-        # offset points to the ff opcode byte, i.e. behind a potential REX prefix (48 ff 25 ** ** ** **).
-        function_addr = struct.unpack("<i", addr_block)[0] + offset + 6
-        if 0 < function_addr < len(binary) and function_addr in targets:
-            references[64].setdefault(function_addr, set()).add(offset)
-
-    def _getCodeReferences(self, binary, targets):
-        """references by calls and jumps through pointers to the given offsets, as {bitness: {offset: {offsets of the instructions}}}"""
-        base_address = self._findBaseAddress(binary)
+    @staticmethod
+    def _iterIndirectBranches(binary):
         if numpy_search is not None:
-            return numpy_search.find_code_references(binary, targets, base_address)
+            yield from numpy_search.iter_indirect_branches(binary)
+        else:
+            for match in re.finditer(b"\xff[\x15\x25](?=.{4})", binary, flags=re.DOTALL):
+                offset = match.start()
+                yield offset, struct.unpack_from("<I", binary, offset + 2)[0]
+
+    def _getCodeReferences(self, binary, targets, *, base_address=None, load_offset=0):
+        """References to pointer offsets by their bitness and offset. Targets and callers share load_offset's origin."""
         references = {32: {}, 64: {}}
-        targets = set(targets)
-        # also check for "jmp dword ptr <offset>" and "call dword ptr <offset>", as they sometimes point to local functions (i.e. non-API)
-        for opcode in (b"\xff\x25", b"\xff\x15"):
-            for match in re.finditer(opcode, binary):
-                self._updateCodeReferences(references, binary, base_address, match.start(), targets)
+        if not targets:
+            return references
+        if base_address is None:
+            base_address = self._findBaseAddress(binary)
+        for offset, operand in self._iterIndirectBranches(binary):
+            caller = offset + load_offset
+            # x86 uses an absolute VA. x64 uses a signed displacement from the end of the instruction.
+            absolute_target = operand - base_address + load_offset
+            if absolute_target in targets:
+                references[32].setdefault(absolute_target, set()).add(caller)
+            displacement = operand - (1 << 32) if operand >= 1 << 31 else operand
+            relative_target = caller + 6 + displacement
+            if relative_target in targets:
+                references[64].setdefault(relative_target, set()).add(caller)
         return references
 
     def evaluateImportTable(self, binary, is_unmapped=True):
@@ -331,18 +330,19 @@ class ApiScout:
         results = {"import_table": []}
         mapped_binary = PeTools.mapBinary(binary) if is_unmapped else binary
         # a file can not hold more imports than pointers, crafted tables referencing each other are cut off there
-        max_thunks = len(binary) // 8 if PeTools.getBitness(mapped_binary) == 64 else len(binary) // 4
+        bitness = PeTools.getBitness(mapped_binary)
+        max_thunks = len(binary) // (8 if bitness == 64 else 4)
         import_table_loader = ImportTableLoader(mapped_binary, max_thunks=max_thunks, max_name_bytes=len(binary))
         self._import_table = import_table_loader.get_import_table()
-        bitness = PeTools.getBitness(mapped_binary)
-        references = self._getCodeReferences(mapped_binary, self._import_table.keys())
+        callers_by_offset = {}
+        if PeTools.getMachine(mapped_binary) in PeTools.BITNESS_MAP:
+            targets = {offset for offset in self._import_table if offset < len(mapped_binary)}
+            callers_by_offset = self._getCodeReferences(mapped_binary, targets)[bitness]
         for offset, import_entry in sorted(self._import_table.items()):
             if not import_entry["name"]:
                 # import by an ordinal without known name
                 continue
-            ref_count = 1
-            if bitness:
-                ref_count = 1 + len(references[bitness][offset]) if offset in references[bitness] else 1
+            callers = {caller + self.load_offset for caller in callers_by_offset.get(offset, ())}
             results["import_table"].append(
                 (
                     offset + self.load_offset,
@@ -351,30 +351,34 @@ class ApiScout:
                     import_entry["name"],
                     bitness,
                     True,
-                    ref_count,
-                    references[bitness].get(offset, set()),
+                    1 + len(callers),
+                    callers,
                 )
             )
         return results
 
     def crawl(self, binary):
+        results = self._crawlPointers(binary)
+        targets = {entry[0] for entries in results.values() for entry in entries}
+        references = self._getCodeReferences(binary, targets, load_offset=self.load_offset)
+        self._attachCodeReferences(results, references)
+        return results
+
+    def _crawlPointers(self, binary):
         results = {}
         self._binary_length = len(binary)
         self._import_table = None
         self._parseImportTable(binary)
         widths = (4, 8) if self.has_64bit and self.bitness != 32 else (4,)
         found = self._findCandidates(binary, widths)
-        references = self._getCodeReferences(binary, {offset for hits in found.values() for offset, _ in hits})
         load_offset = self.load_offset
         for api_map_name in self.api_maps:
             recovered_apis = []
             for width in widths:
                 bitness = width * 8
-                callers_of = references[bitness]
                 for offset, api_address in found.get((api_map_name, width), ()):
                     dll, api, api_bitness = self._resolveApiByAddress(api_map_name, api_address, bitness)
                     if dll and api and api_bitness == bitness:
-                        callers = callers_of.get(offset, ())
                         recovered_apis.append(
                             (
                                 offset + load_offset,
@@ -383,8 +387,8 @@ class ApiScout:
                                 api,
                                 bitness,
                                 self._isImportTableEntry(offset),
-                                1 + len(callers),
-                                {caller + load_offset for caller in callers},
+                                1,
+                                set(),
                             )
                         )
             # hits of both bitnesses are reported in the order of their offsets, as filter() and render() work on neighbouring entries
@@ -393,20 +397,39 @@ class ApiScout:
             results[api_map_name] = recovered_apis
         return results
 
+    @staticmethod
+    def _attachCodeReferences(results, references):
+        for entries in results.values():
+            for index, entry in enumerate(entries):
+                callers = references[entry[4]].get(entry[0])
+                if callers:
+                    entries[index] = (*entry[:6], 1 + len(callers), callers.copy())
+
     def crawlRegions(self, regions):
         """crawl memory regions given as (start address, buffer), like ida_scout.py does with the segments of IDA.
         The offsets of the results are relative to the base address set before, so base address plus offset is the
-        address of the hit. References of code are resolved within each region."""
-        base_address, load_offset, binary_length = self.base_address, self.load_offset, self._binary_length
+        address of the hit. Code can refer to pointers in any of the captured regions."""
+        load_offset, binary_length = self.load_offset, self._binary_length
+        regions = list(regions)
         results = {}
         try:
             for start, binary in regions:
-                self.setLoadOffset(start - base_address)
-                self.setBaseAddress(start)
-                for api_map_name, recovered_apis in self.crawl(binary).items():
+                self.setLoadOffset(start - self.base_address)
+                for api_map_name, recovered_apis in self._crawlPointers(binary).items():
                     results.setdefault(api_map_name, []).extend(recovered_apis)
         finally:
-            self.base_address, self.load_offset, self._binary_length = base_address, load_offset, binary_length
+            self.load_offset, self._binary_length = load_offset, binary_length
+        targets = {entry[0] for entries in results.values() for entry in entries}
+        references = {32: {}, 64: {}}
+        if targets:
+            for start, binary in regions:
+                region_references = self._getCodeReferences(
+                    binary, targets, base_address=start, load_offset=start - self.base_address
+                )
+                for bitness, offsets in region_references.items():
+                    for offset, callers in offsets.items():
+                        references[bitness].setdefault(offset, set()).update(callers)
+        self._attachCodeReferences(results, references)
         # the regions are crawled in the order of their addresses, unless they were given in another one
         for recovered_apis in results.values():
             recovered_apis.sort(key=lambda entry: (entry[0], entry[4]))
@@ -579,18 +602,32 @@ class ApiScout:
         one pointer and at most CONFIDENCE_NEIGHBOUR_DISTANCE bytes apart form a cluster, and the same address repeated
         is one API, as in code that happens to repeat the bytes of an address (a table lists different APIs)."""
         counts = {}
-        for bitness in {entry[4] for entry in entries}:
+
+        def count_clusters(hits, bitness):
             width = bitness // 8
-            hits = sorted({(entry[0], entry[1]) for entry in entries if entry[4] == bitness})
             cluster = hits[:1]
-            for hit in [*hits[1:], None]:
+            for hit in itertools.chain(hits[1:], (None,)):
                 if hit is not None and width <= hit[0] - cluster[-1][0] <= self.CONFIDENCE_NEIGHBOUR_DISTANCE:
                     cluster.append(hit)
                     continue
                 num_apis = len({address for _, address in cluster})
                 for member_offset, _ in cluster:
-                    counts[(member_offset, bitness)] = num_apis - 1
+                    key = (member_offset, bitness)
+                    counts[key] = max(counts.get(key, 0), num_apis - 1)
                 cluster = [] if hit is None else [hit]
+
+        for bitness in {entry[4] for entry in entries}:
+            width = bitness // 8
+            hits = sorted({(entry[0], entry[1]) for entry in entries if entry[4] == bitness})
+            count_clusters(hits, bitness)
+            if any(right[0] - left[0] < width for left, right in itertools.pairwise(hits)):
+                # An overlapping candidate can interrupt a table without belonging to it. Also consider
+                # each alignment separately so the table can still contribute to its members' scores.
+                by_alignment = {}
+                for hit in hits:
+                    by_alignment.setdefault(hit[0] % width, []).append(hit)
+                for alignment_hits in by_alignment.values():
+                    count_clusters(alignment_hits, bitness)
         return counts
 
     def getConfidences(self, results):
@@ -649,6 +686,15 @@ class ApiScout:
     def matchVectorCollection(self, vector, collection_path):
         return self._apivector.matchVectorCollection(vector, collection_path)
 
+    def loadCollection(self, path):
+        return self._apivector.loadCollection(path)
+
+    def matchLoadedCollection(self, vector, collection, path):
+        return self._apivector.matchLoadedCollection(vector, collection, path)
+
+    def validateCollection(self, lines):
+        self._apivector.validateCollection(lines)
+
     def explainMatch(self, vector_a, vector_b):
         return self._apivector.explainMatch(vector_a, vector_b)
 
@@ -664,7 +710,10 @@ class ApiScout:
                 "percentage": 0,
             }
             return ("", empty_vector)
-        return sorted(api_vectors.items(), key=lambda x: (x[1]["in_api_vector"], x[1]["percentage"]))[-1]
+        return sorted(
+            api_vectors.items(),
+            key=lambda entry: (entry[1]["in_api_vector"], entry[1]["percentage"], entry[1]["num_unique_apis"]),
+        )[-1]
 
     def render(self, results):
         lines = []

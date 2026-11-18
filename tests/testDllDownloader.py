@@ -921,13 +921,20 @@ class RunTestSuite(unittest.TestCase):
         self.assertIn("is not a file name", err)
         self.assertEqual([], self.network.downloads())
 
-    def test_partial_files_of_an_interrupted_run_are_removed(self):
+    def test_download_only_fails_if_no_requested_dlls_are_available(self):
+        code, out, _ = self.run_main(
+            "--windows", "11-24H2", "--update", "KB5000002", "--download-only", "--dlls", "missing.dll"
+        )
+        self.assertEqual(1, code)
+        self.assertIn("No DLLs were downloaded or verified.", out)
+
+    def test_other_partial_files_are_left_alone(self):
         os.makedirs(os.path.join(self.out, "System32"))
         part = os.path.join(self.out, "System32", "x.dll.part")
         with open(part, "wb") as f_out:
             f_out.write(b"MZ")
         self.run_main("--windows", "11-24H2", "--update", "KB5000002", "--download-only")
-        self.assertFalse(os.path.exists(part))
+        self.assertTrue(os.path.exists(part))
 
 
 if __name__ == "__main__":

@@ -5,33 +5,51 @@ import shutil
 import tempfile
 
 from apiscout.ApiScout import ApiScout
+from apiscout.DumpScan import configure_placement, infer_base_address, recover_pointers
+from apiscout.LoadAddresses import DllPlacer
+from apiscout.Minidump import Minidump
 from apiscout.utility import paused_garbage_collection, read_json
 
 LOG = logging.getLogger(__name__)
 
 
 class FingerprintCrawler:
-    def __init__(self, db_paths, winapi1024_path, root_path, filter_size=0, ignore_aslr_offsets=True, api_dbs=None):
+    def __init__(
+        self,
+        db_paths,
+        winapi1024_path,
+        root_path,
+        filter_size=0,
+        ignore_aslr_offsets=True,
+        api_dbs=None,
+        min_confidence=0,
+        refresh=False,
+    ):
         # api_dbs: {path: content} of API DBs that the caller has read already (readApiDb), so they are not parsed again
         # ignore_aslr_offsets=True (default, previous behaviour) addresses all DLLs at their file ImageBase,
         # which is only meaningful for dumps from systems without ASLR and ambiguous for DBs in which
         # many DLLs share one ImageBase (e.g. 64bit Windows 10: 0x180000000).
         self._ignore_aslr_offsets = ignore_aslr_offsets
-        self._scout = self._initScout(db_paths, winapi1024_path, api_dbs or {})
+        api_dbs = api_dbs or {}
+        self._api_dbs = {path: api_dbs[path] if path in api_dbs else self.readApiDb(path) for path in db_paths}
+        self._winapi1024_path = winapi1024_path
+        self._scout = self._initScout()
+        self._min_confidence = min_confidence
+        self._refresh = refresh
         self._filter_size = filter_size
         self._root_path = root_path
         self._ignore_files = {}
         self._empty_fingerprint = self.getEmptyFingerprint()
 
-    def _initScout(self, db_paths, winapi1024_path, api_dbs):
+    def _initScout(self, placer=None):
         scout = ApiScout()
         # optionally override potential ASLR offsets that are stored in the API DB files.
         scout.ignoreAslrOffsets(self._ignore_aslr_offsets)
         # load DB file
-        for db_path in db_paths:
-            scout.loadDbFile(db_path, api_db=api_dbs.get(db_path))
+        for db_path, document in self._api_dbs.items():
+            scout.loadDbFile(db_path, placer.forDb(db_path) if placer else None, api_db=document)
         # load WinApi1024 vector
-        scout.loadWinApi1024(winapi1024_path)
+        scout.loadWinApi1024(self._winapi1024_path)
         return scout
 
     @staticmethod
@@ -64,8 +82,23 @@ class FingerprintCrawler:
             path = "/".join(path_parts[1:])
         else:
             path = path_parts[0]
+
         # the fields of a fingerprint are separated by semicolons
-        return family.replace(";", "_"), path.replace(";", "_")
+        def sanitize(value):
+            return re.sub(r"[;\r\n]", "_", value)
+
+        return sanitize(family), sanitize(path)
+
+    def validateSamplePaths(self, paths):
+        ids = {}
+        for path in paths:
+            key = self._getFamilyAndPath(path)
+            if key in ids:
+                raise ValueError(f"Same collection ID for {ids[key]!r} and {path!r}.")
+            ids[key] = path
+
+    def isCached(self, path):
+        return self._isIgnorableBinary(*self._getFamilyAndPath(path))
 
     def getEmptyFingerprint(self):
         results = self._scout.crawl(b"\x00" * 0x100)
@@ -82,10 +115,20 @@ class FingerprintCrawler:
         try:
             with open(path_to_binary, "rb") as f_binary:
                 binary = f_binary.read()
-            results = self._scout.crawl(binary)
-            filtered_results = self._scout.filter(results, 0, 0, self._filter_size)
-            api_vectors = self._scout.getWinApi1024Vectors(filtered_results)
-            apiscout_db_name, primary_vector = self._scout.getPrimaryVector(api_vectors)
+            minidump = Minidump(binary) if Minidump.isMinidump(binary) else None
+            base = infer_base_address(path_to_binary, minidump=minidump)
+            placer = DllPlacer()
+            placer.ignore_aslr_offsets = self._ignore_aslr_offsets
+            regions = configure_placement(placer, binary, base, minidump)
+            scout = self._scout if placer.isEmpty() else self._initScout(placer)
+            scout.setBaseAddress(base)
+            results, _, _ = recover_pointers(scout, binary, regions, minidump, placer)
+            confidences = scout.getConfidences(results) if self._min_confidence else None
+            filtered = scout.filter(results, 0, 0, self._filter_size, own_image=False)
+            if confidences is not None:
+                filtered = scout.filterByConfidence(filtered, self._min_confidence, confidences)
+            api_vectors = scout.getWinApi1024Vectors(filtered)
+            _, primary_vector = scout.getPrimaryVector(api_vectors)
             return (
                 family,
                 path,
@@ -109,7 +152,10 @@ class FingerprintCrawler:
                         if line.strip():
                             LOG.warning("Skipping malformed fingerprint line: %s", line.strip())
                         continue
-                    self._ignore_files[(fields[0], fields[1])] = fields
+                    key = fields[0], fields[1]
+                    if key in self._ignore_files:
+                        raise ValueError(f"Duplicate sample {key[0]}/{key[1]} in {path_to_list}.")
+                    self._ignore_files[key] = fields
 
     def getNumberOfCrawlableFiles(self, file_list):
         return len(file_list) - self.getNumberOfIgnorableFiles(file_list)
@@ -123,7 +169,7 @@ class FingerprintCrawler:
         return num_ignorable
 
     def _isIgnorableBinary(self, family, path):
-        return (family, path) in self._ignore_files
+        return not self._refresh and (family, path) in self._ignore_files
 
     def mergeWithIgnoreList(self, fingerprint_list):
         """fingerprints of the loaded list that were not part of this crawl, followed by the given fingerprints"""

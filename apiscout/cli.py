@@ -8,7 +8,6 @@ import re
 import sys
 
 from . import db_index
-from .utility import paused_garbage_collection, read_json
 
 PROJECT_URL = "https://github.com/danielplohmann/apiscout"
 MALPEDIA_URL = "https://malpedia.caad.fkie.fraunhofer.de"
@@ -120,48 +119,60 @@ class Parser(argparse.ArgumentParser):
 def get_default_db_dir():
     """the folder searched for API DBs and collections: $APISCOUT_DB_DIR, ./dbs, the folder of downloaded DBs
     or the dbs folder of a checkout"""
-    if os.environ.get(DB_DIR_VARIABLE):
-        return os.environ[DB_DIR_VARIABLE]
-    candidates = [
-        os.path.join(os.getcwd(), "dbs"),
-        db_index.get_data_dir(),
-        os.path.join(os.path.dirname(os.path.dirname(__file__)), "dbs"),
-    ]
-    for candidate in candidates:
-        if os.path.isdir(candidate):
-            return candidate
-    return candidates[0]
+    directories = db_index.default_db_dirs()
+    return next(
+        (path for path in directories if db_index.db_paths(path)),
+        next((path for path in directories if os.path.isdir(path)), directories[0]),
+    )
 
 
 def get_db_files(db_dir):
-    if not os.path.isdir(db_dir):
-        return []
-    return sorted(os.path.join(db_dir, name) for name in os.listdir(db_dir) if name.endswith(".json"))
+    return db_index.db_paths(db_dir)
 
 
 def locate(path, args, what):
-    """a file given by path, or by its bare name when it is in the DB folder (e.g. from `apiscout dbs download`)"""
-    if path == "-" or os.path.exists(path) or os.path.basename(path) != path:
+    """Resolve an explicit path or look for a basename in the database directories."""
+    if path == "-":
+        return path
+    if os.path.exists(path) or os.path.basename(path) != path:
         check_file(path, what)
         return path
-    db_dir = getattr(args, "db_dir", None) or get_default_db_dir()
-    candidate = os.path.join(db_dir, path)
-    if not os.path.isfile(candidate):
-        raise CliError(f"{what} not found: {path}, also not in the DB folder {db_dir}")
-    return candidate
+    explicit = getattr(args, "db_dir", None)
+    directories = [explicit] if explicit else db_index.default_db_dirs()
+    found = db_index.find_db_file(path, directories)
+    if os.path.isfile(found):
+        return found
+    label = "folder" if len(directories) == 1 else "folders"
+    raise CliError(f"{what} not found: {path}, also not in the DB {label} {', '.join(directories)}")
 
 
 def resolve_db_files(args):
-    """the API DBs to use: those given with --db, otherwise all of the DB folder"""
+    """Yield DB paths and, for implicit selection, their already parsed contents."""
     if args.db:
-        return [locate(db_path, args, "API DB") for db_path in args.db]
-    db_paths = get_db_files(args.db_dir or get_default_db_dir())
-    if not db_paths:
-        raise CliError(
-            f"no API DB found in {args.db_dir or get_default_db_dir()}. Download the example DBs with "
-            f"'apiscout dbs download', pass one with --db, or point --db-dir or ${DB_DIR_VARIABLE} to a folder of API DBs."
-        )
-    return db_paths
+        return [(locate(path, args, "API DB"), None) for path in args.db]
+    _, databases = discover_databases(args)
+    if databases:
+        return databases
+    directories = [args.db_dir] if args.db_dir else db_index.default_db_dirs()
+    raise CliError(
+        f"no API DB found in {', '.join(directories)}. Download the example DBs with "
+        f"'apiscout dbs download', pass one with --db, or point --db-dir or ${DB_DIR_VARIABLE} to a folder of API DBs."
+    )
+
+
+def discover_databases(args):
+    directories = [args.db_dir] if args.db_dir else db_index.default_db_dirs()
+    for directory in directories:
+        databases = []
+        for path in get_db_files(directory):
+            document = db_index.read_api_db(path)
+            if document is None:
+                report(args, f"Not an API DB, ignored: {path}")
+            else:
+                databases.append((path, document))
+        if databases:
+            return directory, databases
+    return next((directory for directory in directories if os.path.isdir(directory)), directories[0]), []
 
 
 def not_an_api_db(db_path):
@@ -188,14 +199,31 @@ def check_output(path):
         raise CliError(f"can not write to the folder of {path}.")
 
 
-def match_collection(scout, vector, collection_path):
+def load_collection(scout, path):
     try:
-        result = scout.matchVectorCollection(vector, collection_path)
+        data = scout.loadCollection(path)
     except ValueError as exc:
-        raise CliError(str(exc) or f"can not match against {collection_path}") from None
+        raise CliError(str(exc)) from None
+    if not data:
+        raise CliError(f"no ApiVectors in {path}. A collection has lines of family;sample;...;vector.")
+    return path, data
+
+
+def match_collection(scout, vector, collection):
+    path, data = collection
+    try:
+        result = scout.matchLoadedCollection(vector, data, path)
+    except ValueError as exc:
+        raise CliError(str(exc) or f"can not match against {path}") from None
     if not result["match_results"]:
-        raise CliError(f"no ApiVectors in {collection_path}. A collection has lines of family;sample;...;vector.")
+        raise CliError(f"no ApiVectors in {path}. A collection has lines of family;sample;...;vector.")
     return result
+
+
+def render_collection(scout, matches, limit):
+    if matches["match_results"][0][2] == 0:
+        return "No API overlap with the collection.\n"
+    return scout.renderVectorCollectionResults(matches, limit)
 
 
 def explain_pair(scout, vector_a, vector_b):
@@ -205,10 +233,10 @@ def explain_pair(scout, vector_a, vector_b):
         raise CliError(str(exc)) from None
 
 
-def explain_best_match(scout, vector, collection_path, matches):
+def explain_best_match(scout, vector, collection, matches):
     """the explanation of the best match of the collection, which is first in matches"""
     family, sample, _ = matches["match_results"][0]
-    other = scout.getCollectionVector(collection_path, family, sample)
+    other = collection[1][family][sample]
     return {"family": family, "sample": sample, **explain_pair(scout, vector, other)}
 
 
@@ -289,7 +317,7 @@ def read_vector(value):
     return text.split()[0]
 
 
-def results_to_records(results, confidences=None):
+def results_to_records(results, confidences=None, include_source=False):
     """JSON records of the hits, with their confidence from ApiScout.getConfidences() where it is given"""
     records = []
     for api_map_name in results:
@@ -303,6 +331,8 @@ def results_to_records(results, confidences=None):
             }
             if confidences is not None:
                 record["confidence"] = confidences[api_map_name][(api[0], api[4])]
+            if include_source:
+                record["api_db"] = api_map_name
             records.append(record)
     return records
 
@@ -363,40 +393,27 @@ def report_placements(args, placer):
         report(args, line)
 
 
-def scan_minidump(scout, minidump, args):
-    """scan the memory ranges of a minidump at their addresses, without the images of the system DLLs in its module
-    list: what they hold are the export tables and import address tables of the DLLs, not references of the sample"""
-    for warning in minidump.warnings:
-        report(args, f"Warning: {warning}")
-    if minidump.bitness == 32:
-        scout.setBitness(32)
-    ranges = minidump.getRanges()
-    results = scout.crawlRegions(ranges)
-    dll_images = [
-        (module.base_address, module.end_address)
-        for module in minidump.getModules()
-        if scout.hasDll(module.name.replace("\\", "/").rsplit("/", 1)[-1])
-    ]
-    num_hits = sum(len(hits) for hits in results.values())
-    results = scout.filter(results, 0, 0, 0, own_image=False, exclude_ranges=dll_images)
-    num_excluded = num_hits - sum(len(hits) for hits in results.values())
-    summary = (
-        f"Scanned a {minidump.bitness or 'unknown'}bit minidump: {sum(len(data) for _, data in ranges)} bytes in "
-        f"{len(ranges)} memory ranges, {len(minidump.getModules())} modules, "
-        f"{num_excluded} hits in the images of {len(dll_images)} system DLLs left out"
-    )
-    return results, summary, dll_images
+def same_file(first, second):
+    if not first or not second or "-" in (first, second):
+        return False
+    if os.path.normcase(os.path.realpath(first)) == os.path.normcase(os.path.realpath(second)):
+        return True
+    try:
+        return os.path.samefile(first, second)
+    except OSError:
+        return False
+
+
+def check_distinct_output(output, *inputs):
+    for path in inputs:
+        if same_file(output, path):
+            raise CliError(f"output would overwrite an input file: {path}")
 
 
 def cmd_scan(args):
     from .ApiScout import ApiScout
-    from .LoadAddresses import (
-        SOURCE_MINIDUMP,
-        ModuleListError,
-        find_dll_images,
-        normalize_dll_path,
-        placer_for_modules,
-    )
+    from .DumpScan import configure_placement, infer_base_address, recover_pointers
+    from .LoadAddresses import ModuleListError, placer_for_modules
     from .Minidump import Minidump, MinidumpError
     from .PeTools import PeTools
 
@@ -426,55 +443,42 @@ def cmd_scan(args):
         except MinidumpError as exc:
             raise CliError(f"can not read {args.dump} as minidump: {exc}.") from None
     scout = ApiScout()
-    if args.collection:
-        args.collection = locate(args.collection, args, "collection")
-        # a file that is no collection is found out before the scan, without the warnings for each of its lines
-        logging.disable(logging.WARNING)
-        try:
-            match_collection(scout, scout.getPrimaryVector({})[1]["vector"], args.collection)
-        finally:
-            logging.disable(logging.NOTSET)
-    base_address = args.base_addr
-    if base_address is None and minidump:
-        # a minidump has the addresses of its memory ranges, offsets are their virtual addresses
-        base_address = 0
-    elif base_address is None:
-        # memory dumps are commonly named after the address they were taken from
-        match = re.search(r"0x(?P<base_addr>[0-9a-fA-F]{8,16})$", args.dump)
-        base_address = int(match.group("base_addr"), 16) if match else 0
+    collection = load_collection(scout, locate(args.collection, args, "collection")) if args.collection else None
+    databases = [] if args.import_table else resolve_db_files(args)
+    db_paths = [path for path, _ in databases]
+    check_distinct_output(args.output, args.dump, args.modules, collection[0] if collection else None, *db_paths)
+    base_address = infer_base_address(args.dump, args.base_addr, minidump)
     scout.setBaseAddress(base_address)
     scout.ignoreAslrOffsets(args.ignore_aslr)
-    db_paths = []
-    if minidump:
-        placer.addModuleList(
-            SOURCE_MINIDUMP,
-            [(normalize_dll_path(module.name), module.base_address) for module in minidump.getModules() if module.name],
-        )
-    elif not args.import_table:
-        placer.addImages(find_dll_images(binary, base_address))
+    regions, dll_images = [], []
     if args.import_table:
         if not PeTools.checkPe(binary):
             raise CliError(f"not a PE file: {args.dump}. --import-table needs a PE file as it is stored on disk.")
         results = scout.evaluateImportTable(binary, is_unmapped=True)
         summary = f"Scanned {len(binary)} bytes at base address 0x{base_address:x} with the import table."
     else:
-        db_paths = resolve_db_files(args)
-        for db_path in db_paths:
+        regions = configure_placement(placer, binary, base_address, minidump)
+        for db_path, document in databases:
             try:
-                scout.loadDbFile(db_path, placer.forDb(db_path))
+                scout.loadDbFile(db_path, placer.forDb(db_path), api_db=document)
             except (ValueError, KeyError, TypeError, AttributeError):
                 raise not_an_api_db(db_path) from None
         report_placements(args, placer)
         source = f"{scout.getNumApisLoaded()} APIs of {len(db_paths)} DBs"
+        results, dll_images, excluded = recover_pointers(scout, binary, regions, minidump, placer)
         if minidump:
-            results, summary, dll_images = scan_minidump(scout, minidump, args)
-            summary += f", with {source}."
+            for warning in minidump.warnings:
+                report(args, f"Warning: {warning}")
+            summary = (
+                f"Scanned a {minidump.bitness or 'unknown'}bit minidump: "
+                f"{sum(len(data) for _, data in regions)} bytes in {len(regions)} memory ranges, "
+                f"{len(minidump.getModules())} modules, {excluded} hits in the images of {len(dll_images)} "
+                f"system DLLs left out, with {source}."
+            )
         else:
-            results = scout.crawl(binary)
             summary = f"Scanned {len(binary)} bytes at base address 0x{base_address:x} with {source}."
-    # neighbours count in the complete results, so score them before anything is dropped
     confidences = scout.getConfidences(results)
-    results = scout.filter(results, 0, 0, args.filter)
+    results = scout.filter(results, 0, 0, args.filter, own_image=False)
     if args.min_confidence:
         num_hits = sum(len(hits) for hits in results.values())
         results = scout.filterByConfidence(results, args.min_confidence, confidences)
@@ -489,20 +493,17 @@ def cmd_scan(args):
     dynamic = None
     vector_results = results
     if args.dynamic:
-        if minidump:
-            dynamic = scout.findDynamicApisInRegions(minidump.getRanges(), dll_images)
-        else:
-            dynamic = scout.findDynamicApis(binary)
+        dynamic = scout.findDynamicApisInRegions(regions, dll_images) if minidump else scout.findDynamicApis(binary)
         vector_results = scout.addDynamicApisToResults(results, dynamic)
     vector = scout.getPrimaryVector(scout.getWinApi1024Vectors(vector_results))[1]
-    matches = match_collection(scout, vector["vector"], args.collection) if args.collection else None
-    best_match = explain_best_match(scout, vector["vector"], args.collection, matches) if args.explain else None
+    matches = match_collection(scout, vector["vector"], collection) if collection else None
+    best_match = explain_best_match(scout, vector["vector"], collection, matches) if args.explain else None
     if args.json:
         document = {
             "base_address": base_address,
             "api_dbs": db_paths,
             "placed_dlls": placer.placed,
-            "apis": results_to_records(results, confidences),
+            "apis": results_to_records(results, confidences, include_source=len(db_paths) > 1),
             "apivector": vector["vector"],
             "apis_in_vector": vector["in_api_vector"],
         }
@@ -520,8 +521,8 @@ def cmd_scan(args):
         lines.append(scout.renderDynamicApis(dynamic))
     lines.append(scout.renderVectorResults(vector_results))
     if matches:
-        lines.append(scout.renderVectorCollectionResults(matches, args.max_results))
-    if best_match:
+        lines.append(render_collection(scout, matches, args.max_results))
+    if best_match and best_match["score"] > 0:
         lines.append(scout.renderBestMatchExplanation(best_match))
     write_output("\n".join(lines) + "\n", args.output)
     return EXIT_OK
@@ -535,6 +536,7 @@ def cmd_match(args):
     check_output(args.output)
     if args.collection:
         args.collection = locate(args.collection, args, "collection")
+    check_distinct_output(args.output, args.collection)
     vector = read_vector(args.vector)
     scout = ApiScout()
     scout.loadWinApi1024()
@@ -555,16 +557,17 @@ def cmd_match(args):
         else:
             text = f"Vector A: {vector}\nVector B: {args.other}\nScore: {score}\n"
     else:
-        result = match_collection(scout, vector, args.collection)
-        best_match = explain_best_match(scout, vector, args.collection, result) if args.explain else None
+        collection = load_collection(scout, args.collection)
+        result = match_collection(scout, vector, collection)
+        best_match = explain_best_match(scout, vector, collection, result) if args.explain else None
         if args.json:
             result["match_results"] = result["match_results"][: args.max_results]
             if best_match:
                 result["best_match"] = best_match
             text = json.dumps(result, indent=1, default=list) + "\n"
         else:
-            lines = [scout.renderVectorCollectionResults(result, args.max_results)]
-            if best_match:
+            lines = [render_collection(scout, result, args.max_results)]
+            if best_match and best_match["score"] > 0:
                 lines.append(scout.renderBestMatchExplanation(best_match))
             text = "\n".join(lines) + "\n"
     write_output(text, args.output)
@@ -580,7 +583,7 @@ def cmd_export(args):
         raise CliError("only one of --png and --html can go to standard output.")
     if args.png == "-" and sys.stdout.isatty():
         raise CliError("a PNG image is not written to the terminal. Redirect standard output or give a file.")
-    if args.png and args.html and os.path.realpath(args.png) == os.path.realpath(args.html):
+    if args.png and args.html and same_file(args.png, args.html):
         raise CliError("--png and --html name the same file.")
     for path in (args.html, args.png):
         check_output(path)
@@ -611,16 +614,20 @@ def cmd_collect(args):
     if not destinations:
         db_dir = args.db_dir or get_default_db_dir()
         destinations = [os.path.join(db_dir, f"{datetime.date.today().isoformat()}-winapi1024.csv")]
-    if args.update and args.output and os.path.realpath(args.update) == os.path.realpath(args.output):
+    if same_file(args.update, args.output):
         raise CliError("--update and --output name the same file, leave out --output.")
     for destination in destinations:
         check_output(destination)
     db_paths = []
     # the DBs are parsed once here, the crawler of this process takes them from this dict (the workers read their own)
     api_dbs = {}
-    for db_path in resolve_db_files(args):
+    for db_path, document in resolve_db_files(args):
+        for destination in destinations:
+            check_distinct_output(destination, db_path)
         try:
-            api_db = FingerprintCrawler.readApiDb(db_path)
+            api_db = FingerprintCrawler.readApiDb(db_path) if document is None else document
+            if not db_index.is_api_db(api_db):
+                raise not_an_api_db(db_path)
             has_aslr_offsets = FingerprintCrawler.apiDbHasAslrOffsets(api_db)
         except (ValueError, KeyError, TypeError, AttributeError):
             raise not_an_api_db(db_path) from None
@@ -634,41 +641,82 @@ def cmd_collect(args):
     if not db_paths:
         raise CliError("all API DBs carry ASLR offsets. Pass --use-aslr-dbs or --ignore-aslr to use them.")
     winapi1024_path = os.path.join(os.path.dirname(__file__), "data", "winapi1024v1.txt")
-    crawler_arguments = (db_paths, winapi1024_path, args.folder, args.filter, args.ignore_aslr, args.update)
+    crawler_arguments = (
+        db_paths,
+        winapi1024_path,
+        args.folder,
+        args.filter,
+        args.ignore_aslr,
+        args.update,
+        args.min_confidence,
+        args.refresh,
+    )
     try:
         crawler = create_crawler(*crawler_arguments, api_dbs=api_dbs)
-    except (ValueError, KeyError, TypeError, AttributeError):
-        raise CliError("one of the API DBs can not be loaded, `apiscout dbs` shows which are usable.") from None
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise CliError(f"could not initialize the collection: {exc}") from None
     finally:
         # not needed any more, and the workers forked next would carry them
         api_dbs.clear()
     file_list = []
-    for root, _, files in os.walk(args.folder):
-        file_list.extend(os.path.join(root, name) for name in files if args.require in name)
-    num_crawlable = crawler.getNumberOfCrawlableFiles(file_list)
-    report(args, f"Fingerprinting {num_crawlable} of {len(file_list)} files with {cpu_count()} processes...")
-    fingerprints = []
+    input_metadata = [*destinations, *db_paths]
+    excluded_paths = {os.path.normcase(os.path.realpath(path)) for path in input_metadata if path != "-"}
+    excluded_files = set()
+    for path in input_metadata:
+        if path != "-" and os.path.isfile(path):
+            info = os.stat(path)
+            excluded_files.add((info.st_dev, info.st_ino))
+    for root, dirs, files in os.walk(args.folder):
+        dirs.sort()
+        for name in sorted(files):
+            path = os.path.join(root, name)
+            if args.require not in name or os.path.normcase(os.path.realpath(path)) in excluded_paths:
+                continue
+            try:
+                info = os.stat(path)
+            except OSError:
+                file_list.append(path)
+                continue
+            if (info.st_dev, info.st_ino) not in excluded_files:
+                file_list.append(path)
+    try:
+        crawler.validateSamplePaths(file_list)
+    except ValueError as exc:
+        raise CliError(str(exc)) from None
+    fingerprints = {path: crawler.getFingerprint(path) for path in file_list if crawler.isCached(path)}
+    pending = [path for path in file_list if path not in fingerprints]
+    jobs = min(args.jobs or cpu_count(), len(pending))
+    report(args, f"Fingerprinting {len(pending)} of {len(file_list)} files with {jobs} workers...")
     show_progress = not args.quiet and sys.stderr.isatty()
-    # every worker builds its own crawler once, tasks then only carry a path
-    log_level = logging.getLogger("apiscout").getEffectiveLevel()
-    with Pool(cpu_count(), initializer=init_worker, initargs=(log_level, *crawler_arguments)) as pool:
-        try:
-            for fingerprint in pool.imap(get_fingerprint, file_list, chunksize=4):
-                fingerprints.append(fingerprint)
-                if show_progress:
-                    print(f"\r{len(fingerprints)} / {len(file_list)}", end="", file=sys.stderr, flush=True)
-        except RuntimeError as exc:
-            raise CliError(f"a worker process could not load the API DBs or the collection ({exc}).") from None
-    if show_progress:
+
+    def store(results):
+        for number, (path, fingerprint) in enumerate(zip(pending, results, strict=True), 1):
+            fingerprints[path] = fingerprint
+            if show_progress:
+                print(f"\r{number} / {len(pending)}", end="", file=sys.stderr, flush=True)
+
+    if jobs == 1:
+        store(map(crawler.getFingerprint, pending))
+    elif jobs:
+        log_level = logging.getLogger("apiscout").getEffectiveLevel()
+        worker_arguments = (*crawler_arguments[:5], None, *crawler_arguments[6:])
+        with Pool(jobs, initializer=init_worker, initargs=(log_level, *worker_arguments)) as pool:
+            try:
+                store(pool.imap(get_fingerprint, pending, chunksize=4))
+            except RuntimeError as exc:
+                raise CliError(f"a worker process could not load the API DBs or the collection ({exc}).") from None
+    if show_progress and pending:
         print(file=sys.stderr)
-    if args.skip_empty:
-        empty_fingerprint = crawler.getEmptyFingerprint()
-        fingerprints = [fingerprint for fingerprint in fingerprints if fingerprint[-1] != empty_fingerprint]
+    fingerprints = [fingerprints[path] for path in file_list]
     if args.update:
         merged = crawler.mergeWithIgnoreList(fingerprints)
+        if args.skip_empty:
+            merged = [entry for entry in merged if entry[3] not in (0, "0")]
         crawler.persistFingerprintsToFile(merged, args.update)
         report(args, f"Wrote {len(merged)} fingerprints to {args.update}")
         destinations.remove(args.update)
+    if args.skip_empty:
+        fingerprints = [entry for entry in fingerprints if entry[3] not in (0, "0")]
     for destination in destinations:
         # with --update as well, the output file gets the fingerprints of this folder without the other entries
         write_file(lambda path: crawler.persistFingerprintsToFile(fingerprints, path), destination)
@@ -681,11 +729,28 @@ WORKER_CRAWLER = None
 WORKER_ERROR = None
 
 
-def create_crawler(db_paths, winapi1024_path, folder, filter_size, ignore_aslr, known_collection, api_dbs=None):
+def create_crawler(
+    db_paths,
+    winapi1024_path,
+    folder,
+    filter_size,
+    ignore_aslr,
+    known_collection,
+    min_confidence=0,
+    refresh=False,
+    api_dbs=None,
+):
     from .FingerprintCrawler import FingerprintCrawler
 
     crawler = FingerprintCrawler(
-        db_paths, winapi1024_path, folder, filter_size, ignore_aslr_offsets=ignore_aslr, api_dbs=api_dbs
+        db_paths,
+        winapi1024_path,
+        folder,
+        filter_size,
+        ignore_aslr_offsets=ignore_aslr,
+        api_dbs=api_dbs,
+        min_confidence=min_confidence,
+        refresh=refresh,
     )
     if known_collection and os.path.isfile(known_collection):
         crawler.loadIgnoreList(known_collection)
@@ -775,37 +840,52 @@ def cmd_update(args):
     name = re.search(COLLECTION_PATTERN, response.headers.get("Content-Disposition", ""))
     if not name or not response.content.strip():
         raise CliError("Malpedia sent no collection.")
+    downloaded_version = int(name[1])
+    if downloaded_version < remote_version or downloaded_version <= local_version:
+        raise CliError("Malpedia sent an older collection than advertised. The local collection was kept.")
+    from .ApiScout import ApiScout
+
+    try:
+        ApiScout().validateCollection(response.content.decode("utf-8").splitlines())
+    except ValueError as exc:
+        raise CliError(f"Malpedia sent an invalid collection. The local collection was kept. {exc}") from None
+    import tempfile
+
     os.makedirs(db_dir, exist_ok=True)
     target_path = os.path.join(db_dir, name.group(0))
     # stored under its final name only once it is written completely
-    temp_path = target_path + ".tmp"
+    descriptor, temp_path = tempfile.mkstemp(prefix=".collection-", dir=db_dir)
     try:
-        with open(temp_path, "wb") as f_out:
+        with os.fdopen(descriptor, "wb") as f_out:
             f_out.write(response.content)
         os.replace(temp_path, target_path)
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
-    outdated = [old_name for old_name in collections if old_name != name.group(0)]
-    for old_name in outdated:
-        os.remove(os.path.join(db_dir, old_name))
-    report(args, f"Stored {target_path}" + (f", removed {len(outdated)} older collections" if outdated else ""))
+    removed = 0
+    for old_name, version in collections.items():
+        if version < downloaded_version:
+            try:
+                os.remove(os.path.join(db_dir, old_name))
+            except FileNotFoundError:
+                continue
+            removed += 1
+    report(args, f"Stored {target_path}" + (f", removed {removed} older collections" if removed else ""))
     return EXIT_OK
 
 
 def cmd_dbs(args):
     check_output(args.output)
-    db_dir = args.db_dir or get_default_db_dir()
+    db_dir, databases = discover_databases(args)
     if not os.path.isdir(db_dir):
         raise CliError(
             f"folder not found: {db_dir}. Download the example DBs with 'apiscout dbs download', or point "
             f"--db-dir or ${DB_DIR_VARIABLE} to a folder of API DBs."
         )
     entries = []
-    for db_path in get_db_files(db_dir):
+    for db_path, content in databases:
+        check_distinct_output(args.output, db_path)
         try:
-            with paused_garbage_collection():
-                content = read_json(db_path)
             entries.append(
                 {
                     "path": db_path,
@@ -1078,6 +1158,15 @@ def build_parser():
         help="drop APIs without another API within N bytes (default: 32)",
     )
     collect.add_argument("--skip-empty", action="store_true", help="leave out dumps without any API")
+    collect.add_argument(
+        "--min-confidence",
+        type=parse_confidence,
+        default=0,
+        metavar="N",
+        help="drop hits below this confidence (default: 0)",
+    )
+    collect.add_argument("--jobs", type=parse_count(1), metavar="N", help="maximum number of worker processes")
+    collect.add_argument("--refresh", action="store_true", help="rescan cached dumps when updating a collection")
     # the two ways to use a DB with ASLR offsets exclude each other, one of them would silently win
     aslr_options = collect.add_mutually_exclusive_group()
     aslr_options.add_argument(
@@ -1186,7 +1275,7 @@ def get_version():
         return "(not installed)"
 
 
-def main(argv=None):
+def _dispatch(argv):
     parser, commands = build_parser()
     args, unknown = parser.parse_known_args(argv)
     if args.command is None:
@@ -1206,14 +1295,30 @@ def main(argv=None):
     if args.verbose:
         # the messages of this package only, not those of the libraries it uses
         logging.getLogger("apiscout").setLevel(logging.DEBUG)
+    return args.run(args)
+
+
+def main(argv=None):
     try:
-        return args.run(args)
+        try:
+            result = _dispatch(argv)
+        except SystemExit as exc:
+            if exc.code == 0:
+                sys.stdout.flush()
+            raise
+        sys.stdout.flush()
+        return result
     except CliError as exc:
         print(f"apiscout: error: {exc}", file=sys.stderr)
         return EXIT_ERROR
     except BrokenPipeError:
         # the reader of a pipe has enough, e.g. `apiscout scan ... | head`
-        sys.stderr.close()
+        # Suppress the second flush at interpreter shutdown.
+        try:
+            with open(os.devnull, "w") as sink:
+                os.dup2(sink.fileno(), sys.stdout.fileno())
+        except (AttributeError, OSError, ValueError):
+            pass
         return EXIT_OK
     except KeyboardInterrupt:
         print("\napiscout: interrupted", file=sys.stderr)

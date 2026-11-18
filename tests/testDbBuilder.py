@@ -326,16 +326,58 @@ class DatabaseBuilderTests(unittest.TestCase):
                 with unittest.mock.patch.object(DatabaseBuilder.DatabaseBuilder, "extractRecursively", crawl):
                     code, errors = self.run_main(*offline, "--os_version", version)
                 self.assertEqual(2, code)
-                self.assertIn("can not be part of a file name (not", errors)
+                self.assertIn("can not be part of a default file name", errors)
                 self.assertFalse(any(name.endswith(".json") for name in os.listdir(self.directory.name)))
-        # only the first two numbers name the file, and --outfile names it otherwise
-        self.assertEqual("10.0", DatabaseBuilder.default_file_stem("10.0.19041/1"))
-        self.assertEqual((0, ""), self.run_main(*offline, "--os_version", "10.0.19041/1:*"))
-        self.assertTrue(os.path.isfile(os.path.join(self.directory.name, "10.0.json")))
+        for version in ("10.0.19041", "10.0.26100"):
+            self.assertEqual((0, ""), self.run_main(*offline, "--os_version", version))
+            self.assertTrue(os.path.isfile(os.path.join(self.directory.name, version + ".json")))
         outfile = os.path.join(self.directory.name, "out.json")
         self.assertEqual((0, ""), self.run_main(*offline, "--os_version", "10.0/1", "--outfile", outfile))
         with open(outfile, encoding="utf-8") as f_db:
             self.assertEqual("10.0/1", json.load(f_db)["os_version"])
+
+    def testWindowsCustomDirectoriesRequireOptInToLoadDlls(self):
+        dll_dir = os.path.join(self.directory.name, "dlls")
+        os.mkdir(dll_dir)
+        with open(os.path.join(dll_dir, "a.dll"), "wb") as f_dll:
+            f_dll.write(build_dll([0x1000], [(b"A", 0)]))
+        with (
+            unittest.mock.patch.object(DatabaseBuilder, "is_windows", return_value=True),
+            unittest.mock.patch.object(DatabaseBuilder, "get_system_info", return_value=("Test", "10.0.19041")),
+            unittest.mock.patch.object(
+                DatabaseBuilder.DatabaseBuilder, "extractAslrOffsets", side_effect=lambda db: db
+            ) as live,
+        ):
+            self.assertEqual((0, ""), self.run_main("--paths", dll_dir))
+            live.assert_not_called()
+            self.assertEqual((0, ""), self.run_main("--paths", dll_dir, "--load-dlls"))
+            live.assert_called_once()
+
+    def testInterruptedDbWriteLeavesExistingOutput(self):
+        path = os.path.join(self.directory.name, "out.json")
+        with open(path, "wb") as f_db:
+            f_db.write(b'{"old": true}')
+        with (
+            unittest.mock.patch.object(DatabaseBuilder.os, "replace", side_effect=KeyboardInterrupt),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            DatabaseBuilder.DatabaseBuilder().persistApiDb({}, path)
+        self.assertEqual(["out.json"], os.listdir(self.directory.name))
+        with open(path, "rb") as f_db:
+            self.assertEqual(b'{"old": true}', f_db.read())
+
+    def testReplacingModuleListClearsUnmatchedOffsets(self):
+        dlls = {
+            f"{name}.dll": {"filepath": f"System32/{name}.dll", "base_address": 0x10000000, "bitness": 64}
+            for name in ("a", "b")
+        }
+        api_db = {"dlls": dlls}
+        builder = DatabaseBuilder.DatabaseBuilder()
+        builder.applyLoadAddresses(api_db, [("system32/a.dll", 0x180000000), ("system32/b.dll", 0x190000000)])
+        self.assertNotEqual(0, dlls["b.dll"]["aslr_offset"])
+        builder.applyLoadAddresses(api_db, [("system32/a.dll", 0x200000000)])
+        self.assertEqual(0, dlls["b.dll"]["aslr_offset"])
+        self.assertEqual(0x200000000, int(dlls["a.dll"]["base_address"]) - int(dlls["a.dll"]["aslr_offset"]))
 
     def testNoResourcesAndNoExports(self):
         summary = self.assertSameAsPefile(build_dll([0x1000], [(b"A", 0)], with_resources=False), plain=True)

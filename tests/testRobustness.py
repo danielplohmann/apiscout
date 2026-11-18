@@ -249,10 +249,15 @@ class ApiQrTestSuite(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False) as f_html:
             pass
         try:
-            apiqr.exportHtml(f_html.name, full=True)
-            with open(f_html.name) as f_in:
+            fragment = apiqr.exportHtml(f_html.name, full=False)
+            self.assertTrue(fragment.startswith("<table>"))
+            self.assertEqual(0, os.path.getsize(f_html.name))
+            apiqr.exportHtml(f_html.name)
+            with open(f_html.name, encoding="utf-8") as f_in:
                 html = f_in.read()
             self.assertEqual(1024, html.count('class="apicell"'))
+            self.assertEqual(1024, html.count(' title="'))
+            self.assertNotIn("https://", html)
             self.assertIn(ApiVector(WINAPI1024_PATH).compress([1, 0, 0, 1] * 256), html)
         finally:
             os.remove(f_html.name)
@@ -327,6 +332,15 @@ class HostileInputTestSuite(unittest.TestCase):
         binary[0x40:0x46] = b"PE\x00\x00\x4c\x01"
         self.assertEqual({}, ImportTableLoader(bytes(binary)).get_import_table())
         self.assertEqual({}, ApiScout().crawl(bytes(binary)))
+
+    def testRawBufferDoesNotSupplyPeImageBase(self):
+        binary = bytearray(0x80)
+        struct.pack_into("<I", binary, 0x3C, 0x40)
+        struct.pack_into("<I", binary, 0x74, 0x400000)
+        self.assertEqual(0, PeTools.getBaseAddressFromPeHeader(binary))
+        # A call through a pointer at offset 0x20 uses the real base, zero.
+        binary[:6] = b"\xff\x15" + struct.pack("<I", 0x20)
+        self.assertEqual({0x20: {0}}, ApiScout()._getCodeReferences(binary, {0x20})[32])
 
     def testImportDescriptorsSharingOneThunkList(self):
         pe = bytearray(build_pe32()) + bytearray(0x8000)
@@ -451,6 +465,16 @@ class SecondAuditTestSuite(unittest.TestCase):
         entries = {entry[3]: entry for entry in ApiScout().evaluateImportTable(bytes(pe))["import_table"]}
         self.assertEqual((2, {0x180}), entries["CreateFileW"][6:8])
         self.assertEqual((1, set()), entries["send"][6:8])
+
+    def testArmImportsAreReadWithoutX86CallerInference(self):
+        pe = bytearray(build_pe32())
+        struct.pack_into("<H", pe, 0x44, 0x1C4)  # IMAGE_FILE_MACHINE_ARMNT
+        pe[0x180:0x186] = b"\xff\x15" + struct.pack("<I", 0x4010A0)
+        self.assertTrue(PeTools.checkPe(pe))
+        self.assertEqual(32, PeTools.getBitness(pe))
+        imports = ApiScout().evaluateImportTable(bytes(pe))["import_table"]
+        self.assertEqual(EXPECTED_IMPORTS, {(entry[0], entry[2], entry[3]) for entry in imports})
+        self.assertTrue(all(entry[6:] == (1, set()) for entry in imports))
 
     def testImportTableOfMappedImage(self):
         mapped = PeTools.mapBinary(build_pe32())

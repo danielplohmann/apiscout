@@ -1,5 +1,5 @@
 """The searches of a buffer that make ApiScout.crawl() fast, with numpy: the DWORDs and QWORDs that are addresses of
-APIs (AddressSearch), and the calls and jumps through pointers that refer to given offsets (find_code_references).
+APIs (AddressSearch), and the calls and jumps through pointers (iter_indirect_branches).
 ApiScout does the same with plain loops where numpy is missing, just much slower."""
 
 import os
@@ -138,25 +138,10 @@ def _find_branches(binary):
     return _find_flagged(get_flags, 0, len(data) - 5) if len(data) > 5 else np.empty(0, dtype=np.int64)
 
 
-def find_code_references(binary, targets, base_address):
-    """references by calls and jumps through pointers to the given offsets (any iterable of integers) of the binary, as
-    {bitness: {offset: {offsets of the instructions}}}. A 32bit instruction has the address of its target, base_address
-    plus the offset, a 64bit instruction the distance from its end to the target (RIP-relative)."""
-    references = {32: {}, 64: {}}
-    targets = np.unique(np.fromiter(targets, dtype=np.int64))
-    branches = _find_branches(binary) if len(targets) else np.empty(0, dtype=np.int64)
+def iter_indirect_branches(binary):
+    """Yield (offset, four-byte operand) for indirect x86 calls and jumps with a complete operand."""
+    branches = _find_branches(binary)
     if not len(branches):
-        return references
-    # the operand of the instructions, as an unsigned number for a 32bit reference and as a signed one for a 64bit one
-    operands = np.ndarray(len(binary) - 3, dtype="<u4", buffer=binary, strides=(1,))[branches + 2].astype(np.int64)
-    referenced = {64: np.where(operands >= 1 << 31, operands - (1 << 32), operands) + branches + 6}
-    if -len(binary) < base_address < 1 << 32:
-        referenced[32] = operands - base_address
-    for bitness, offsets in referenced.items():
-        inside = (offsets > 0) & (offsets < len(binary))
-        is_target = np.isin(offsets[inside], targets)
-        for offset, branch in zip(
-            offsets[inside][is_target].tolist(), branches[inside][is_target].tolist(), strict=True
-        ):
-            references[bitness].setdefault(offset, set()).add(branch)
-    return references
+        return
+    operands = np.ndarray(len(binary) - 3, dtype="<u4", buffer=binary, strides=(1,))[branches + 2]
+    yield from zip(branches.tolist(), operands.tolist(), strict=True)

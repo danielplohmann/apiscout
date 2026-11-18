@@ -24,6 +24,7 @@ import threading
 PREFERENCE_DB_FOLDER = "apiscout.db.folder"
 OTHER_API_DB = "Other file..."
 MODULE_LIST = "Module list file..."
+CONFIDENCE_FILTER = "Set minimum hit confidence..."
 ORDINAL_ONLY_API = re.compile(r"None<(\d+)>")
 CHUNK_SIZE = 0x100000
 KEPT_MODULES = "_apiscout_kept_modules"
@@ -36,13 +37,14 @@ NOT_INSTALLED = (
 class ApiHit:
     """an API address found in memory"""
 
-    def __init__(self, address, api, dll, api_address, bitness):
+    def __init__(self, address, api, dll, api_address, bitness, confidence=0):
         self.address = address
         self.api = api
         self.dll = dll
         self.api_address = api_address
         # of the DLL: a 32bit API address in a 64bit program is no pointer
         self.bitness = bitness
+        self.confidence = confidence
 
 
 class MemoryRegion:
@@ -63,8 +65,10 @@ def get_label_name(api, dll):
 
 def get_db_choices(db_folder):
     """the API DBs of the folder by name, and the choices of any other file and of a module list"""
+    from apiscout.db_index import db_paths, read_api_db
+
     try:
-        names = sorted(name for name in os.listdir(db_folder) if name.endswith(".json"))
+        names = [os.path.basename(path) for path in db_paths(db_folder) if read_api_db(path) is not None]
     except OSError:
         names = []
     return [*names, OTHER_API_DB, MODULE_LIST]
@@ -123,20 +127,22 @@ def load_scout(api_scout_class, db_paths, placer=None):
             raise ValueError(f"API DB not found: {db_path}")
         try:
             scout.loadDbFile(db_path, placer.forDb(db_path) if placer else None)
-        except (ValueError, KeyError, TypeError, AttributeError):
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
             raise ValueError(f"not an API DB: {db_path}") from None
     return scout
 
 
-def scan_buffer(scout, base_address, binary, exclude_ranges=()):
+def scan_buffer(scout, base_address, binary, exclude_ranges=(), with_confidence=False):
     """(offset, API address, DLL, API, bitness) of the APIs found in a buffer, filtered like `apiscout scan` does
     by default: API addresses within the buffer itself are left out, and so are the references located in the
     exclude_ranges (start, end), the images of DLLs"""
     scout.setBaseAddress(base_address)
     results = scout.filter(scout.crawl(binary), 0, 0, 0, exclude_ranges=exclude_ranges)
+    scores = scout.getConfidences(results) if with_confidence else None
     # DLLs are named with their base address in the API DB, e.g. kernel32.dll_0x7dd60000
     return [
         (entry[0], entry[1], re.sub(r"_0x[0-9a-fA-F]+$", "", entry[2]), entry[3], entry[4])
+        + ((scores[api_map_name][(entry[0], entry[4])],) if scores is not None else ())
         for api_map_name in results
         for entry in results[api_map_name]
     ]
@@ -147,7 +153,9 @@ def order_hits(hits, pointer_bits):
     a hit of the program's pointer size comes before one of another size at the same location"""
     unique: dict = {}
     for hit in hits:
-        unique.setdefault((hit.address, hit.dll, hit.bitness, hit.api), hit)
+        key = hit.address, hit.dll, hit.bitness, hit.api
+        if key not in unique or unique[key].confidence < hit.confidence:
+            unique[key] = hit
     return sorted(unique.values(), key=lambda hit: (hit.address, hit.bitness != pointer_bits))
 
 
@@ -167,6 +175,7 @@ class GhidraScout:
         self.script = script
         self.program = script.getCurrentProgram()
         self.pointer_bits = self.program.getDefaultPointerSize() * 8
+        self.min_confidence = 0
         self.windows_archive = None
         self.windows_archive_missing = False
         # the archive is closed with the dialog, which can happen while rows are still annotated
@@ -174,10 +183,11 @@ class GhidraScout:
 
     def run(self):
         modules = None
+        if import_api_scout() is None:
+            self.script.printerr(NOT_INSTALLED)
+            return
         if self.script.isRunningHeadless():
-            if import_api_scout() is None:
-                self.script.printerr(NOT_INSTALLED)
-                return
+            from apiscout.db_index import find_db_file
             from apiscout.LoadAddresses import ModuleListError, split_modules_argument
 
             try:
@@ -185,7 +195,7 @@ class GhidraScout:
             except ModuleListError as exc:
                 self.script.printerr(f"ApiScout: {exc}.")
                 return
-            db_paths = [os.path.abspath(arg) for arg in arguments]
+            db_paths = [os.path.abspath(find_db_file(arg)) for arg in arguments]
             modules = os.path.abspath(modules) if modules else None
             if not db_paths:
                 self.script.printerr(
@@ -199,7 +209,7 @@ class GhidraScout:
         hits = self.scan(db_paths, modules)
         if hits is None:
             return
-        hits = order_hits(hits, self.pointer_bits)
+        hits = order_hits([hit for hit in hits if hit.confidence >= self.min_confidence], self.pointer_bits)
         self.script.println(f"ApiScout found {len(hits)} API references")
         if self.script.isRunningHeadless():
             annotated = sum(1 for hit in hits if self.annotate(hit))
@@ -211,9 +221,16 @@ class GhidraScout:
     def get_db_folder(self):
         from ghidra.framework.preferences import Preferences
 
+        from apiscout.db_index import first_db_dir
+
+        if override := os.environ.get("APISCOUT_DB_DIR"):
+            return override
         folder = Preferences.getProperty(PREFERENCE_DB_FOLDER)
         if folder and os.path.isdir(folder):
             return folder
+        if candidate := first_db_dir():
+            return candidate
+        self.script.println("ApiScout: run apiscout dbs download for example databases.")
         chosen = self.script.askDirectory("Folder with ApiScout's API DBs", "Select").getAbsolutePath()
         Preferences.setProperty(PREFERENCE_DB_FOLDER, chosen)
         Preferences.store()
@@ -229,13 +246,19 @@ class GhidraScout:
             "ApiScout",
             "API DBs of the system the memory dump was taken from, and a module list if its DLLs are loaded "
             "elsewhere than the API DBs have them:",
-            ArrayList(get_db_choices(db_folder)),
+            ArrayList([*get_db_choices(db_folder), CONFIDENCE_FILTER]),
         )
         db_paths = []
         modules = None
         for choice in chosen:
             if choice == OTHER_API_DB:
                 db_paths.append(self.script.askFile("ApiScout: API DB file", "OK").getAbsolutePath())
+            elif choice == CONFIDENCE_FILTER:
+                confidence = self.script.askInt("ApiScout", "Minimum hit confidence (0 to 100)")
+                if not 0 <= confidence <= 100:
+                    self.script.printerr("ApiScout: confidence must be between 0 and 100.")
+                    raise CancelledException()
+                self.min_confidence = confidence
             elif choice == MODULE_LIST:
                 modules = self.script.askFile("ApiScout: module list (lines of hex load address and DLL path)", "OK")
                 modules = modules.getAbsolutePath()
@@ -277,10 +300,10 @@ class GhidraScout:
                 monitor.checkCancelled()
                 monitor.setMessage(f"ApiScout: scanning {region.start}")
                 base_address = region.start.getUnsignedOffset()
-                for offset, api_address, dll, api, bitness in scan_buffer(
-                    scout, base_address, self.read_region(region), ranges
+                for offset, api_address, dll, api, bitness, confidence in scan_buffer(
+                    scout, base_address, self.read_region(region), ranges, with_confidence=True
                 ):
-                    hits.append(ApiHit(region.start.add(offset), api, dll, api_address, bitness))
+                    hits.append(ApiHit(region.start.add(offset), api, dll, api_address, bitness, confidence))
             return hits
         finally:
             package_log.removeHandler(handler)
@@ -507,6 +530,7 @@ class GhidraScout:
         dialog.addCustomColumn(Column("API", lambda hit: get_label_name(hit.api, hit.dll)))
         dialog.addCustomColumn(Column("Library", lambda hit: hit.dll))
         dialog.addCustomColumn(Column("API Address", lambda hit: f"{hit.api_address:x}", lambda hit: hit.api_address))
+        dialog.addCustomColumn(Column("Confidence", lambda hit: str(hit.confidence), lambda hit: hit.confidence))
         for hit in hits:
             dialog.add(ApiRow(hit))
         dialog.setClosedListener(self.close_windows_archive)

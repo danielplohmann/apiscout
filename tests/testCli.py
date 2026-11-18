@@ -139,7 +139,7 @@ class CliTestSuite(unittest.TestCase):
                 f_collection.write(f"family;sample;1;1;{VECTOR}\n")
             code, output, _ = run("scan", DUMP_PATH, "--db", DB_PATH, "--collection", collection)
             self.assertEqual(0, code)
-            self.assertIn("Collection Results", output)
+            self.assertIn("No API overlap", output)
             document = json.loads(run("scan", DUMP_PATH, "--db", DB_PATH, "--collection", collection, "--json")[1])
             self.assertEqual(1, document["collection_matches"]["vectors_in_collection"])
             # found out before the scan, and without traceback
@@ -325,9 +325,8 @@ class CliTestSuite(unittest.TestCase):
             args = ["scan", DUMP_PATH, "--db", DB_PATH, "--base-addr", "0x1000", "-c", collection]
             code, output, _ = run(*args, "--explain")
             self.assertEqual(0, code)
-            self.assertIn("Best match: family - sample - ", output)
-            self.assertIn("Best match: family - sample - ", output)
-            self.assertIn("APIs only in vector B, top", output)
+            self.assertIn("No API overlap", output)
+            self.assertNotIn("Best match:", output)
             document = json.loads(run(*args, "--explain", "--json")[1])
             self.assertEqual("family", document["best_match"]["family"])
             self.assertEqual([], document["best_match"]["shared"])
@@ -526,8 +525,9 @@ class CliTestSuite(unittest.TestCase):
             self.skipTest("the workers only see the patched function when they are forked")
         with tempfile.TemporaryDirectory() as directory:
             os.mkdir(os.path.join(directory, "family"))
-            with open(os.path.join(directory, "family", "x_dump"), "wb") as f_dump:
-                f_dump.write(b"dump")
+            for name in ("x_dump", "y_dump"):
+                with open(os.path.join(directory, "family", name), "wb") as f_dump:
+                    f_dump.write(b"dump")
             target = os.path.join(directory, "collection.csv")
             real_create = cli.create_crawler
             calls = []

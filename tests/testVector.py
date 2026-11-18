@@ -17,6 +17,7 @@ import os
 import random
 import tempfile
 import unittest
+from unittest import mock
 
 import apiscout
 from apiscout.ApiVector import ApiVector
@@ -57,6 +58,19 @@ class ApiVectorTestSuite(unittest.TestCase):
             ("advapi32.dll", "DeleteService"),
         ]
         cls.vector._vector_ranks_only = [928, 927, 922, 105, 547, 644, 445, 560, 360, 299]
+
+    def testMatchRejectsInvalidUncompressedVectors(self):
+        vector = ApiVector(os.path.join(os.path.dirname(apiscout.__file__), "data", "winapi1024v1.txt"))
+        valid = [1] + [0] * 1023
+        invalid = ([1], [2] + valid[1:], [0.5] + valid[1:])
+        for candidate in invalid:
+            with self.subTest(candidate=candidate[:2]), self.assertRaisesRegex(ValueError, "binary values"):
+                vector.matchVectors(candidate, valid)
+            with (
+                mock.patch("apiscout.ApiVector.NUMPY_AVAILABLE", False),
+                self.assertRaisesRegex(ValueError, "binary values"),
+            ):
+                vector.matchVectors(candidate, valid)
 
     def testListConversions(self):
         # from list to vector

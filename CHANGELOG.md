@@ -12,7 +12,16 @@ hits that were reported before, which a release says here.
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- Shorter README with a runnable example and separate usage, database, and integration guides.
+- Renamed the manual Binary Ninja plugin folder to `plugins/binja`. Retarget checkout symlinks that use the old path.
+- Shared database discovery across the CLI and integrations. Plugin results show hit confidence and can be filtered before annotation.
+- `collect` recognizes minidumps and uses the same DLL placement logic as `scan`. Use `--refresh` to rescan cached paths and `--jobs` to limit workers.
+- Fixed missed pointer references and incorrect confidence in flat and sparse captures. Text collection matches now report zero overlap without suggesting a best sample.
+- Collection updates validate downloads before replacement. Scan output cannot overwrite its inputs.
+- The DB builder parses custom DLL paths statically by default. Use `--load-dlls` for trusted custom DLLs on Windows. Default filenames include the full Windows version, and DB writes are atomic.
+- ApiQR writes standalone HTML by default, and hover labels work offline.
 
 ## [3.0.0] - 2026-11-18
 

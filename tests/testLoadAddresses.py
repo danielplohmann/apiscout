@@ -262,6 +262,15 @@ class MatchingTestSuite(unittest.TestCase):
             "kernel32.dll", dll_file_name("64_kernel32.dll", {"filepath": "C:\\Windows\\System32\\KERNEL32.dll"})
         )
 
+    def testKnownBitnessOverridesLowAddressHeuristic(self):
+        dlls = {
+            "native": {"filepath": "C:\\Windows\\System32\\kernel32.dll", "bitness": 64},
+            "wow": {"filepath": "C:\\Windows\\SysWOW64\\kernel32.dll", "bitness": 32},
+        }
+        modules = [("system32/kernel32.dll", 0x76000000)]
+        self.assertEqual({"native": 0x76000000}, match_load_addresses(dlls, modules, bitness=64))
+        self.assertEqual({"wow": 0x76000000}, match_load_addresses(dlls, modules, bitness=32))
+
 
 class DllImageTestSuite(unittest.TestCase):
     def _db(self, directory):
@@ -288,6 +297,11 @@ class DllImageTestSuite(unittest.TestCase):
             [(0x401000, "kernelbase.dll", 32, exports), (0x405000, "x.dll", 64, {1: 0x1500})],
             [(image.load_address, image.name, image.bitness, image.exports) for image in images],
         )
+
+    def testFindsAnAlignedImageInAnUnalignedDump(self):
+        dll = build_dll_image("test.dll", {1: 0x1500})
+        images = find_dll_images(bytes(0xF80) + dll, 0x400080)
+        self.assertEqual([(0x401000, "test.dll")], [(image.load_address, image.name) for image in images])
 
     def testPlacesTheDllByItsExports(self):
         exports = {383: 0x6A50, 384: 0x6A80, 390: 0x7000}

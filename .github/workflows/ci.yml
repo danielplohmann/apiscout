@@ -28,17 +28,25 @@ jobs:
       - run: uv run ruff check --output-format github
       - run: uv run ruff format --check
       - run: uv run ty check --output-format github
+      - name: Check Binary Ninja manifest version
+        run: test "$(uv version --short)" = "$(uv run python -c 'import json; print(json.load(open("plugin.json"))["version"])')"
 
   test:
-    name: Tests (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
+        include:
+          - os: macos-latest
+            python-version: "3.13"
+          - os: windows-latest
+            python-version: "3.13"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -48,7 +56,12 @@ jobs:
           version: "0.13.8"
           python-version: ${{ matrix.python-version }}
       - run: uv sync --locked
-      - run: uv run python -m unittest discover -s tests -p "test*.py" -t .
+      - if: matrix.os == 'ubuntu-latest'
+        run: uv run python -m unittest discover -s tests -p "test*.py" -t .
+      - if: matrix.os != 'ubuntu-latest'
+        run: >-
+          uv run python -m unittest tests.testDbDownload tests.testCli.CliTestSuite.testCollect
+          tests.testWorkflowRegressions
 
   zizmor:
     name: Workflow security audit

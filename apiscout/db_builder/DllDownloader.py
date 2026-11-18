@@ -41,7 +41,7 @@ if not __package__:
     # run as a file (python DllDownloader.py) instead of as module, the imports of the package below would fail
     sys.exit("Run the DllDownloader from the root of the clone: python -m apiscout.db_builder.DllDownloader")
 
-from . import config  # noqa: E402
+from . import config, write_atomic  # noqa: E402
 
 WINBINDEX_URL = "https://winbindex.m417z.com/data/by_filename_compressed/{name}.json.gz"
 SYMBOL_SERVER_URL = "https://msdl.microsoft.com/download/symbols/{name}/{file_id}/{name}"
@@ -402,9 +402,7 @@ def load_index(name, cache_dir, fetch=http_get, now=time.time):
     index = parse_index(raw)
     if cache_path:
         os.makedirs(cache_dir, exist_ok=True)
-        with open(cache_path + ".part", "wb") as f_out:
-            f_out.write(raw)
-        os.replace(cache_path + ".part", cache_path)
+        write_atomic(cache_path, raw)
     return index
 
 
@@ -431,9 +429,7 @@ def download_file(files, out_dir, fetch=http_get):
                 problem, rejected = f"the download is {exc}, dropped", True
                 continue
             if (file.size is None or len(data) == file.size) and hashlib.sha256(data).hexdigest() == file.sha256:
-                with open(target + ".part", "wb") as f_out:
-                    f_out.write(data)
-                os.replace(target + ".part", target)
+                write_atomic(target, data)
                 return file, "downloaded"
             problem, rejected = (
                 f"the download differs from the file of Winbindex ({len(data)} instead of {file.size} bytes or "
@@ -614,7 +610,9 @@ def run(args, fetch=None, out=None):
         + f" in {time.time() - started:.0f} s.\n"
     )
     if args.download_only:
-        return 1 if counts["failed"] else 0
+        if not verified:
+            out.write("No DLLs were downloaded or verified.\n")
+        return 1 if counts["failed"] or not verified else 0
     # the folders may hold files of another update or of other DLLs from an earlier run, only this run's go in
     others = other_files(args.out, verified)
     if others:
@@ -646,15 +644,6 @@ def other_files(out_dir, files):
                 if name.lower().endswith(".dll") and os.path.normcase(os.path.abspath(path)) not in kept:
                     others.append(f"{folder}/{name}")
     return others
-
-
-def clean_partial_files(out_dir):
-    for folder, _, _ in SYSTEM_FOLDERS:
-        folder_path = os.path.join(out_dir, folder)
-        if os.path.isdir(folder_path):
-            for name in os.listdir(folder_path):
-                if name.endswith(".part"):
-                    os.remove(os.path.join(folder_path, name))
 
 
 def main(argv=None):
@@ -693,8 +682,6 @@ def main(argv=None):
     if not 1 <= args.jobs <= 8:
         parser.error("--jobs is between 1 and 8.")
     try:
-        if args.list is None and args.out:
-            clean_partial_files(args.out)
         return run(args)
     except DownloaderError as exc:
         sys.stderr.write(f"error: {exc}\n")

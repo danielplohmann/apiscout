@@ -28,7 +28,7 @@ elif CLONE_ROOT not in sys.path:
     sys.path.insert(0, CLONE_ROOT)
 
 from apiscout.ApiScout import ApiScout  # noqa: E402
-from apiscout.db_index import get_data_dir  # noqa: E402
+from apiscout.db_index import default_db_dirs, find_db_file, first_db_dir  # noqa: E402
 from apiscout.IdaForm import ApiResultsAction, ApiResultsChooser, loadIcon  # noqa: E402
 from apiscout.IdaTools import IdaTools  # noqa: E402
 from apiscout.LoadAddresses import (  # noqa: E402
@@ -60,7 +60,10 @@ def crawl(tools, api_dbs, ignore_aslr_offsets=False, modules=None):
     scout = ApiScout()
     scout.ignoreAslrOffsets(ignore_aslr_offsets)
     for path in api_dbs:
-        scout.loadDbFile(path, placer.forDb(path))
+        try:
+            scout.loadDbFile(path, placer.forDb(path))
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise ValueError(f"Could not load API DB {path}: {exc or 'invalid API database'}") from exc
     for line in describe_placements(placer):
         print(f"ApiScout: {line}")
     bitness_string = "32bit and 64bit" if scout.has_64bit else "32bit"
@@ -75,16 +78,22 @@ def crawl(tools, api_dbs, ignore_aslr_offsets=False, modules=None):
         updateResults(all_results, scout.crawl(binary))
     # the images of the DLLs in the memory hold their export tables and import address tables, not references
     ranges = placed_image_ranges(placer, functools.partial(read_from_regions, memory))
+    scout.setBaseAddress(base_address)
     if ranges:
-        scout.setBaseAddress(base_address)
         all_results = scout.filter(all_results, 0, 0, 0, own_image=False, exclude_ranges=ranges)
-    return tools.getResultRows(all_results)
+    return tools.getResultRows(all_results, scout.getConfidences(all_results))
 
 
 def askNeighbourhood(chooser, selection):
     distance = ida_kernwin.ask_long(0x800, "Maximum distance in bytes to the next API (0 shows all APIs)")
     if distance is not None:
         chooser.filterByNeighbourhood(distance)
+
+
+def askConfidence(chooser, selection):
+    confidence = ida_kernwin.ask_long(chooser.min_confidence, "Minimum hit confidence (0 to 100)")
+    if confidence is not None and 0 <= confidence <= 100:
+        chooser.filterByConfidence(confidence)
 
 
 def registerActions(chooser):
@@ -104,6 +113,7 @@ def registerActions(chooser):
             lambda view, _: view.annotate(range(len(view.rows))),
         ),
         (chooser.ACTION_FILTER, "Filter by neighbourhood...", "F", "filter", askNeighbourhood),
+        (chooser.ACTION_CONFIDENCE, "Filter by confidence...", None, "filter", askConfidence),
     ]
     for name, label, shortcut, icon, callback in actions:
         ida_kernwin.unregister_action(name)
@@ -119,17 +129,7 @@ def isBatchMode():
 
 
 def getDbFolder():
-    """the dbs folder of the clone the plugin lies in, else the one `apiscout dbs download` stores the DBs in"""
-    db_folder = os.path.join(CLONE_ROOT, "dbs") if CLONE_ROOT else ""
-    return db_folder if os.path.isdir(db_folder) else get_data_dir()
-
-
-def locateDb(path):
-    """an API DB given by path, or by its bare name when it is in the DB folder"""
-    if os.path.exists(path) or os.path.basename(path) != path:
-        return path
-    candidate = os.path.join(getDbFolder(), path)
-    return candidate if os.path.isfile(candidate) else path
+    return first_db_dir() or default_db_dirs()[0]
 
 
 def main(api_dbs=None, modules=None):
@@ -149,7 +149,7 @@ def main(api_dbs=None, modules=None):
             print(f"ApiScout: {exc}.")
             return 1
         modules = modules or argument_modules
-        api_dbs = [locateDb(path) for path in api_dbs]
+        api_dbs = [find_db_file(path) for path in api_dbs]
         if not api_dbs:
             print("ApiScout: no API DB given, nothing to do.")
             return 1
@@ -161,7 +161,7 @@ def main(api_dbs=None, modules=None):
             print(f"ApiScout: segment @0x{segment_address:x} had a segment base, which was set to 0.")
         try:
             rows = crawl(tools, api_dbs, modules=modules)
-        except ModuleListError as exc:
+        except ValueError as exc:
             print(f"ApiScout: {exc}.")
             return 1
         tools.importTypeLibraries()
@@ -183,11 +183,8 @@ def main(api_dbs=None, modules=None):
 
     try:
         rows = rescan()
-    except ModuleListError as exc:
+    except ValueError as exc:
         print(f"ApiScout: {exc}.")
-        return 0
-    if not rows:
-        print("ApiScout: no API references found.")
         return 0
     # the view is not modal, so it has to outlive this function
     global RESULTS_VIEW
@@ -195,9 +192,13 @@ def main(api_dbs=None, modules=None):
     # one apply the selection made there to the new rows
     if RESULTS_VIEW is not None:
         RESULTS_VIEW.Close()
+        RESULTS_VIEW = None
     widget = ida_kernwin.find_widget(ApiResultsChooser.TITLE)
     if widget is not None:
         ida_kernwin.close_widget(widget, 0)
+    if not rows:
+        print("ApiScout: no API references found.")
+        return 0
     RESULTS_VIEW = ApiResultsChooser(tools, rows, rescan)
     registerActions(RESULTS_VIEW)
     RESULTS_VIEW.show()

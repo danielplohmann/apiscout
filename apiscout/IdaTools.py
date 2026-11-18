@@ -192,22 +192,28 @@ class IdaTools:
             return False
         return bool(ida_typeinf.apply_tinfo(address, pointer_tinfo, ida_typeinf.TINFO_DEFINITE))
 
-    def getResultRows(self, results):
+    def getResultRows(self, results, confidences=None):
         """
         unique API references over the results of all API DBs as rows [address, API address, DLL, API, references],
         without pointers into the database itself
         """
         base_address = self.getBaseAddress()
         rows = {}
-        for entries in results.values():
+        scores = {}
+        for map_name, entries in results.items():
             for entry in entries:
                 if self.ida_proxy.isLoaded(entry[1]):
                     continue
                 key = (base_address + entry[0], entry[1], f"{entry[2]} ({entry[4]}bit)", entry[3])
                 rows[key] = max(rows.get(key, 0), entry[6] - 1)
+                if confidences is not None:
+                    score = confidences[map_name][(entry[0], entry[4])]
+                    scores[key] = max(scores.get(key, 0), score)
         # the references known to IDA include those from other segments
         return [
-            list(key) + [max(references, self.ida_proxy.getNumReferences(key[0]))]
+            list(key)
+            + [max(references, self.ida_proxy.getNumReferences(key[0]))]
+            + ([scores[key]] if confidences is not None else [])
             for key, references in sorted(rows.items())
         ]
 
@@ -310,13 +316,17 @@ class IdaTools:
         if ok == 1:
             api_dbs = list(form.chosenValues)
             other_db = form.iFileOpen.value
-            if other_db and os.path.isfile(other_db) and os.path.abspath(other_db) not in map(os.path.abspath, api_dbs):
+            if other_db and not os.path.isfile(other_db):
+                print(f"ApiScout: API DB not found: {other_db}")
+                form.Free()
+                return parameters
+            if other_db and os.path.abspath(other_db) not in map(os.path.abspath, api_dbs):
                 api_dbs.append(other_db)
             if api_dbs:
                 parameters["api_dbs"] = api_dbs
                 parameters["ignore_aslr_offset"] = form.rAslr.checked
                 parameters["modules"] = form.iModules.value.strip() or None
             else:
-                print("No API DB selected, nothing to do.")
+                print("No API DB selected. Run `apiscout dbs download` for example databases.")
         form.Free()
         return parameters

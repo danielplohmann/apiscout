@@ -73,7 +73,7 @@ def read_load_addresses(filepath):
     return load_addresses
 
 
-def match_load_addresses(dlls, load_addresses):
+def match_load_addresses(dlls, load_addresses, *, bitness=None):
     """the load addresses of the DLLs of an API DB ({key: DLL entry}) found in a list of (normalized path, address),
     as {key: address}"""
 
@@ -82,22 +82,24 @@ def match_load_addresses(dlls, load_addresses):
 
     has_wow64_dlls = any(path.startswith("syswow64/") for dll in dlls.values() for path in all_paths(dll))
     # the module list of a 32bit process names its DLLs by their redirected System32 path
-    is_list_of_32bit_process = (
-        has_wow64_dlls
+    inferred_32bit = (
+        bitness is None
         and bool(load_addresses)
         and all(
             load_address < 0x100000000 and not dll_path.startswith("syswow64/")
             for dll_path, load_address in load_addresses
         )
     )
-    if is_list_of_32bit_process:
+    is_list_of_32bit_process = bitness == 32 or (has_wow64_dlls and inferred_32bit)
+    redirect_system32 = has_wow64_dlls and is_list_of_32bit_process
+    if redirect_system32 and inferred_32bit:
         LOG.warning(
             "All load addresses are below 4 GB: the list is treated as the one of a 32bit process, "
             "its System32 paths are applied to the SysWOW64 DLLs."
         )
     known_addresses = {}
     for dll_path, load_address in load_addresses:
-        if is_list_of_32bit_process and dll_path.startswith("system32/"):
+        if redirect_system32 and dll_path.startswith("system32/"):
             dll_path = "syswow64/" + dll_path.split("/", 1)[1]
         if known_addresses.get(dll_path, load_address) != load_address:
             LOG.warning("Several load addresses given for %s, using 0x%x.", dll_path, load_address)
@@ -188,10 +190,11 @@ class DumpImage:
 
 
 def find_dll_images(binary, base_address=0):
-    """the DLL images in a flat dump: PE headers at page-aligned offsets that have an export directory, with the
+    """the DLL images in a flat dump: PE headers at page-aligned addresses that have an export directory, with the
     address they are loaded at. A PE file at offset 0 is the image the dump was taken of and is not looked at."""
     images = []
-    for offset in range(PAGE_SIZE, len(binary) - 0x40, PAGE_SIZE):
+    first_offset = -base_address % PAGE_SIZE or PAGE_SIZE
+    for offset in range(first_offset, len(binary) - 0x40, PAGE_SIZE):
         if binary[offset : offset + 2] == b"MZ":
             image = _readImage(binary, offset, base_address + offset)
             if image:
@@ -209,13 +212,11 @@ def _readImage(binary, offset, load_address):
     header = offset + pe_offset
     if binary[header : header + 4] != b"PE\x00\x00":
         return None
-    machine, _, _, _, _, optional_header_size = struct.unpack_from("<HHIIIH", binary, header + 4)
-    bitness = PeTools.BITNESS_MAP.get(machine)
+    optional_header_size = struct.unpack_from("<H", binary, header + 0x14)[0]
     magic = struct.unpack_from("<H", binary, header + 0x18)[0]
+    bitness = PeTools.OPTIONAL_MAGIC_BITNESS.get(magic)
     directory_offset = {0x10B: 0x60, 0x20B: 0x70}.get(magic)
     if not bitness or directory_offset is None or optional_header_size < directory_offset + 8:
-        return None
-    if (bitness == 32) != (magic == 0x10B):
         return None
     export_rva = struct.unpack_from("<I", binary, header + 0x18 + directory_offset)[0]
     if not export_rva or export_rva + 40 > limit:
@@ -291,13 +292,16 @@ class DllPlacer:
     def __init__(self, ignore_aslr_offsets=False):
         # (source, [(normalized path, address)])
         self.module_lists = []
+        self._module_list_bitness = {}
         # with ASLR offsets, a DB has the load addresses of the boot it was built in, see __call__
         self.ignore_aslr_offsets = ignore_aslr_offsets
         self.images = []
         self.placed = []
         self.summaries = []
 
-    def addModuleList(self, source, load_addresses):
+    def addModuleList(self, source, load_addresses, *, bitness=None):
+        if bitness is not None:
+            self._module_list_bitness[len(self.module_lists)] = bitness
         self.module_lists.append((source, load_addresses))
 
     def addImages(self, images):
@@ -314,7 +318,10 @@ class DllPlacer:
         dlls = api_db.get("dlls", {})
         placements = {}
         counts = {}
-        matches = [(source, match_load_addresses(dlls, addresses)) for source, addresses in self.module_lists]
+        matches = [
+            (source, match_load_addresses(dlls, addresses, bitness=self._module_list_bitness.get(index)))
+            for index, (source, addresses) in enumerate(self.module_lists)
+        ]
         if self.images:
             # an image in the dump only places a DLL whose load address the DB does not have: a DB built from a copy
             # of the DLLs or from the symbol server only has their file ImageBase. With the ASLR offsets of the boot
