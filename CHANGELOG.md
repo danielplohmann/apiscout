@@ -19,7 +19,6 @@ hits that were reported before, which a release says here.
 ### Changed
 
 - Shorter README with a runnable example and separate usage, database, and integration guides.
-- Renamed the manual Binary Ninja plugin folder to `plugins/binja`. Retarget checkout symlinks that use the old path.
 - Shared database discovery across the CLI and integrations. Plugin results show hit confidence and can be filtered before annotation.
 - `collect` recognizes minidumps and uses the same DLL placement logic as `scan`. Use `--refresh` to rescan cached paths and `--jobs` to limit workers.
 - Fixed missed pointer references and incorrect confidence in flat and sparse captures. Text collection matches now report zero overlap without suggesting a best sample.

@@ -10,7 +10,7 @@ Headless (Binary Ninja's Python API):
         result = scan_and_annotate(bv, ["dbs/win7_prof-n_sp1_example.json"])
         bv.update_analysis_and_wait()
 
-The commands of the plugin (plugins/binja) are registered with register_commands().
+The commands of the plugin (plugins/binja_scout) are registered with register_commands().
 """
 
 import functools

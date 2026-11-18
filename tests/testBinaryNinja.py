@@ -205,7 +205,7 @@ def fake_binaryninja_modules():
 def fake_binaryninja():
     """the stand-in is only visible while the plugin modules are imported"""
     fakes = fake_binaryninja_modules()
-    names = list(fakes) + ["apiscout.BinaryNinjaTools", "apiscout.binja_scout", "binja"]
+    names = list(fakes) + ["apiscout.BinaryNinjaTools", "apiscout.binja_scout", "binja_scout"]
     previous = {name: sys.modules.get(name) for name in names}
     for name in names:
         sys.modules.pop(name, None)
@@ -457,7 +457,7 @@ class BinaryNinjaImportTest(unittest.TestCase):
             plugins = os.path.join(REPO_DIR, "plugins")
             sys.path.insert(0, plugins)
             try:
-                plugin = importlib.import_module("binja")
+                plugin = importlib.import_module("binja_scout")
             finally:
                 sys.path.remove(plugins)
         self.assertTrue(callable(plugin.scan_and_annotate))

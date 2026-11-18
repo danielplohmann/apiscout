@@ -65,10 +65,10 @@ Use `-processor x86:LE:32:default` for 32bit dumps.
 
 ## Binary Ninja
 
-The plugin in `plugins/binja` works with Binary Ninja 6 and was tested with 6.0.
+The plugin in `plugins/binja_scout` works with Binary Ninja 6 and was tested with 6.0.
 
 1. Use `Install python3 module` in the command palette to install ApiScout for Binary Ninja's Python.
-2. Link `plugins/binja` into the `plugins` folder of the [user folder](https://docs.binary.ninja/guide/index.html#user-folder). If you already have a link to `plugins/binja_scout`, point it to `plugins/binja`.
+2. Link `plugins/binja_scout` into the `plugins` folder of the [user folder](https://docs.binary.ninja/guide/index.html#user-folder).
 
 The extension manager installs the repository with NumPy in one step.
 
