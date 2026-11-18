@@ -2,8 +2,11 @@ import contextlib
 import io
 import json
 import os
+import shutil
+import sys
 import tempfile
 import unittest
+import unittest.mock
 
 from apiscout import cli
 
@@ -35,6 +38,46 @@ class CliTestSuite(unittest.TestCase):
             self.assertEqual(0, code)
             self.assertIn("usage: apiscout", output)
         self.assertIn("apiscout ", run("--version")[1])
+
+    def testVersionIsThatOfImportlibMetadata(self):
+        """the version is read from the metadata without importlib.metadata, from the entry that importlib.metadata would use"""
+        import importlib.metadata
+
+        def folder(*entries):
+            """a folder of sys.path with (name of the metadata folder, file, version) of each entry"""
+            path = tempfile.mkdtemp()
+            self.addCleanup(shutil.rmtree, path)
+            for name, filename, version in entries:
+                os.makedirs(os.path.join(path, name))
+                with open(os.path.join(path, name, filename), "w", encoding="utf-8") as f_out:
+                    f_out.write(f"Metadata-Version: 2.1\nName: apiscout\nVersion: {version}\n\nVersion: 0\n")
+            return path
+
+        checkout = folder(("apiscout.egg-info", "PKG-INFO", "9.9.9"))
+        installed = folder(("apiscout-1.0.0.dist-info", "METADATA", "1.0.0"))
+        others = folder(
+            ("apiscout_tools-5.0.dist-info", "METADATA", "5.0"), ("notapiscout-6.0.dist-info", "METADATA", "6.0")
+        )
+        cases = {
+            "an installation": ([installed], "1.0.0"),
+            "a checkout built in place before it": ([checkout, installed], "9.9.9"),
+            "a checkout built in place behind it": ([installed, checkout], "1.0.0"),
+            "other distributions before it": ([others, installed], "1.0.0"),
+            "egg-info with a version in its name": (
+                [folder(("apiscout-3.0.0-py3.13.egg-info", "PKG-INFO", "3.0.0")), installed],
+                "3.0.0",
+            ),
+            "the name in other case": ([folder(("Apiscout-2.0.0.dist-info", "METADATA", "2.0.0")), installed], "2.0.0"),
+        }
+        for label, (folders, expected) in cases.items():
+            with self.subTest(label), unittest.mock.patch.object(sys, "path", folders + sys.path):
+                self.assertEqual(expected, importlib.metadata.version("apiscout"))
+                with unittest.mock.patch.object(importlib.metadata, "version", side_effect=AssertionError):
+                    self.assertEqual(expected, cli.get_version())
+        # metadata without a version is skipped, the next one is used
+        broken = folder(("apiscout-0.1.dist-info", "RECORD", "0.1"))
+        with unittest.mock.patch.object(sys, "path", [broken, installed] + sys.path):
+            self.assertEqual("1.0.0", cli.get_version())
 
     def testUsageErrors(self):
         code, output, errors = run("scna", DUMP_PATH)

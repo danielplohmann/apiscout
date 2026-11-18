@@ -1,35 +1,15 @@
 """the apiscout command line tool, see `apiscout --help`"""
 
 import argparse
-import datetime
-import difflib
 import functools
-import importlib.metadata
 import json
 import logging
 import os
 import re
-import shutil
-import signal
 import sys
-import tempfile
-import traceback
-from multiprocessing import Pool, cpu_count
 
 from . import db_index
-from .ApiQR import ApiQR
-from .ApiScout import ApiScout
-from .FingerprintCrawler import FingerprintCrawler
-from .LoadAddresses import (
-    SOURCE_MINIDUMP,
-    SOURCE_MODULES,
-    DllPlacer,
-    find_dll_images,
-    normalize_dll_path,
-    read_load_addresses,
-)
-from .Minidump import Minidump, MinidumpError
-from .PeTools import PeTools
+from .utility import paused_garbage_collection, read_json
 
 PROJECT_URL = "https://github.com/danielplohmann/apiscout"
 MALPEDIA_URL = "https://malpedia.caad.fkie.fraunhofer.de"
@@ -109,6 +89,17 @@ class CliError(Exception):
     """an expected error, reported without traceback"""
 
 
+class VersionAction(argparse.Action):
+    """argparse's own --version formats its output with a theme, which imports a module for colors (11 ms)"""
+
+    def __init__(self, option_strings, dest=argparse.SUPPRESS, default=argparse.SUPPRESS, help=None):
+        super().__init__(option_strings, dest=dest, default=default, nargs=0, help=help)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        sys.stdout.write(f"apiscout {get_version()}\n")
+        parser.exit()
+
+
 class Parser(argparse.ArgumentParser):
     def __init__(self, *args, **kwargs):
         # a mistyped or shortened flag is an error, not another flag
@@ -119,6 +110,8 @@ class Parser(argparse.ArgumentParser):
         # a mistyped command gets a suggestion instead of the list of all choices
         match = re.match(r"argument command: invalid choice: '([^']*)'", message)
         if match:
+            import difflib
+
             close = difflib.get_close_matches(match.group(1), COMMANDS, n=1)
             hint = f" Did you mean '{close[0]}'?" if close else ""
             message = f"unknown command '{match.group(1)}'.{hint}"
@@ -345,6 +338,9 @@ def write_file(write, output_path):
     if output_path != "-":
         write(output_path)
         return
+    import shutil
+    import tempfile
+
     with tempfile.TemporaryDirectory() as directory:
         temp_path = os.path.join(directory, "output")
         write(temp_path)
@@ -398,6 +394,18 @@ def scan_minidump(scout, minidump, args):
 
 
 def cmd_scan(args):
+    from .ApiScout import ApiScout
+    from .LoadAddresses import (
+        SOURCE_MINIDUMP,
+        SOURCE_MODULES,
+        DllPlacer,
+        find_dll_images,
+        normalize_dll_path,
+        read_load_addresses,
+    )
+    from .Minidump import Minidump, MinidumpError
+    from .PeTools import PeTools
+
     if args.dynamic and args.import_table:
         raise CliError(
             "--dynamic searches the dump for hashes and names of the APIs of API DBs, it can not be combined with --import-table."
@@ -521,6 +529,8 @@ def cmd_scan(args):
 
 
 def cmd_match(args):
+    from .ApiScout import ApiScout
+
     if bool(args.other) == bool(args.collection):
         raise CliError("give either a second vector or --collection to match against.")
     check_output(args.output)
@@ -563,6 +573,8 @@ def cmd_match(args):
 
 
 def cmd_export(args):
+    from .ApiQR import ApiQR
+
     if not args.html and not args.png:
         raise CliError("nothing to write, give --png and/or --html.")
     if args.html == "-" and args.png == "-":
@@ -587,6 +599,11 @@ def cmd_export(args):
 
 
 def cmd_collect(args):
+    import datetime
+    from multiprocessing import Pool, cpu_count
+
+    from .FingerprintCrawler import FingerprintCrawler
+
     if not os.path.isdir(args.folder):
         raise CliError(f"folder not found: {args.folder}")
     if args.update == "-":
@@ -658,6 +675,8 @@ WORKER_ERROR = None
 
 
 def create_crawler(db_paths, winapi1024_path, folder, filter_size, ignore_aslr, known_collection):
+    from .FingerprintCrawler import FingerprintCrawler
+
     crawler = FingerprintCrawler(db_paths, winapi1024_path, folder, filter_size, ignore_aslr_offsets=ignore_aslr)
     if known_collection and os.path.isfile(known_collection):
         crawler.loadIgnoreList(known_collection)
@@ -665,12 +684,21 @@ def create_crawler(db_paths, winapi1024_path, folder, filter_size, ignore_aslr, 
 
 
 def init_worker(log_level, *crawler_arguments):
+    import signal
+
     global WORKER_CRAWLER, WORKER_ERROR
     # Ctrl-C is handled by the main process, which then ends its workers
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     # what loading the API DBs has to say was reported by the main process already
     package_log = logging.getLogger("apiscout")
     package_log.setLevel(logging.ERROR)
+    # the processes keep every core busy already, search threads in each of them would only compete for the cores
+    try:
+        from . import numpy_search
+    except ImportError:
+        pass
+    else:
+        numpy_search.MAX_THREADS = 1
     try:
         WORKER_CRAWLER = create_crawler(*crawler_arguments)
     except Exception as exc:
@@ -767,8 +795,8 @@ def cmd_dbs(args):
     entries = []
     for db_path in get_db_files(db_dir):
         try:
-            with open(db_path, encoding="utf-8") as f_db:
-                content = json.load(f_db)
+            with paused_garbage_collection():
+                content = read_json(db_path)
             entries.append(
                 {
                     "path": db_path,
@@ -883,7 +911,7 @@ def build_parser():
         epilog=EXAMPLES[None],
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--version", action="version", version=f"apiscout {get_version()}")
+    parser.add_argument("--version", action=VersionAction, help="show program's version number and exit")
     parser.add_argument("-q", "--quiet", action="store_true", help="only print results and errors")
     parser.add_argument("--verbose", action="store_true", help="print what the library logs while it works")
     commands = parser.add_subparsers(dest="command", metavar="command", parser_class=Parser)
@@ -954,7 +982,8 @@ def build_parser():
         "--dynamic",
         action="store_true",
         help="also find APIs that are resolved at run time: hashes of their names (ROR13, Metasploit block_api, CRC32, "
-        "djb2, FNV-1a) in groups of several, and their names as strings; they are added to the ApiVector",
+        "djb2, FNV-1a, sdbm) in groups of several, also those that the sample XORs or adds a key of its own to (listed "
+        "with the key, e.g. sdbm^0x1e5c48de), and their names as strings; they are added to the ApiVector",
     )
     scan.add_argument("-c", "--collection", metavar="FILE", help="also match the ApiVector against this collection")
     scan.add_argument(
@@ -1107,7 +1136,39 @@ def build_parser():
     return parser, commands
 
 
+def read_version(metadata_dir):
+    """the Version in the METADATA (of a dist-info folder) or the PKG-INFO (of an egg-info folder), None if there is none"""
+    for filename in ("METADATA", "PKG-INFO"):
+        try:
+            with open(os.path.join(metadata_dir, filename), encoding="utf-8") as f_metadata:
+                headers = f_metadata.read().split("\n\n", 1)[0]
+        except OSError:
+            continue
+        match = re.search(r"^Version: *(\S+)", headers, re.MULTILINE)
+        if match:
+            return match.group(1)
+    return None
+
+
 def get_version():
+    """the installed version, which is the one importlib.metadata.version() finds. The metadata of the installation is read
+    directly: importlib.metadata takes 30 ms to import and to find it, as much as numpy, and every command looks the
+    version up for its help."""
+    for folder in sys.path:
+        try:
+            names = os.listdir(folder or ".")
+        except OSError:
+            continue
+        for name in names:
+            # importlib.metadata takes the first one in the first folder of sys.path that has metadata of apiscout: the
+            # dist-info of an installation, or the egg-info of a checkout that was built in place
+            lower = name.lower()
+            if lower.endswith((".dist-info", ".egg-info")) and lower.rpartition(".")[0].partition("-")[0] == "apiscout":
+                version = read_version(os.path.join(folder, name))
+                if version:
+                    return version
+    import importlib.metadata
+
     try:
         return importlib.metadata.version("apiscout")
     except importlib.metadata.PackageNotFoundError:
@@ -1150,6 +1211,8 @@ def main(argv=None):
         print(f"apiscout: error: {exc.strerror or exc}: {exc.filename or ''}".rstrip(": "), file=sys.stderr)
         return EXIT_ERROR
     except Exception:
+        import traceback
+
         traceback.print_exc()
         print(f"\napiscout: unexpected error, please report it: {PROJECT_URL}/issues", file=sys.stderr)
         return EXIT_ERROR

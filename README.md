@@ -86,7 +86,7 @@ VECTOR=$(apiscout scan trickbot_dump_0x00400000 --db win7_prof-n_sp1_example.jso
 apiscout export "$VECTOR" --png vector.png --html vector.html
 ```
 
-**Find what is resolved at run time.** `--dynamic` also looks for APIs that a program never stores as pointers: hashes of their names (ROR13, Metasploit block_api, CRC32, djb2, FNV-1a) in groups of at least three, as shellcode and loaders compare them, and their names as strings, in runs of at least three. They are listed after the pointers and added to the ApiVector.
+**Find what is resolved at run time.** `--dynamic` also looks for APIs that a program never stores as pointers: hashes of their names (ROR13, Metasploit block_api, CRC32, djb2, FNV-1a, sdbm, also when a sample XORs or adds a key of its own, which is listed) in groups of at least three, as shellcode and loaders compare them, and their names as strings, in runs of at least three. They are listed after the pointers and added to the ApiVector.
 
 **Script it.** `--json` gives machine-readable output, `-` reads standard input:
 
@@ -148,6 +148,8 @@ python DatabaseBuilder.py --auto
 ```
 
 `--paths` and `--filter` choose folders and DLLs, `--os_name` and `--os_version` build a DB from a copy of the DLLs on another system, and `--load_addresses` then takes the load addresses from a module list.
+
+Without a machine of the build, `python DllDownloader.py --windows 11-24H2 --update KB5046617 --out win11` downloads the DLLs of the filter from Microsoft's symbol server, finds them with [Winbindex](https://github.com/m417z/winbindex), checks each against its SHA-256 and builds the DB (standard library only, no ASLR offsets, so scan with `--modules` or a minidump). `--update` also takes a build such as `26100.2605`, `--list` shows the Windows versions and updates, `--windows 11-24H2 --list` the updates of one.
 
 ## IDA Pro
 

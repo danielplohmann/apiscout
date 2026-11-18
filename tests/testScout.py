@@ -10,10 +10,13 @@
 #
 ########################################################################
 
+import json
 import logging
 import os
 import struct
+import tempfile
 import unittest
+from unittest import mock
 
 from apiscout.ApiScout import ApiScout
 
@@ -34,6 +37,7 @@ class ApiScoutTestSuite(unittest.TestCase):
     def testCandidateSearch(self):
         """the numpy search finds the same DWORDs and QWORDs as reading every offset, across chunks and alignments"""
         from apiscout import ApiScout as scout_module
+        from apiscout import numpy_search
 
         scout = ApiScout()
         api_map = {0x1000: ("a.dll", "A", 32), 0x7FFE0000: ("b.dll", "B", 32), 0x7FF812345678: ("c.dll", "C", 64)}
@@ -53,22 +57,41 @@ class ApiScoutTestSuite(unittest.TestCase):
         }
         self.assertEqual([0, 5, 97], [offset for offset, _ in expected[4]])
         self.assertEqual([38], [offset for offset, _ in expected[8]])
-        for chunk_size in (1, 3, 1 << 22):
-            scout.SEARCH_CHUNK_SIZE = chunk_size
+        for size in (1, 3, numpy_search.CHUNK_SIZE):
+            with mock.patch.multiple(numpy_search, CHUNK_SIZE=size, BLOCK_SIZE=min(size, numpy_search.BLOCK_SIZE)):
+                found = scout._findCandidates(binary, (4, 8))
             for width in (4, 8):
-                self.assertEqual(expected[width], list(scout._iterateCandidates(binary, "test_map", width)))
+                self.assertEqual(expected[width], found["test_map", width])
         # a map changed after a scan is searched with its new addresses
         api_map[0x01010101] = ("d.dll", "D", 32)
         expected_dwords = [(offset, value) for offset, value in scout.iterateAllDwords(binary) if value in api_map]
         self.assertGreater(len(expected_dwords), len(expected[4]))
-        self.assertEqual(expected_dwords, list(scout._iterateCandidates(binary, "test_map", 4)))
-        self.assertEqual([], list(scout._iterateCandidates(b"\x00\x10\x00", "test_map", 4)))
-        numpy = scout_module.np
-        try:
-            scout_module.np = None
-            self.assertEqual(expected[8], list(scout._iterateCandidates(binary, "test_map", 8)))
-        finally:
-            scout_module.np = numpy
+        self.assertEqual(expected_dwords, scout._findCandidates(binary, (4,))["test_map", 4])
+        self.assertEqual([], scout._findCandidates(b"\x00\x10\x00", (4,)).get(("test_map", 4), []))
+        with mock.patch.object(scout_module, "numpy_search", None):
+            self.assertEqual(expected[8], scout._findCandidates(binary, (8,))["test_map", 8])
+
+    def testCodeReferences(self):
+        """calls and jumps through pointers are found by numpy and by the plain loop alike, also at the ends of the buffer"""
+        from apiscout import ApiScout as scout_module
+
+        scout = ApiScout()
+        scout.setBaseAddress(0x400000)
+        binary = bytearray(b"\x90" * 64)
+        # call dword ptr [0x400020] at 1, jmp dword ptr [0x400020] at 8, call qword ptr [rip+0x10] at 21 (RIP + 6 is 0x1b)
+        # and a jmp whose operand is cut off by the end of the buffer
+        binary[1:7] = b"\xff\x15" + struct.pack("<I", 0x400020)
+        binary[8:14] = b"\xff\x25" + struct.pack("<I", 0x400020)
+        binary[21:27] = b"\xff\x15" + struct.pack("<i", 0x10 - 0x1B)
+        binary[58:64] = b"\xff\x25" + struct.pack("<I", 0x400000 + 63)
+        binary += b"\xff\x25\x01\x00\x00"
+        binary = bytes(binary)
+        targets = {0x20, 0x10, 63, 0}
+        expected = {32: {0x20: {1, 8}, 63: {58}}, 64: {0x10: {21}}}
+        self.assertEqual(expected, scout._getCodeReferences(binary, targets))
+        self.assertEqual({32: {}, 64: {}}, scout._getCodeReferences(binary, set()))
+        with mock.patch.object(scout_module, "numpy_search", None):
+            self.assertEqual(expected, scout._getCodeReferences(binary, targets))
 
     def testResolveAddressCandidates(self):
         scout = ApiScout()
@@ -92,6 +115,61 @@ class ApiScoutTestSuite(unittest.TestCase):
         self.assertEqual(expected_maps, scout.api_maps)
         with self.assertRaises(ValueError):
             scout.loadDbFile("Error")
+
+    def testLoadDbNamesAndCollisions(self):
+        """exports without a name, repeated addresses, DLLs sharing an address and DLLs without exports"""
+        db = {
+            "os_name": "Test Windows",
+            "dlls": {
+                "32_1.0_a.dll_0x1000": {
+                    "aslr_offset": 0x10,
+                    "base_address": 0x1000,
+                    "bitness": 32,
+                    "exports": [
+                        {"address": 0x10, "name": "A1", "ordinal": 1},
+                        {"address": 0x20, "name": None, "ordinal": 7},
+                        {"address": 0x10, "name": "A2", "ordinal": 2},
+                        {"address": 0x30, "name": "None", "ordinal": 8},
+                    ],
+                },
+                "64_1.0_B.dll_0x1000": {
+                    "aslr_offset": 0x10,
+                    "base_address": 0x1000,
+                    "bitness": 64,
+                    "exports": [{"address": 0x10, "name": "B", "ordinal": 1}],
+                },
+                "32_1.0_empty.dll_0x2000": {"base_address": 0x2000, "bitness": 32, "exports": []},
+            },
+        }
+        a_entries = [
+            ("a.dll_0x1000", "A1", 32),
+            ("a.dll_0x1000", "None<7>", 32),
+            ("a.dll_0x1000", "A2", 32),
+            ("a.dll_0x1000", "None<8>", 32),
+        ]
+        b_entry = ("B.dll_0x1000", "B", 64)
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = os.path.join(directory, "db.json")
+            with open(db_path, "w", encoding="utf-8") as f_db:
+                json.dump(db, f_db)
+            scout = ApiScout()
+            with self.assertLogs("apiscout.ApiScout", logging.WARNING):
+                scout.loadDbFile(db_path)
+            self.assertEqual(
+                {0x1000: b_entry, 0x1010: a_entries[1], 0x1020: a_entries[3]}, scout.api_maps["Test Windows"]
+            )
+            # the order of the addresses is the one of their first export
+            self.assertEqual([0x1000, 0x1010, 0x1020], list(scout.api_maps["Test Windows"]))
+            self.assertEqual({0x1000: a_entries[2]}, scout._other_bitness_maps["Test Windows"])
+            self.assertEqual(a_entries + [b_entry], scout._export_entries["Test Windows"])
+            self.assertEqual({"a.dll", "b.dll"}, scout._dll_file_names)
+            self.assertTrue(scout.has_64bit)
+            scout = ApiScout()
+            scout.ignoreAslrOffsets(True)
+            scout.loadDbFile(db_path)
+            self.assertEqual(
+                {0x1010: b_entry, 0x1020: a_entries[1], 0x1030: a_entries[3]}, scout.api_maps["Test Windows"]
+            )
 
     def testCrawlToyData(self):
         test_binary = (
@@ -142,6 +220,23 @@ class ApiScoutTestSuite(unittest.TestCase):
         filtered = scout.filter(results, 0, 0, 0x4, False)
         expected = {"test_1": [(0x10,), (0x14,), (0x40,), (0x44,), (0x48,)], "test_2": [(0x18,), (0x1C,)], "test_3": []}
         self.assertEqual(expected, filtered)
+
+    def testFilterExcludeRanges(self):
+        """addresses in any of the ranges are dropped, whether the ranges are nested, overlapping, empty or in no order"""
+        scout = ApiScout()
+        scout.setBaseAddress(0x1000)
+        results = {"test": [(offset,) for offset in range(0, 0x80, 4)]}
+        ranges = [
+            (0x1050, 0x1060),
+            (0x1010, 0x1030),
+            (0x1018, 0x1020),
+            (0x102C, 0x1040),
+            (0x1044, 0x1044),
+            (0x1070, 0x1070),
+        ]
+        kept = [0x0, 0x4, 0x8, 0xC, 0x40, 0x44, 0x48, 0x4C, 0x60, 0x64, 0x68, 0x6C, 0x70, 0x74, 0x78, 0x7C]
+        self.assertEqual({"test": [(offset,) for offset in kept]}, scout.filter(results, 0, 0, 0, False, ranges))
+        self.assertEqual(results, scout.filter(results, 0, 0, 0, False, []))
 
     def testRender(self):
         scout = ApiScout()

@@ -1,4 +1,3 @@
-import json
 import logging
 import os
 import re
@@ -6,6 +5,7 @@ import shutil
 import tempfile
 
 from apiscout.ApiScout import ApiScout
+from apiscout.utility import paused_garbage_collection, read_json
 
 LOG = logging.getLogger(__name__)
 
@@ -36,8 +36,8 @@ class FingerprintCrawler:
     @staticmethod
     def dbHasAslrOffsets(db_path):
         """check if an API DB carries per-module ASLR offsets, i.e. is bound to the boot it was built in"""
-        with open(db_path) as f_json:
-            api_db = json.loads(f_json.read())
+        with paused_garbage_collection():
+            api_db = read_json(db_path)
         if api_db.get("aslr_offsets", False):
             return True
         return any(dll.get("aslr_offset", 0) for dll in api_db.get("dlls", {}).values())

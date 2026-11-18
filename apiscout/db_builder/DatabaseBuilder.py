@@ -11,14 +11,20 @@
 ########################################################################
 
 import argparse
+import collections
 import ctypes
+import itertools
 import json
 import logging
+import mmap
+import operator
 import os
 import platform
 import re
+import struct
 import sys
-from operator import attrgetter
+from json.encoder import encode_basestring_ascii
+from operator import attrgetter, itemgetter
 
 import config
 import pefile
@@ -114,13 +120,361 @@ def check_aslr():
     return is_aslr
 
 
+class NotPlainPe(Exception):
+    """the file is not laid out like the PE images of Windows, pefile reads it"""
+
+
+# a section: the RVAs it holds, its file offset minus its RVA, the end of its raw data in the file, and the address and
+# size of the raw data as the section table lists them
+Section = collections.namedtuple("Section", "start end delta limit address raw_size virtual_size")
+# the characters pefile accepts in the name of an export, and the 0 that ends it
+EXPORT_NAMES = re.compile(rb"[A-Za-z0-9_?@$()<>\0]*")
+# pefile gives up on a resource directory with more entries, and on an export table with more symbols
+MAX_DIRECTORY_ENTRIES = 4096
+MAX_EXPORTS = 0x2000
+
+
+class PlainPe:
+    """
+    The exports and the product version of a PE image, read from its bytes.
+
+    pefile needs 150 ms or more for a DLL: it decodes every directory (imports, relocations, resources) into objects,
+    while the DB takes the export table and one number out of the resources. This reads these two like pefile does,
+    but only for images that are laid out like the linker writes them. For anything else it raises NotPlainPe, and the
+    DLL is read by pefile, so that the result does not depend on which of them read it. The checks mirror what pefile
+    does with a section, an RVA or a directory, and stop where pefile would go another way.
+    """
+
+    def __init__(self, data):
+        self.data = data
+        size = len(data)
+        if size < 0x40 or data[:2] != b"MZ":
+            raise NotPlainPe("no DOS header")
+        (e_lfanew,) = struct.unpack_from("<I", data, 0x3C)
+        if e_lfanew < 0x40 or e_lfanew + 24 > size or data[e_lfanew : e_lfanew + 4] != b"PE\0\0":
+            raise NotPlainPe("no NT header")
+        (self.machine, num_sections, _, symbol_table, _, optional_size) = struct.unpack_from(
+            "<HHIIIH", data, e_lfanew + 4
+        )
+        optional = e_lfanew + 24
+        (magic,) = struct.unpack_from("<H", data, optional)
+        if magic == 0x10B and optional_size == 224:
+            (self.image_base,) = struct.unpack_from("<I", data, optional + 28)
+            directories = optional + 96
+        elif magic == 0x20B and optional_size == 240:
+            (self.image_base,) = struct.unpack_from("<Q", data, optional + 24)
+            directories = optional + 112
+        else:
+            raise NotPlainPe("optional header")
+        section_alignment, file_alignment = struct.unpack_from("<II", data, optional + 32)
+        (num_directories,) = struct.unpack_from("<I", data, directories - 4)
+        sections = optional + optional_size
+        if (
+            symbol_table
+            or num_directories != 16
+            or file_alignment < 0x200
+            or section_alignment < 0x1000
+            or not 0 < num_sections <= 96
+            or sections + 40 * num_sections > size
+        ):
+            raise NotPlainPe("header values")
+        self.directories = struct.unpack_from("<32I", data, directories)
+        raw_sections = []
+        for index in range(num_sections):
+            header = data[sections + 40 * index : sections + 40 * index + 40]
+            if not any(header):
+                raise NotPlainPe("empty section")
+            (virtual_size, address, raw_size, raw_pointer, relocs_pointer, _, num_relocs) = struct.unpack_from(
+                "<IIIIIIH", header, 8
+            )
+            if (
+                raw_size + raw_pointer > size
+                or raw_pointer % file_alignment
+                or virtual_size > 0x10000000
+                or (relocs_pointer and num_relocs)
+            ):
+                raise NotPlainPe("section values")
+            raw_sections.append((address, virtual_size, raw_size, raw_pointer))
+        # pefile sorts the sections by their address, and cuts each at the start of the next one
+        raw_sections.sort(key=itemgetter(0))
+        self.sections = []
+        previous_end = 0
+        for index, (address, virtual_size, raw_size, raw_pointer) in enumerate(raw_sections):
+            start = address - address % section_alignment
+            length = max(raw_size, virtual_size)
+            if index + 1 < len(raw_sections):
+                next_address = raw_sections[index + 1][0]
+                if next_address > address and start + length > next_address:
+                    length = next_address - start
+            if start > 0x10000000 or start < previous_end:
+                raise NotPlainPe("section layout")
+            previous_end = start + length
+            delta = raw_pointer - raw_pointer % 0x200 - start
+            self.sections.append(
+                Section(start, start + length, delta, raw_pointer + raw_size, address, raw_size, virtual_size)
+            )
+
+    def section(self, rva):
+        for section in self.sections:
+            if section.start <= rva < section.end:
+                return section
+        raise NotPlainPe("RVA outside of the sections")
+
+    def read(self, rva, length):
+        """the bytes of pefile's get_data: up to the end of the raw data of the section"""
+        section = self.section(rva)
+        offset = rva + section.delta
+        return self.data[offset : min(offset + length, section.limit)]
+
+    def read_exactly(self, rva, length):
+        data = self.read(rva, length)
+        if len(data) != length:
+            raise NotPlainPe("data cut off")
+        return data
+
+    def exports(self):
+        """(ordinal, address, name) of the exports in the order of pefile, None without an export table"""
+        rva, size = self.directories[0:2]
+        if not rva:
+            return None
+        header = self.read_exactly(rva, 40)
+        (_, _, _, _, _, base, num_functions, num_names, functions_rva, names_rva, ordinals_rva) = struct.unpack(
+            "<IIHHIIIIIII", header
+        )
+        if num_names > MAX_EXPORTS:
+            raise NotPlainPe("many names")
+        name_rvas = self.table(names_rva, "I", num_names)
+        # pefile reads twice as many ordinals as there are, as far as the file goes
+        name_ordinals = self.table(ordinals_rva, "H", num_names, 4 * num_names, False)
+        addresses = self.table(functions_rva, "I", num_functions)
+        # the names of the exports and the addresses they are for
+        names = self.names(name_rvas) if num_names else []
+        named_addresses = [addresses[ordinal] for ordinal in name_ordinals]
+        forwarders_end = rva + size
+        for address in named_addresses:
+            if not address:
+                # pefile leaves this one out together with its name
+                raise NotPlainPe("name without address")
+            if rva <= address < forwarders_end:
+                # a forwarder: pefile skips it if it can not map it to the file
+                self.section(address)
+        exports = list(zip([base + ordinal for ordinal in name_ordinals], named_addresses, names, strict=True))
+        # then the exports without a name
+        ordinals_of_names = set(name_ordinals)
+        exports += [
+            (base + index, address, None)
+            for index, address in enumerate(addresses)
+            if address and index not in ordinals_of_names
+        ]
+        if len(exports) - len(names) > MAX_EXPORTS:
+            raise NotPlainPe("many ordinals")
+        if not exports and not any(header):
+            return None
+        return exports
+
+    def names(self, name_rvas):
+        """the names that the RVAs point to, if they have the characters pefile accepts"""
+        first, last = min(name_rvas), max(name_rvas)
+        section = self.section(first)
+        if last >= section.end:
+            raise NotPlainPe("names in several sections")
+        # pefile reads a name up to 512 bytes or the end of the raw data of its section, whichever comes first
+        offset = first + section.delta
+        text = self.data[offset : min(last + section.delta + 0x200, section.limit)]
+        starts = [rva - first for rva in name_rvas]
+        ends = list(map(text.find, itertools.repeat(b"\0"), starts))
+        if min(ends) < 0 or max(map(operator.sub, ends, starts)) >= 0x200:
+            raise NotPlainPe("name without end")
+        raw_names = b"\0".join(map(text.__getitem__, map(slice, starts, ends)))
+        # pefile gives up on a name of other characters
+        if EXPORT_NAMES.fullmatch(raw_names) is None:
+            raise NotPlainPe("name with other characters")
+        names = raw_names.decode("ascii").split("\0")
+        # and on a name that is repeated for the same address
+        if len(set(names)) != len(names):
+            raise NotPlainPe("repeated names")
+        return names
+
+    def table(self, rva, kind, count, read_length=None, counted=True):
+        """the entries of an array in the export table, which pefile reads as far as the file goes and its section"""
+        width = struct.calcsize(kind)
+        if not count:
+            if rva >= len(self.data):
+                self.section(rva)
+            return ()
+        section = self.section(rva)
+        # and it counts the names and the functions up to the end of the raw data of the section
+        if counted and section.address + section.raw_size - rva < 4 * count:
+            raise NotPlainPe("table beyond its section")
+        data = self.read(rva, read_length or width * count)[: width * count]
+        if len(data) != width * count:
+            raise NotPlainPe("table cut off")
+        return struct.unpack(f"<{count}{kind}", data)
+
+    def directory_entries(self, rva):
+        """the number of entries of a resource directory, which pefile reads only if it is readable and not too large"""
+        (named, by_id) = struct.unpack_from("<HH", self.read_exactly(rva, 16), 12)
+        if named + by_id > MAX_DIRECTORY_ENTRIES:
+            raise NotPlainPe("many resources")
+        return named + by_id
+
+    def product_version(self):
+        """the product version of the first version resource, as get_product_version reads it"""
+        root = self.directories[4]
+        if not root:
+            return "0.0.0.0"
+        previous_name = None
+        for index in range(self.directory_entries(root)):
+            name, offset = struct.unpack("<II", self.read_exactly(root + 16 + 8 * index, 8))
+            if name & 0x80000000:
+                # pefile stops at a name that begins inside of the one before
+                name_rva = root + (name & 0x7FFFFFFF)
+                (length,) = struct.unpack("<H", self.read_exactly(name_rva, 2))
+                if previous_name and previous_name[0] < name_rva <= previous_name[1]:
+                    raise NotPlainPe("overlapping names")
+                previous_name = (name_rva, name_rva + length)
+            entry_rva = root + (offset & 0x7FFFFFFF)
+            if offset & 0x80000000:
+                if entry_rva == root:
+                    raise NotPlainPe("directory loop")
+                self.directory_entries(entry_rva)
+                if name & 0xFFFF == 16:
+                    return self.version_in_directory(root, entry_rva)
+            elif name & 0xFFFF == 16:
+                raise NotPlainPe("version without a directory")
+            else:
+                self.read_exactly(entry_rva, 16)
+        return "0.0.0.0"
+
+    def version_in_directory(self, root, type_directory):
+        """the product version of the first language of the first version resource"""
+        if not self.directory_entries(type_directory):
+            raise NotPlainPe("no version")
+        _, offset = struct.unpack("<II", self.read_exactly(type_directory + 16, 8))
+        language_directory = root + (offset & 0x7FFFFFFF)
+        if not offset & 0x80000000 or language_directory in (root, type_directory):
+            raise NotPlainPe("version without languages")
+        if not self.directory_entries(language_directory):
+            raise NotPlainPe("no language")
+        _, offset = struct.unpack("<II", self.read_exactly(language_directory + 16, 8))
+        if offset & 0x80000000:
+            raise NotPlainPe("language with a directory")
+        info_rva, info_size = struct.unpack("<II", self.read_exactly(root + (offset & 0x7FFFFFFF), 16)[:8])
+        start = info_rva + self.section(info_rva).delta
+        info = self.data[start : start + info_size]
+        # the version info starts with the key VS_VERSION_INFO, which pefile reads up to the end of the section
+        key = self.section(info_rva + 6)
+        if (
+            len(info) < 6
+            or key.address + max(key.raw_size, key.virtual_size) - (info_rva + 6) < 32
+            or self.read(info_rva + 6, 32) != "VS_VERSION_INFO\0".encode("utf-16-le")
+        ):
+            raise NotPlainPe("version info")
+        fixed = (6 + 2 * 16 + info_rva + 3 & 0xFFFFFFFC) - (info_rva & 0xFFFFFFFC)
+        if len(info) - fixed < 52:
+            raise NotPlainPe("version info cut off")
+        ms, ls = struct.unpack_from("<II", info, fixed + 16)
+        return f"{hiword(ms)}.{loword(ms)}.{hiword(ls)}.{loword(ls)}"
+
+
+EXPORT_KEYS = {"address", "name", "ordinal"}
+
+
+def dump_exports(exports, indent):
+    """the list of exports as json.dumps(indent=1, sort_keys=True) writes it, None for anything else than ints and a str"""
+    if not (
+        all(type(export) is dict and export.keys() == EXPORT_KEYS for export in exports)
+        and {type(export["address"]) for export in exports} == {int}
+        and {type(export["ordinal"]) for export in exports} == {int}
+        and {type(export["name"]) for export in exports} == {str}
+    ):
+        return None
+    pad = " " * indent
+    item = f'{{\n{pad} "address": %d,\n{pad} "name": %s,\n{pad} "ordinal": %d\n{pad}}}'
+    items = (
+        item % (export["address"], encode_basestring_ascii(export["name"]), export["ordinal"]) for export in exports
+    )
+    return f"[\n{pad}" + f",\n{pad}".join(items) + f"\n{pad[1:]}]"
+
+
+def dump_json(obj, level=0):
+    """json.dumps(obj, indent=1, sort_keys=True), but the lists of exports (100000 and more) are written faster"""
+    kind = type(obj)
+    if kind is str:
+        return encode_basestring_ascii(obj)
+    if kind is int:
+        return int.__repr__(obj)
+    if kind is bool or obj is None or kind is float:
+        return json.dumps(obj)
+    pad = " " * (level + 1)
+    if kind is dict and all(type(key) is str for key in obj):
+        items = []
+        for key in sorted(obj):
+            value = obj[key]
+            text = dump_exports(value, level + 2) if key == "exports" and type(value) is list and value else None
+            if text is None:
+                text = dump_json(value, level + 1)
+            items.append(f"{pad}{encode_basestring_ascii(key)}: {text}")
+        return "{\n" + ",\n".join(items) + "\n" + " " * level + "}" if items else "{}"
+    if kind in (list, tuple):
+        values = [dump_json(value, level + 1) for value in obj]
+        return "[\n" + ",\n".join(pad + value for value in values) + "\n" + " " * level + "]" if values else "[]"
+    raise TypeError(kind)
+
+
+def dumps_api_db(api_db):
+    """the text of the DB file: json.dumps(api_db, indent=1, sort_keys=True)"""
+    try:
+        return dump_json(api_db)
+    except TypeError:
+        # something that is not written here, the json module knows what to do with it
+        return json.dumps(api_db, indent=1, sort_keys=True)
+
+
 class DatabaseBuilder:
     def __init__(self):
         self._duplicate_paths = {}
 
+    def _extractPlainPe(self, filepath):
+        """the summary of a DLL by PlainPe, None if it has no exports, an exception if pefile has to read it"""
+        with open(filepath, "rb") as f_in:
+            data = mmap.mmap(f_in.fileno(), 0, access=mmap.ACCESS_READ)
+        try:
+            pe = PlainPe(data)
+            exports = pe.exports()
+            if exports is None:
+                return None
+            version = pe.product_version()
+            exports.sort(key=itemgetter(1))
+            return {
+                "base_address": pe.image_base,
+                "bitness": 32 if pe.machine == 0x14C else 64,
+                "version": version,
+                "filepath": filepath,
+                "aslr_offset": 0,
+                "exports": [
+                    {"address": address, "name": "None" if name is None else name, "ordinal": ordinal}
+                    for ordinal, address, name in exports
+                ],
+            }
+        finally:
+            data.close()
+
     def _extractPeExports(self, filepath):
         try:
-            pe = pefile.PE(filepath)
+            return self._extractPlainPe(filepath)
+        except Exception:
+            # a file of another layout, a damaged one, or one that can not be read: pefile decides
+            pass
+        try:
+            # only the export directory and the resources (of the product version) are used
+            pe = pefile.PE(filepath, fast_load=True)
+            pe.parse_data_directories(
+                directories=[
+                    pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_EXPORT"],
+                    pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_RESOURCE"],
+                ]
+            )
             for warning in pe.get_warnings():
                 if "export" in warning.lower():
                     LOG.warning("pefile warning for %s: %s", filepath, warning)
@@ -151,10 +505,9 @@ class DatabaseBuilder:
         filename = os.path.basename(dll_info["filepath"])
         return "{}_{}_{}_0x{:x}".format(dll_info["bitness"], dll_info["version"], filename, dll_info["base_address"])
 
-    def _isInFilter(self, target_dll, filter_dlls):
-        return any(target_dll.casefold() == check_dll.casefold() for check_dll in filter_dlls)
-
-    def extractRecursively(self, paths, filter_dlls=False, os_name=None, os_version=None):
+    def extractRecursively(self, paths, filter_dlls=False, os_name=None, os_version=None, only_files=None):
+        """the API DB of the DLLs in paths; with only_files, a collection of paths, only those files are used (the paths are compared
+        as absolute paths in the normal case of the platform: Windows file names are not case sensitive)"""
         api_count = 0
         pe_count = 0
         duplicate_count = 0
@@ -165,13 +518,23 @@ class DatabaseBuilder:
         known_keys = {}
         if paths is None:
             paths = config.DEFAULT_FOLDERS
+        # the file names of the filter in lower case, to look a name up instead of comparing it with all of them
+        filter_names = {name.casefold() for name in config.DLL_FILTER}
+        if only_files is not None:
+            only_files = {os.path.normcase(os.path.abspath(path)) for path in only_files}
         for base in paths:
             if not os.path.isdir(base):
                 LOG.warning("%s is not a directory, skipping...", base)
                 continue
             for root, _, files in os.walk(base):
                 for fn in files:
-                    if filter_dlls and not self._isInFilter(fn, config.DLL_FILTER):
+                    if (
+                        only_files is not None
+                        and os.path.normcase(os.path.abspath(os.path.join(root, fn))) not in only_files
+                    ):
+                        skipped_count += 1
+                        continue
+                    if filter_dlls and fn.casefold() not in filter_names:
                         skipped_count += 1
                         continue
                     elif not (
@@ -338,7 +701,7 @@ class DatabaseBuilder:
             filepath += ".json"
         # the same bytes on every OS, as the DBs are shared and checked against SHA256SUMS
         with open(filepath, "w", encoding="utf-8", newline="\n") as f_out:
-            f_out.write(json.dumps(api_db, indent=1, sort_keys=True))
+            f_out.write(dumps_api_db(api_db))
 
 
 def main():

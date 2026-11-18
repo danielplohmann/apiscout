@@ -1,11 +1,15 @@
+import itertools
 import json
+import math
 import os
 import random
 import struct
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -68,6 +72,20 @@ FNV1A_VECTORS = {b"": 0x811C9DC5, b"a": 0xE40C292C, b"foobar": 0xBF9CF968}
 # djb2: the function hash() of http://www.cse.yorku.ca/~oz/hash.html (5381, then hash * 33 + c); the hashes of FLARE above are
 # the values of this algorithm, and the empty string has the initial value 5381
 
+# sdbm: the function sdbm() of the same page, hash(i) = hash(i - 1) * 65599 + str[i] from 0, written there as
+# c + (hash << 6) + (hash << 16) - hash. FLARE's shellcode_hashes has no sdbm (checked in make_sc_hash_db.py: no 65599 = 0x1003f; its
+# mult21AddHash32 is the same recurrence with the factor 0x21 and the start 0), the known values are those of OALabs/hashdb
+# (https://github.com/OALabs/hashdb, commit 28fc56a, directory algorithms): its algorithm "sdbm_65599_x64" ("The original SDBM hash
+# function with the constant 65599. Used by Emotet malware.") with the 64bit value TEST_1 of the string below, which has the 32bit
+# value as its lower half, and "emotet_mul_65599_xor_19ad760", the 32bit sdbm xored with 0x19ad760, with its value TEST_1 of the string
+# (the repository defines TEST_1 as the hash of the string ABC...XYZabc...xyz0123456789 for every algorithm)
+SDBM_TEST_STRING = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+SDBM_64BIT_VALUE = 18326187587583583519
+SDBM_XOR_19AD760_VALUE = 3163386495
+
+# the CRC-32 of names with a constant xored to it: crc32Xor0xca9d4d4e of FLARE's make_sc_hash_db.py (zlib.crc32(name) ^ 0xca9d4d4e)
+FLARE_CRC32_XOR_KEY = 0xCA9D4D4E
+
 # CRC-32 (zlib, CRC-32/ISO-HDLC): the check value of the CRC catalogue (https://reveng.sourceforge.io/crc-catalogue/17plus.htm,
 # CRC-32/ISO-HDLC, not reachable from the environment this was written in) is the CRC-32 of the ASCII string 123456789
 CRC32_CHECK = (b"123456789", 0xCBF43926)
@@ -124,6 +142,7 @@ def reference_hash(algorithm, name, module=None):
         "crc32": DynamicApis.hashCrc32,
         "djb2": DynamicApis.hashDjb2,
         "fnv1a": DynamicApis.hashFnv1a,
+        "sdbm": DynamicApis.hashSdbm,
     }[algorithm](name)
 
 
@@ -192,6 +211,22 @@ class HashValuesTestSuite(unittest.TestCase):
     def testFnv1a(self):
         for text, expected in FNV1A_VECTORS.items():
             self.assertEqual(expected, DynamicApis.hashFnv1a(text), text)
+
+    def testSdbm(self):
+        self.assertEqual(0, DynamicApis.hashSdbm(b""))
+        self.assertEqual(ord("a"), DynamicApis.hashSdbm(b"a"))
+        self.assertEqual(ord("a") * 65599 + ord("b"), DynamicApis.hashSdbm(b"ab"))
+        # the 64bit hash of hashdb is the same recurrence, the 32bit one is its lower half
+        self.assertEqual(SDBM_64BIT_VALUE & 0xFFFFFFFF, DynamicApis.hashSdbm(SDBM_TEST_STRING))
+        self.assertEqual(SDBM_XOR_19AD760_VALUE, DynamicApis.hashSdbm(SDBM_TEST_STRING) ^ 0x19AD760)
+        # the faster form of the page of Ozan Yigit: c + (hash << 6) + (hash << 16) - hash
+        value = 0
+        for char in SDBM_TEST_STRING:
+            value = (char + (value << 6) + (value << 16) - value) & 0xFFFFFFFF
+        self.assertEqual(value, DynamicApis.hashSdbm(SDBM_TEST_STRING))
+        self.assertEqual(
+            value, int(ApiNameIndex([("a.dll", SDBM_TEST_STRING.decode(), 32)]).getTable("sdbm").hashes[0])
+        )
 
     def testVectorizedHashesAreTheReferenceHashes(self):
         rng = random.Random(7)
@@ -325,6 +360,33 @@ class SearchTestSuite(unittest.TestCase):
         self.assertEqual([], getRegions([(0, 1), (4, 1), (8, 1)], 2))
         self.assertEqual([], getRegions([], 1))
         self.assertEqual([(0, 1), (128, 2)], getRegions([(0, 1), (128, 2), (257, 3)], 2))
+
+    def testRegionsAreThoseOfAChainOfHitsAtATime(self):
+        """the regions the search finds (getRegions() is the function that it uses, for lists) are those of the simple rule: a chain
+        of hits goes on while the next one is at most gap bytes away from the last one, hits that overlap the last one do not count"""
+
+        def reference(hits, min_hits, gap):
+            kept, chain = [], []
+            for offset, value in [*hits, (None, None)]:
+                if chain and (offset is None or offset - chain[-1][0] > gap):
+                    if len({value for _, value in chain}) >= min_hits:
+                        kept.extend(chain)
+                    chain = []
+                if offset is not None and not (chain and offset < chain[-1][0] + 4):
+                    chain.append((offset, value))
+            return kept
+
+        rng = random.Random(7)
+        found = 0
+        for _ in range(1500):
+            span = rng.choice([20, 60, 400, 5000])
+            offsets = sorted(rng.randrange(span) for _ in range(rng.choice([0, 1, 2, 3, 6, 12, 30])))
+            hits = [(offset, rng.randrange(rng.choice([2, 3, 6, 2**32]))) for offset in offsets]
+            min_hits, gap = rng.choice([1, 2, 3, 4]), rng.choice([4, 8, 16, 128, 4096])
+            expected = reference(hits, min_hits, gap)
+            found += bool(expected)
+            self.assertEqual(expected, getRegions(hits, min_hits, gap), (hits, min_hits, gap))
+        self.assertGreater(found, 100)
 
     def testMinimumHits(self):
         # 100,000 hashes make some 24 hits of chance per MB
@@ -603,6 +665,451 @@ class DynamicApisTestSuite(unittest.TestCase):
         self.assertEqual(3, getMinimumHits(index.getNumHashes("block_api"), size))
 
 
+KEYED_DLLS = {
+    "kernel32.dll": [
+        "LoadLibraryA",
+        "LoadLibraryW",
+        "GetProcAddress",
+        "VirtualAlloc",
+        "VirtualProtect",
+        "ExitProcess",
+        "CreateFileA",
+        "CreateFileW",
+        "GetModuleHandleA",
+        "GetModuleHandleW",
+        "CreateProcessA",
+        "CreateProcessW",
+        "Sleep",
+        "GetVersion",
+    ],
+    "ws2_32.dll": ["WSAStartup", "WSASocketA", "connect", "send", "closesocket"],
+}
+KEYED_NAMES = [name for names in KEYED_DLLS.values() for name in names]
+
+
+def apply_key(value, mode, key):
+    return value ^ key if mode == "xor" else (value + key) & 0xFFFFFFFF
+
+
+def build_text(size, seed=1):
+    """words, a filler that is no random data"""
+    rng = random.Random(seed)
+    words = [b"alpha", b"bravo", b"charlie", b"delta", b"echo", b"foxtrot"]
+    return b" ".join(rng.choice(words) for _ in range(size // 4))[:size]
+
+
+def build_keyed_dump(algorithm, mode, key, names, seed=1, size=0x4000, first=0x500, step=301, text=False):
+    """filler (random bytes, or words for text) with the hashes of the names combined with a key at odd offsets, a few hundred bytes
+    apart as in the code of a resolver; returns the dump and the DynamicApis that are expected"""
+    dump = bytearray(build_text(size, seed) if text else random.Random(seed).randbytes(size))
+    expected = []
+    for index, name in enumerate(names):
+        value = apply_key(reference_hash(algorithm, name), mode, key)
+        offset = first + index * step
+        dump[offset : offset + 4] = struct.pack("<I", value)
+        dlls = tuple(dll for dll, apis in KEYED_DLLS.items() if name in apis)
+        label = DynamicApis.getKeyedLabel(algorithm, mode, key) if key else algorithm
+        expected.append(DynamicApi(offset, "hash", label, value, name, dlls))
+    return bytes(dump), sorted(expected)
+
+
+class KeyedHashesTestSuite(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.scout = ApiScout(write_db(self.directory.name, KEYED_DLLS))
+        self.scout.setBaseAddress(0x400000)
+        self.map_name = "Test OS"
+
+    def find(self, dump, **kwargs):
+        return self.scout.findDynamicApis(dump, strings=False, **kwargs)[self.map_name]
+
+    def testProbeApis(self):
+        self.assertEqual(len(set(DynamicApis.PROBE_APIS)), DynamicApis.NUM_PROBE_APIS)
+        self.assertTrue(24 <= DynamicApis.NUM_PROBE_APIS <= 48)
+        for algorithm in DynamicApis.KEYED_ALGORITHMS:
+            probes, anchors = DynamicApis._getProbeHashes(algorithm)
+            self.assertEqual(DynamicApis.NUM_PROBE_APIS, len(set(probes.tolist())), algorithm)
+            self.assertEqual(
+                [reference_hash(algorithm, name) for name in DynamicApis.PROBE_APIS[: DynamicApis.KEY_ANCHORS]],
+                anchors.tolist(),
+            )
+        # block_api needs the module, and adds a constant of it: no key
+        self.assertEqual(set(DynamicApis.HASH_ALGORITHMS) - {"block_api"}, set(DynamicApis.KEYED_ALGORITHMS))
+
+    def testKeyedHashesAreFound(self):
+        """XOR and ADD keys of every algorithm: the hashes of all names, those of probe APIs and others, are found with the key"""
+        for algorithm in DynamicApis.KEYED_ALGORITHMS:
+            for mode, key in (("xor", 0x1E5C48DE), ("add", 0x9A3F0C51), ("xor", 0x80000001), ("add", 0xFFFFFFF0)):
+                dump, expected = build_keyed_dump(algorithm, mode, key, KEYED_NAMES)
+                with self.subTest(algorithm=algorithm, mode=mode, key=hex(key)):
+                    self.assertEqual(expected, self.find(dump))
+                    # the real key is one of those found
+                    self.assertIn(key, DynamicApis.findKeys(dump)[(algorithm, mode)])
+                    # not without keys
+                    self.assertEqual([], self.find(dump, keyed=False))
+        # the algorithm of a hit tells the key
+        dump, _ = build_keyed_dump("sdbm", "xor", 0x1E5C48DE, KEYED_NAMES)
+        self.assertEqual({"sdbm^0x1e5c48de"}, {hit.algorithm for hit in self.find(dump)})
+        dump, _ = build_keyed_dump("crc32", "add", 0x00000012, KEYED_NAMES)
+        self.assertEqual({"crc32+0x00000012"}, {hit.algorithm for hit in self.find(dump)})
+
+    def testFlareCrc32Key(self):
+        dump, expected = build_keyed_dump("crc32", "xor", FLARE_CRC32_XOR_KEY, KEYED_NAMES)
+        self.assertEqual(expected, self.find(dump))
+        self.assertEqual({"crc32^0xca9d4d4e"}, {hit.algorithm for hit in expected})
+        self.assertEqual(
+            DynamicApis.hashCrc32(b"LoadLibraryA") ^ FLARE_CRC32_XOR_KEY,
+            next(hit.value for hit in expected if hit.api == "LoadLibraryA"),
+        )
+
+    def testKeyNeedsSeveralProbeApis(self):
+        probes = [name for name in KEYED_NAMES if name in DynamicApis.PROBE_APIS]
+        others = [name for name in KEYED_NAMES if name not in DynamicApis.PROBE_APIS]
+        self.assertGreater(len(probes), 8)
+        self.assertGreaterEqual(len(others), 3)
+        # a dump of 8 KB (some 8,000 values): three probe APIs make a key (the least number, in a larger dump of random data four)
+        small = {"size": 0x2000, "first": 0x100}
+        self.assertEqual(3, DynamicApis.getMinimumKeyApis(8000, trials=10))
+        self.assertEqual(4, DynamicApis.getMinimumKeyApis(16000, trials=10))
+        # two probe APIs and many others: no key. Three: a key (the least number for a small dump)
+        dump, expected = build_keyed_dump("sdbm", "xor", 0x1E5C48DE, probes[:2] + others, **small)
+        self.assertEqual({}, DynamicApis.findKeys(dump))
+        self.assertEqual([], self.find(dump))
+        self.assertIn(0x1E5C48DE, DynamicApis.findKeys(dump, min_apis=2)[("sdbm", "xor")])
+        dump, expected = build_keyed_dump("sdbm", "xor", 0x1E5C48DE, probes[:3] + others, **small)
+        self.assertEqual({("sdbm", "xor"): [0x1E5C48DE]}, DynamicApis.findKeys(dump))
+        self.assertEqual(expected, self.find(dump))
+        # the number can be raised
+        self.assertEqual([], self.find(dump, min_key_apis=4))
+        self.assertEqual({}, DynamicApis.findKeys(dump, min_apis=4))
+        # the anchors, the most common probe APIs, propose the key: two of them have to be there
+        anchors = [name for name in KEYED_NAMES if name in DynamicApis.PROBE_APIS[: DynamicApis.KEY_ANCHORS]]
+        late = [name for name in probes if name not in anchors]
+        self.assertGreaterEqual(len(anchors), 3)
+        self.assertGreaterEqual(len(late), 4)
+        dump, _ = build_keyed_dump("sdbm", "xor", 0x1E5C48DE, anchors[:1] + late[:4], **small)
+        self.assertEqual({}, DynamicApis.findKeys(dump))
+        dump, _ = build_keyed_dump("sdbm", "xor", 0x1E5C48DE, anchors[:2] + late[:4], **small)
+        self.assertEqual({("sdbm", "xor"): [0x1E5C48DE]}, DynamicApis.findKeys(dump))
+
+    def testKeyedHashesAreInRegionsOfTheKeyedGap(self):
+        # the hashes of a resolver are in its code, farther apart than the 128 bytes of a table
+        dump, expected = build_keyed_dump("sdbm", "xor", 0x1E5C48DE, KEYED_NAMES, step=1000, size=1 << 15)
+        self.assertEqual(expected, self.find(dump))
+        # farther apart than the keyed gap, no hit makes a region: the key is found, but nothing reported
+        step = DynamicApis.KEYED_REGION_GAP + 1
+        dump, _ = build_keyed_dump("sdbm", "xor", 0x1E5C48DE, KEYED_NAMES, size=1 << 17, step=step, text=True)
+        self.assertEqual({("sdbm", "xor"): [0x1E5C48DE]}, DynamicApis.findKeys(dump))
+        self.assertEqual([], self.find(dump))
+        # while the unkeyed hashes keep the gap of 128 bytes, and are no key
+        dump, _ = build_keyed_dump("sdbm", "xor", 0, KEYED_NAMES, step=300)
+        self.assertEqual([], self.find(dump))
+        self.assertNotIn(0, [key for keys in DynamicApis.findKeys(dump).values() for key in keys])
+        dump, expected = build_keyed_dump("sdbm", "xor", 0, KEYED_NAMES, step=16)
+        self.assertEqual(expected, self.find(dump))
+        self.assertNotIn(0, [key for keys in DynamicApis.findKeys(dump).values() for key in keys])
+
+    def testTwoKeysAndUnkeyedHashes(self):
+        first = ["LoadLibraryA", "GetProcAddress", "VirtualProtect", "CreateFileA", "Sleep", "connect"]
+        second = ["LoadLibraryW", "VirtualAlloc", "ExitProcess", "CreateFileW", "GetVersion", "send"]
+        dump = bytearray(build_keyed_dump("crc32", "xor", 0x218FE95B, first)[0])
+        other = build_keyed_dump("crc32", "xor", 0x0BADF00D, second, first=0x2000)[0]
+        dump[0x2000:] = other[0x2000:]
+        unkeyed = build_keyed_dump("ror13", "xor", 0, KEYED_NAMES[:4], first=0x3000, step=16)[0]
+        dump[0x3000:0x3100] = unkeyed[0x3000:0x3100]
+        dump = bytes(dump)
+        hits = self.find(dump)
+        self.assertEqual({"crc32^0x218fe95b", "crc32^0x0badf00d", "ror13"}, {hit.algorithm for hit in hits})
+        self.assertEqual(
+            {name: "crc32^0x218fe95b" for name in first} | {name: "crc32^0x0badf00d" for name in second},
+            {hit.api: hit.algorithm for hit in hits if hit.algorithm != "ror13"},
+        )
+        self.assertEqual(set(KEYED_NAMES[:4]), {hit.api for hit in hits if hit.algorithm == "ror13"})
+        # the unkeyed hits are the same without keys
+        self.assertEqual([hit for hit in hits if hit.algorithm == "ror13"], self.find(dump, keyed=False))
+
+    def testKeyedTablesAreMadeOnceForASearch(self):
+        """the table of a key (the hashes combined with it, sorted) serves both the constants that are searched and the hits"""
+        first = ["LoadLibraryA", "GetProcAddress", "VirtualProtect", "CreateFileA", "Sleep", "connect"]
+        second = ["LoadLibraryW", "VirtualAlloc", "ExitProcess", "CreateFileW", "GetVersion", "send"]
+        dump = bytearray(build_keyed_dump("crc32", "xor", 0x218FE95B, first)[0])
+        dump[0x2000:] = build_keyed_dump("sdbm", "add", 0x0BADF00D, second, first=0x2000)[0][0x2000:]
+        dump = bytes(dump)
+        expected = self.find(dump)
+        original = ApiNameIndex.getKeyedTable
+        calls = []
+
+        def getKeyedTable(index, algorithm, mode, key):
+            calls.append((algorithm, mode, key))
+            return original(index, algorithm, mode, key)
+
+        for search in (lambda: self.find(dump), lambda: self.find(dump + bytes(DynamicApis.MIN_SINGLE_SEARCH_SIZE))):
+            calls.clear()
+            with mock.patch.object(ApiNameIndex, "getKeyedTable", getKeyedTable):
+                self.assertEqual(expected, search())
+            keyed = [call for call in calls if call[1] is not None]
+            self.assertIn(("crc32", "xor", 0x218FE95B), keyed)
+            self.assertIn(("sdbm", "add", 0x0BADF00D), keyed)
+            self.assertEqual(sorted(set(keyed)), sorted(keyed))
+
+    def testDifferencesOfNamesAreNoKeys(self):
+        """the hashes of names that end with A and W have the same difference for CRC-32 (XOR) and for the hashes that add the
+        last character (ADD), so a key at that difference from the real one has probe APIs in common with it; only the real key
+        has hits"""
+        crc_difference = DynamicApis.hashCrc32(b"LoadLibraryA") ^ DynamicApis.hashCrc32(b"LoadLibraryW")
+        self.assertEqual(crc_difference, DynamicApis.hashCrc32(b"CreateFileA") ^ DynamicApis.hashCrc32(b"CreateFileW"))
+        last_character = ord("W") - ord("A")
+        for algorithm, mode, key, difference in (
+            ("crc32", "xor", 0x218FE95B, crc_difference),
+            ("djb2", "add", 0x1E5C48DE, last_character),
+            ("sdbm", "add", 0x77777777, last_character),
+            ("ror13", "add", 0x01234567, last_character),
+        ):
+            dump, expected = build_keyed_dump(algorithm, mode, key, KEYED_NAMES)
+            with self.subTest(algorithm=algorithm):
+                keys = DynamicApis.findKeys(dump)[(algorithm, mode)]
+                self.assertIn(key, keys)
+                if mode == "xor":
+                    # the pairs of anchors LoadLibraryA and W agree on the key at the difference
+                    self.assertIn(key ^ difference, keys)
+                    self.assertGreater(len(keys), 1)
+                self.assertEqual(expected, self.find(dump))
+
+    def testNoKeysInRandomData(self):
+        # the default skips what is uniformly distributed: nothing to find in it, and fast
+        binary = np.random.default_rng(2025).integers(0, 256, 8 << 20, dtype=np.uint8).tobytes()
+        start = time.time()
+        self.assertEqual({}, DynamicApis.findKeys(binary))
+        self.assertLess(time.time() - start, 5)
+        self.assertEqual([], self.find(binary))
+        # not skipped: no key either, the minimum number of probe APIs makes sure of it
+        for seed in range(2):
+            binary = np.random.default_rng(seed).integers(0, 256, 2 << 20, dtype=np.uint8).tobytes()
+            self.assertEqual({}, DynamicApis.findKeys(binary, skip_random=False), seed)
+        # and none in zeros, text, bytes in order and what is too small
+        for binary in (bytes(1 << 20), b"VirtualAlloc\x00" * 50000, build_text(1 << 20), b"", b"abc"):
+            self.assertEqual({}, DynamicApis.findKeys(binary), binary[:8])
+            self.assertEqual([], self.find(binary))
+
+    def testChanceKeysInRandomDataFollowTheModel(self):
+        """random data holds as many keys that two anchors agree on as the model says; the probes after them, the tail that
+        getMinimumKeyApis sums, make keys rarer by many orders of magnitude"""
+        binary = np.random.default_rng(7).integers(0, 256, 4 << 20, dtype=np.uint8).tobytes()
+        window = 1 << 16
+        count = expected = 0
+        for start, end in DynamicApis._getKeyWindows(len(binary), window):
+            values = DynamicApis._getKeyCandidates(binary, start, end)
+            probability = len(values) / 2**32
+            anchors = DynamicApis.KEY_ANCHORS
+            two_anchors = 1 - (1 - probability) ** anchors - anchors * probability * (1 - probability) ** (anchors - 1)
+            for algorithm in DynamicApis.KEYED_ALGORITHMS:
+                for mode in DynamicApis.KEY_MODES:
+                    count += len(DynamicApis._findKeysInWindow(values, algorithm, mode, 2))
+                    expected += two_anchors * 2**32
+        self.assertGreater(expected, 4000)
+        self.assertAlmostEqual(1.0, count / expected, delta=0.03)
+        # all of the 5 algorithms and 2 modes are searched, the keys of the windows together are some fewer (windows overlap)
+        found = DynamicApis.findKeys(binary, min_apis=2, window=window, skip_random=False)
+        self.assertEqual(10, len(found))
+        self.assertLessEqual(sum(len(keys) for keys in found.values()), count)
+        # three probe APIs: far fewer
+        three = DynamicApis.findKeys(binary, min_apis=3, window=window, skip_random=False)
+        self.assertLess(sum(len(keys) for keys in three.values()), 0.01 * count)
+        self.assertEqual({}, DynamicApis.findKeys(binary, window=window, skip_random=False))
+
+    def testMinimumKeyApis(self):
+        floor = DynamicApis.MIN_KEY_APIS
+        self.assertEqual(floor, DynamicApis.getMinimumKeyApis(1000))
+        self.assertEqual(floor, DynamicApis.getMinimumKeyApis(1000, trials=10))
+        # more values or more searches, more probe APIs
+        needed = [DynamicApis.getMinimumKeyApis(values, trials=10) for values in (10**3, 10**4, 10**5, 10**6, 10**7)]
+        self.assertEqual(sorted(needed), needed)
+        self.assertGreater(needed[-1], needed[0])
+        self.assertGreaterEqual(
+            DynamicApis.getMinimumKeyApis(10**6, trials=1000), DynamicApis.getMinimumKeyApis(10**6, trials=10)
+        )
+
+        def chance(values, trials, needed):
+            probability = values / 2**32
+            probes = DynamicApis.NUM_PROBE_APIS
+            return (
+                trials
+                * 2**32
+                * sum(
+                    math.comb(probes, hits) * probability**hits * (1 - probability) ** (probes - hits)
+                    for hits in range(needed, probes + 1)
+                )
+            )
+
+        # at most MAX_CHANCE_KEYS keys by chance, and one probe API less would not do
+        for values, trials in ((60000, 10), (10**6, 100), (10**6, 3400)):
+            needed = DynamicApis.getMinimumKeyApis(values, trials)
+            self.assertLessEqual(chance(values, trials, needed), DynamicApis.MAX_CHANCE_KEYS)
+            self.assertGreater(chance(values, trials, needed - 1), DynamicApis.MAX_CHANCE_KEYS)
+        # a dump of 150 KB has some 60,000 values, in a dump of 62 MB 83 windows of 1 MB have a million
+        self.assertEqual(4, DynamicApis.getMinimumKeyApis(60000, trials=10))
+        self.assertEqual(6, DynamicApis.getMinimumKeyApis(1 << 20, trials=830))
+        # more than all probes would be needed
+        self.assertGreater(DynamicApis.getMinimumKeyApis(2**31, trials=10), DynamicApis.NUM_PROBE_APIS)
+        self.assertEqual(2, DynamicApis.getMinimumKeyApis(10, floor=2))
+
+    def testWindowsAndRandomWindows(self):
+        window = 1 << 20
+        self.assertEqual([(0, 1000)], DynamicApis._getKeyWindows(1000, window))
+        self.assertEqual([(0, window)], DynamicApis._getKeyWindows(window, window))
+        windows = DynamicApis._getKeyWindows(62 << 20, window)
+        self.assertEqual((0, window), windows[0])
+        self.assertEqual(62 << 20, windows[-1][1])
+        for (_, end), (start, _) in itertools.pairwise(windows):
+            # a window starts before the previous one ends, by a quarter at least
+            self.assertLessEqual(start, end - window // 4)
+        for size in (window + 1, 2 * window, 3 * window + 17, 5 * window - 1):
+            windows = DynamicApis._getKeyWindows(size, window)
+            self.assertEqual(size, windows[-1][1])
+            self.assertEqual({window}, {end - start for start, end in windows})
+        random_bytes = np.random.default_rng(3).integers(0, 256, 1 << 20, dtype=np.uint8).tobytes()
+        self.assertTrue(DynamicApis._isRandom(random_bytes, 0, len(random_bytes)))
+        self.assertTrue(DynamicApis._isRandom(random_bytes, 1000, 1000 + DynamicApis.RANDOM_BLOCK_SIZE))
+        # less than a block is never random, and neither is anything with structure
+        self.assertFalse(DynamicApis._isRandom(random_bytes, 0, DynamicApis.RANDOM_BLOCK_SIZE - 1))
+        self.assertFalse(DynamicApis._isRandom(bytes(1 << 20), 0, 1 << 20))
+        self.assertFalse(DynamicApis._isRandom(build_text(1 << 20), 0, 1 << 20))
+
+    def testRandomBlocks(self):
+        block = DynamicApis.RANDOM_BLOCK_SIZE
+        binary = bytearray(np.random.default_rng(4).integers(0, 256, 5 * block + 1000, dtype=np.uint8).tobytes())
+        # a block of words, and 10% of one block of random data are structure, the last block is smaller
+        binary[2 * block : 3 * block] = build_text(block)
+        binary[4 * block : 4 * block + block // 10] = build_text(block // 10)
+        binary = bytes(binary)
+        blocks = DynamicApis._getRandomBlocks(binary)
+        self.assertEqual([True, True, False, True, False, False], blocks)
+        self.assertEqual([(0, 1000)], DynamicApis._getSpans(0, 1000, None))
+        self.assertEqual(
+            [(2 * block, 3 * block), (4 * block, len(binary))], DynamicApis._getSpans(0, len(binary), blocks)
+        )
+        self.assertEqual(
+            [(2 * block + 10, 2 * block + 20)], DynamicApis._getSpans(2 * block + 10, 2 * block + 20, blocks)
+        )
+        self.assertEqual([], DynamicApis._getSpans(0, 100, blocks))
+        # the values are those of the blocks that are not random
+        values = DynamicApis._getKeyCandidates(binary, 0, len(binary), blocks)
+        expected = np.unique(
+            np.concatenate(
+                [
+                    DynamicApis._getKeyCandidates(binary, start, end)
+                    for start, end in ((2 * block, 3 * block), (4 * block, len(binary)))
+                ]
+            )
+        )
+        self.assertEqual(expected.tolist(), values.tolist())
+        self.assertGreater(len(DynamicApis._getKeyCandidates(binary, 0, len(binary))), 3 * len(values))
+        self.assertEqual(0, len(DynamicApis._getKeyCandidates(binary, 0, block, blocks)))
+        # a table in a block of words in the middle of random data is found, and a key in random blocks is not
+        table, expected_hits = build_keyed_dump("sdbm", "xor", 0x1E5C48DE, KEYED_NAMES, first=0, step=100, size=0x800)
+        for at, found in ((2 * block + 0x1000, True), (block + 0x1000, False)):
+            dump = bytearray(binary)
+            dump[at : at + 0x800] = table
+            self.assertEqual({("sdbm", "xor"): [0x1E5C48DE]} if found else {}, DynamicApis.findKeys(bytes(dump)), at)
+
+    def testValuesOfAWindow(self):
+        binary = struct.pack("<III", 0x11223344, 0x00112233, 0x44556677) + b"\x99\x88"
+        values = DynamicApis._getKeyCandidates(binary, 0, len(binary)).tolist()
+        # at any offset, different, ascending, and none with a zero byte
+        expected = {
+            struct.unpack_from("<I", binary, offset)[0]
+            for offset in range(len(binary) - 3)
+            if all(binary[offset : offset + 4])
+        }
+        self.assertEqual(sorted(expected), values)
+        self.assertIn(0x11223344, values)
+        self.assertNotIn(0x00112233, values)
+        # a window is a part of the dump
+        part = DynamicApis._getKeyCandidates(binary, 4, 12).tolist()
+        self.assertEqual(sorted({v for v in expected if v in part} | {0x44556677} - {0x00112233}), part)
+        self.assertEqual(0, len(DynamicApis._getKeyCandidates(b"\x00\x01", 0, 2)))
+        self.assertEqual(0, len(DynamicApis._getKeyCandidates(b"", 0, 0)))
+
+    def testKeysInLargerDumps(self):
+        """a table in the middle of a dump of several windows, and one across the boundary of two windows"""
+        window = 1 << 16
+        text = build_text(5 * window)
+        table, expected = build_keyed_dump("crc32", "xor", 0x218FE95B, KEYED_NAMES, first=0, step=40, size=0x800)
+        for at in (2 * window + 0x1234, 3 * window - 0x100):
+            dump = bytearray(text[: 5 * window])
+            dump[at : at + 0x800] = table
+            dump = bytes(dump)
+            found = DynamicApis.findKeys(dump, window=window)
+            self.assertEqual([("crc32", "xor")], list(found), at)
+            self.assertIn(0x218FE95B, found[("crc32", "xor")], at)
+        # the default window holds all of it, and the hits are at their offsets
+        self.assertEqual(
+            [hit._replace(offset=hit.offset + at) for hit in expected],
+            self.find(dump),
+        )
+
+    def testKeyGroupsStayWithinTheirLimits(self):
+        """the windows are searched together in groups, and a group stays within the limits of different values and of values, however
+        many windows are read at once (the search for keys takes memory for every different value); the keys do not depend on it"""
+        window = 1 << 14
+        batch = 2 * DynamicApis._getThreads()
+        # code-like bytes, a window of which has about as many different values as bytes, and hardly any that other windows have
+        dump = bytearray(np.random.default_rng(5).integers(1, 200, 4 * batch * window, dtype=np.uint8).tobytes())
+        self.assertGreaterEqual(len(DynamicApis._getKeyWindows(len(dump), window)), 3 * batch)
+        for algorithm, mode, key, at in (
+            ("crc32", "xor", 0x218FE95B, 0x1234),
+            ("sdbm", "add", 0x9A3F0C51, len(dump) // 2),
+        ):
+            table, _ = build_keyed_dump(algorithm, mode, key, KEYED_NAMES, first=0, step=40, size=0x800)
+            dump[at : at + 0x800] = table
+        dump = bytes(dump)
+        expected = DynamicApis.findKeys(dump, window=window, parallel=True)
+        self.assertIn(0x218FE95B, expected[("crc32", "xor")])
+        self.assertIn(0x9A3F0C51, expected[("sdbm", "add")])
+        original = DynamicApis._findKeysInGroup
+        groups = []
+
+        def spy(window_values, *args):
+            groups.append(window_values)
+            return original(window_values, *args)
+
+        # (limit of different values, limit of values): the different values of a batch of windows (a quarter of a window is shared with
+        # the previous one), and its values, are more than that
+        for different, values in (
+            (0.9 * (3 * (batch - 1) + 1) / 4 * window, 1 << 40),
+            (1 << 40, (batch - 0.5) * window),
+            (1, 1),
+        ):
+            with (
+                self.subTest(different=different, values=values),
+                mock.patch.object(DynamicApis, "KEY_GROUP_DIFFERENT", int(different)),
+                mock.patch.object(DynamicApis, "KEY_GROUP_VALUES", int(values)),
+                mock.patch.object(DynamicApis, "_findKeysInGroup", spy),
+            ):
+                groups.clear()
+                self.assertEqual(expected, DynamicApis.findKeys(dump, window=window, parallel=True))
+                self.assertGreater(len(groups), 2)
+                for group in groups:
+                    # (the number of different values of a group is estimated from a sample, and a group is a window at least)
+                    self.assertLessEqual(len(np.unique(np.concatenate(group))), max(window, different * 1.05))
+                    self.assertLessEqual(sum(map(len, group)), max(window, values))
+
+    def testRenderAlignsKeys(self):
+        hits = [
+            DynamicApi(0x10, "hash", "sdbm^0x1e5c48de", 0x11223344, "LoadLibraryA", ("kernel32.dll",)),
+            DynamicApi(0x20, "hash", "ror13", 0x11223345, "GetProcAddress", ("kernel32.dll",)),
+        ]
+        lines = self.scout.renderDynamicApis({"Test OS": hits}).splitlines()
+        self.assertIn("; sdbm^0x1e5c48de; 0x11223344", lines[2])
+        self.assertIn("; ror13          ; 0x11223345", lines[3])
+        self.assertEqual(lines[1].index("; value"), lines[2].index("; 0x11223344"))
+        # without keys the table is as it was
+        plain = self.scout.renderDynamicApis({"Test OS": hits[1:]}).splitlines()
+        self.assertTrue(plain[1].startswith("idx: offset    ; type  ; algorithm; value     ;"))
+        self.assertIn("hash  ; ror13    ; 0x11223345", plain[2])
+
+
 class DynamicCliTestSuite(unittest.TestCase):
     def testDefaultOutputIsUnchanged(self):
         from tests.testCli import DB_PATH, DUMP_PATH, run
@@ -729,9 +1236,43 @@ class DynamicCliTestSuite(unittest.TestCase):
             self.assertIn("can not be combined with --import-table", errors)
         self.assertIn("--dynamic", run("scan", "--help")[1])
 
+    def testDynamicKeyed(self):
+        """hashes with a key of the sample: the key is part of the algorithm in the listing and in the JSON"""
+        from tests.testCli import run
 
-if __name__ == "__main__":
-    unittest.main()
+        names = ["LoadLibraryA", "GetProcAddress", "VirtualAlloc", "ExitProcess", "WSAStartup"]
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = write_db(directory, TEST_DLLS)
+            dump_path = os.path.join(directory, "dump_0x00400000")
+            dump, _ = build_keyed_dump("sdbm", "xor", 0x1E5C48DE, names, size=0x1000, first=0x101, step=300, text=True)
+            with open(dump_path, "wb") as f_dump:
+                f_dump.write(dump)
+            code, plain, _ = run("scan", dump_path, "--db", db_path)
+            self.assertEqual(0, code)
+            self.assertNotIn("sdbm", plain)
+            code, output, _ = run("scan", dump_path, "--db", db_path, "--dynamic")
+            self.assertEqual(0, code)
+            lines = [line for line in output.splitlines() if "sdbm^0x1e5c48de" in line]
+            self.assertEqual(5, len(lines))
+            self.assertIn("0x00400101; hash  ; sdbm^0x1e5c48de; 0x", lines[0])
+            self.assertIn("kernel32.dll", lines[0])
+            self.assertIn("APIs: 5, by hash: 5, by string: 0", output)
+            document = json.loads(run("scan", dump_path, "--db", db_path, "--dynamic", "--json")[1])
+            self.assertEqual(
+                {
+                    "offset": 0x101,
+                    "type": "hash",
+                    "algorithm": "sdbm^0x1e5c48de",
+                    "value": DynamicApis.hashSdbm(b"LoadLibraryA") ^ 0x1E5C48DE,
+                    "api": "LoadLibraryA",
+                    "dlls": ["kernel32.dll"],
+                    "api_db": "Test OS",
+                },
+                document["dynamic_apis"][0],
+            )
+            self.assertEqual(names, [api["api"] for api in document["dynamic_apis"]])
+            self.assertEqual({"sdbm^0x1e5c48de"}, {api["algorithm"] for api in document["dynamic_apis"]})
+        self.assertIn("sdbm", run("scan", "--help")[1])
 
     def testDynamicInMinidump(self):
         """ranges are searched at their addresses, the export names in the images of the DLLs are left out"""
@@ -757,3 +1298,7 @@ if __name__ == "__main__":
             self.assertEqual(0, code, errors)
             found = [(api["offset"], api["type"], api["api"]) for api in json.loads(output)["dynamic_apis"]]
             self.assertEqual([(0x400100 + 4 * index, "hash", name) for index, name in enumerate(names)], found)
+
+
+if __name__ == "__main__":
+    unittest.main()

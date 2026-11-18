@@ -7,13 +7,9 @@ The repository's dbs folder holds SHA256SUMS, which lists every file of the fold
 """
 
 import hashlib
-import http.client
 import os
 import re
 import sys
-import tempfile
-import urllib.error
-import urllib.request
 
 INDEX_NAME = "SHA256SUMS"
 # no file of the repository comes close, a larger download is cut off
@@ -68,6 +64,10 @@ class DownloadError(Exception):
 
 
 def _open(url, timeout):
+    # the network modules cost more than everything else of a command that does not download
+    import urllib.error
+    import urllib.request
+
     request = urllib.request.Request(url, headers={"User-Agent": "apiscout"})
     try:
         return urllib.request.urlopen(request, timeout=timeout)  # noqa: S310 - the URL is https, built from SOURCE_URL
@@ -80,6 +80,8 @@ def _open(url, timeout):
 
 def fetch_index(ref, timeout=60):
     """the files of the repository's dbs folder: name -> SHA-256"""
+    import http.client
+
     url = SOURCE_URL.format(ref=ref) + INDEX_NAME
     with _open(url, timeout) as response:
         try:
@@ -100,6 +102,9 @@ def is_current(path, sha256):
 
 def download(ref, name, sha256, folder, timeout=60):
     """download one file of the index into folder; it only replaces an existing file once the SHA-256 matches"""
+    import http.client
+    import tempfile
+
     url = SOURCE_URL.format(ref=ref) + name
     digest = hashlib.sha256()
     size = 0

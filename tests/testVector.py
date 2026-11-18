@@ -10,10 +10,12 @@
 #
 ########################################################################
 
+import contextlib
 import itertools
 import logging
 import os
 import random
+import tempfile
 import unittest
 
 import apiscout
@@ -275,6 +277,50 @@ class ExplainMatchTestSuite(unittest.TestCase):
             self.apivector.explainMatch("!!", self.vectors[0])
         with self.assertRaises(ValueError):
             self.apivector.explainMatch([1, 0, 1], [1, 0, 1])
+
+
+class CollectionMatchTestSuite(unittest.TestCase):
+    """matching a collection must give the scores of matchVectors() for every vector, in the order of sorted()"""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        module_path = os.path.dirname(os.path.realpath(apiscout.__file__))
+        cls.apivector = ApiVector(os.sep.join([module_path, "data", "winapi1024v1.txt"]))
+
+    def testScoresAndOrderOfMatchVectors(self):
+        rnd = random.Random(1)
+        compress = self.apivector.compress
+        vectors = [compress([1 if rnd.random() < density else 0 for _ in range(1024)]) for density in (0, 0.02, 0.3, 1)]
+        vectors += [compress([rnd.randint(0, 1)] * 100 + [rnd.randint(0, 1)] * 924) for _ in range(5)]
+        arabic_indic_digits = "A\u0661\u0667\u0661"
+        lines = []
+        for index in range(300):
+            # families repeat, as do names (the later vector wins) and vectors (equal scores keep their order)
+            lines.append(f"fam{index % 7};sample{index % 250};1;1;{vectors[index % len(vectors)]}\n")
+        lines += [
+            "x;y;1\n",
+            "bad;1;1;1;A172\n",
+            "bad;2;1;1;9A171\n",
+            "bad;3;1;1;A!170\n",
+            f"odd;1;1;1;{arabic_indic_digits}\n",
+        ]
+        with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8") as f_collection:
+            f_collection.writelines(lines)
+        try:
+            collection = self.apivector._loadCollectionData(f_collection.name)
+            for query in (vectors[1], vectors[2], vectors[-1], self.apivector.decompress(vectors[1])):
+                expected = []
+                for family, samples in collection.items():
+                    for sample, sample_vector in samples.items():
+                        with contextlib.suppress(ValueError):
+                            expected.append((family, sample, self.apivector.matchVectors(query, sample_vector)))
+                expected.sort(key=lambda entry: entry[2], reverse=True)
+                results = self.apivector.matchVectorCollection(query, f_collection.name)["match_results"]
+                self.assertEqual(expected, results)
+                self.assertTrue(all(type(score) is float for _, _, score in results))
+        finally:
+            os.remove(f_collection.name)
 
 
 if __name__ == "__main__":
