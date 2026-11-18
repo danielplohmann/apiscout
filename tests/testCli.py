@@ -108,6 +108,29 @@ class CliTestSuite(unittest.TestCase):
                 self.assertIn(message, errors)
                 self.assertNotIn("Traceback", errors)
 
+    def testMinConfidence(self):
+        # the example dump holds an API with a call (40) at an aligned offset (10), and a 64bit one at an unaligned offset
+        code, output, errors = run("scan", DUMP_PATH, "--db", DB_PATH, "--json")
+        self.assertEqual(0, code)
+        apis = json.loads(output)["apis"]
+        self.assertEqual([50, 25], [api["confidence"] for api in apis])
+        self.assertNotIn("Dropped", errors)
+        plain = run("scan", DUMP_PATH, "--db", DB_PATH, "--min-confidence", "0")
+        self.assertEqual(run("scan", DUMP_PATH, "--db", DB_PATH)[1], plain[1])
+        self.assertEqual(run("scan", DUMP_PATH, "--db", DB_PATH, "--min-confidence", "25")[1], plain[1])
+        code, output, errors = run("scan", DUMP_PATH, "--db", DB_PATH, "--min-confidence", "51", "--json")
+        self.assertEqual((0, []), (code, json.loads(output)["apis"]))
+        self.assertIn("Dropped 2 of 2 hits with a confidence below 51", errors)
+        code, output, errors = run("scan", DUMP_PATH, "--db", DB_PATH, "--min-confidence", "26", "--json")
+        self.assertEqual(["InterlockedIncrement"], [api["api"] for api in json.loads(output)["apis"]])
+        self.assertIn("Dropped 1 of 2", errors)
+        text = run("scan", DUMP_PATH, "--db", DB_PATH, "--min-confidence", "26")[1]
+        self.assertIn("InterlockedIncrement", text)
+        self.assertNotIn("WaitForSingleObjectEx", text)
+        for bad in ("-1", "101", "x", "1.5"):
+            self.assertEqual(2, run("scan", DUMP_PATH, "--db", DB_PATH, "--min-confidence", bad)[0])
+        self.assertIn("--min-confidence", run("scan", "--help")[1])
+
     def testFilesThatAreNoApiDbs(self):
         with tempfile.TemporaryDirectory() as directory:
             for content in ("no json", "[1, 2]", '{"dlls": 1}'):

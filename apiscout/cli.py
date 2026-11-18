@@ -65,6 +65,7 @@ repository: {PROJECT_URL}
     "scan": """examples:
   apiscout scan dump_0x00400000 --db win7_prof-n_sp1_example.json
   apiscout scan dump.bin --base-addr 0x400000 --filter 32 --json -o result.json
+  apiscout scan dump_0x00400000 --min-confidence 30
   apiscout scan sample.exe --import-table
   cat dump.bin | apiscout scan - --base-addr 0x400000
   apiscout scan crash.dmp --db win10_prof_1803_example.json
@@ -226,6 +227,16 @@ def parse_count(minimum):
     return parse
 
 
+def parse_confidence(value):
+    try:
+        number = int(value)
+    except ValueError:
+        number = None
+    if number is None or not 0 <= number <= 100:
+        raise argparse.ArgumentTypeError(f"expected a number from 0 to 100, got {value}")
+    return number
+
+
 def parse_timeout(value):
     try:
         seconds = float(value)
@@ -270,19 +281,21 @@ def read_vector(value):
     return text.split()[0]
 
 
-def results_to_records(results):
+def results_to_records(results, confidences=None):
+    """JSON records of the hits, with their confidence from ApiScout.getConfidences() where it is given"""
     records = []
     for api_map_name in results:
         for api in results[api_map_name]:
-            records.append(
-                {
-                    "offset": api[0],
-                    "apiAddress": api[1],
-                    "dll": re.sub(r"_0x[0-9a-fA-F]+$", "", api[2]) + f"({api[4]} bit)",
-                    "api": api[3],
-                    "references": sorted(api[7]),
-                }
-            )
+            record = {
+                "offset": api[0],
+                "apiAddress": api[1],
+                "dll": re.sub(r"_0x[0-9a-fA-F]+$", "", api[2]) + f"({api[4]} bit)",
+                "api": api[3],
+                "references": sorted(api[7]),
+            }
+            if confidences is not None:
+                record["confidence"] = confidences[api_map_name][(api[0], api[4])]
+            records.append(record)
     return records
 
 
@@ -419,7 +432,14 @@ def cmd_scan(args):
         else:
             results = scout.crawl(binary)
             summary = f"Scanned {len(binary)} bytes at base address 0x{base_address:x} with {source}."
+    # neighbours count in the complete results, so score them before anything is dropped
+    confidences = scout.getConfidences(results)
     results = scout.filter(results, 0, 0, args.filter)
+    if args.min_confidence:
+        num_hits = sum(len(hits) for hits in results.values())
+        results = scout.filterByConfidence(results, args.min_confidence, confidences)
+        dropped = num_hits - sum(len(hits) for hits in results.values())
+        report(args, f"Dropped {dropped} of {num_hits} hits with a confidence below {args.min_confidence}.")
     report(args, summary)
     vector = scout.getPrimaryVector(scout.getWinApi1024Vectors(results))[1]
     matches = match_collection(scout, vector["vector"], args.collection) if args.collection else None
@@ -428,7 +448,7 @@ def cmd_scan(args):
             "base_address": base_address,
             "api_dbs": db_paths,
             "placed_dlls": placer.placed,
-            "apis": results_to_records(results),
+            "apis": results_to_records(results, confidences),
             "apivector": vector["vector"],
             "apis_in_vector": vector["in_api_vector"],
         }
@@ -847,6 +867,18 @@ def build_parser():
         metavar="FILE",
         help="lines of '<hex load address> <DLL path>', the module list of the process: the DLLs of the API DBs are "
         "placed at these addresses instead of those of the DB (as DatabaseBuilder.py --load_addresses does)",
+    )
+    scan.add_argument(
+        "--min-confidence",
+        type=parse_confidence,
+        default=0,
+        metavar="N",
+        help="drop hits with a confidence below N (0 to 100, default: 0 keeps all). The confidence, listed as "
+        "confidence in --json, says how unlikely a hit is bytes that happen to equal an API address. A hit in the "
+        "import table scores 100. Others add up: neighbours (other APIs within 16 bytes: 30 for one, 50 for two, "
+        "60 for three or more, an address repeated counts once), a call or jmp through it 40, another API DB agreeing "
+        "10, an offset aligned to the pointer size 10; an unaligned hit scores at most 25. 20 to 40 drops the "
+        "chance hits of a scan with the right API DB, an API with no neighbour and no call scores 10",
     )
     scan.add_argument("--ignore-aslr", action="store_true", help="do not apply the ASLR offsets stored in an API DB")
     scan.add_argument("-c", "--collection", metavar="FILE", help="also match the ApiVector against this collection")
