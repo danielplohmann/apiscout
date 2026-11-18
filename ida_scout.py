@@ -35,6 +35,7 @@ import idc
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from apiscout.ApiScout import ApiScout  # noqa: E402
+from apiscout.db_index import get_data_dir  # noqa: E402
 from apiscout.IdaForm import ApiResultsAction, ApiResultsChooser, loadIcon  # noqa: E402
 from apiscout.IdaTools import IdaTools  # noqa: E402
 
@@ -105,6 +106,20 @@ def isBatchMode():
     return bool(ida_kernwin.cvar.batch) or not ida_kernwin.is_idaq()
 
 
+def getDbFolder():
+    """the dbs folder next to the plugin, else the one `apiscout dbs download` stores the DBs in"""
+    db_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dbs")
+    return db_folder if os.path.isdir(db_folder) else get_data_dir()
+
+
+def locateDb(path):
+    """an API DB given by path, or by its bare name when it is in the DB folder"""
+    if os.path.exists(path) or os.path.basename(path) != path:
+        return path
+    candidate = os.path.join(getDbFolder(), path)
+    return candidate if os.path.isfile(candidate) else path
+
+
 def main(api_dbs=None):
     """
     Interactive: ask for the API DBs and list the API references found in a view, from which they are annotated.
@@ -115,9 +130,13 @@ def main(api_dbs=None):
         print("ApiScout: the database has no segments, nothing to scan.")
         return 1
     if isBatchMode():
-        api_dbs = api_dbs or idc.ARGV[1:]
+        api_dbs = [locateDb(path) for path in api_dbs or idc.ARGV[1:]]
         if not api_dbs:
             print("ApiScout: no API DB given, nothing to do.")
+            return 1
+        missing = [path for path in api_dbs if not os.path.isfile(path)]
+        if missing:
+            print(f"ApiScout: API DB not found: {', '.join(missing)} (also looked in {getDbFolder()}).")
             return 1
         for segment_address in tools.ida_proxy.useFlatAddresses():
             print(f"ApiScout: segment @0x{segment_address:x} had a segment base, which was set to 0.")
@@ -126,7 +145,7 @@ def main(api_dbs=None):
         num_renamed, num_skipped, num_xrefs_adapted = tools.applyApiNames(rows)
         print(f"Annotated {num_renamed} APIs and adapted {num_xrefs_adapted} Xrefs ({num_skipped} skipped).")
         return 0
-    db_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dbs")
+    db_folder = getDbFolder()
     for segment_address in tools.ida_proxy.getSegmentsWithBase():
         print(
             f"ApiScout: segment @0x{segment_address:x} has a segment base, its code does not reference the API "

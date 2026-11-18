@@ -17,9 +17,11 @@ pip install apiscout
 ApiScout needs Python 3.10 or newer, a memory dump and an API DB, which describes one Windows installation: which DLL exports which function at which address. The repository has example DBs for Windows XP SP3 and Windows 7 SP1. Most dumps of [Malpedia](https://malpedia.caad.fkie.fraunhofer.de) were taken on these systems, so the example DBs fit them:
 
 ```bash
-curl -LO https://raw.githubusercontent.com/danielplohmann/apiscout/master/dbs/win7_prof-n_sp1_example.json
+apiscout dbs download
 apiscout scan trickbot_dump_0x00400000 --db win7_prof-n_sp1_example.json
 ```
+
+`dbs download` stores the example DBs in your user data folder (`~/.local/share/apiscout/dbs` on Linux), where `scan` finds them by name.
 
 ```text
 Results for API DB: Microsoft Windows 7 Professional N
@@ -153,10 +155,11 @@ vector = scout.getPrimaryVector(scout.getWinApi1024Vectors(results))[1]["vector"
 | `apiscout collect <folder>` | Build a collection of ApiVectors from a folder of dumps |
 | `apiscout update` | Download the current collection from Malpedia |
 | `apiscout dbs` | Show the API DBs that are available |
+| `apiscout dbs download` | Download the example API DBs of the repository |
 
 `apiscout <command> --help` lists the options with examples.
 
-- API DBs are given with `--db`, which can be repeated. Without it, all DBs of one folder are used: `--db-dir`, else `$APISCOUT_DB_DIR`, else `./dbs`.
+- API DBs are given with `--db`, which can be repeated. Without it, all DBs of one folder are used: `--db-dir`, else `$APISCOUT_DB_DIR`, else `./dbs`, else the folder `dbs download` stores them in.
 - Results go to standard output, progress and errors to standard error. `-q` leaves only results and errors.
 - The exit code is 0 on success, 1 on an error and 2 for a wrong command line.
 
@@ -168,6 +171,8 @@ vector = scout.getPrimaryVector(scout.getWinApi1024Vectors(results))[1]["vector"
 | `win7_prof-n_sp1_example.json` | Windows 7 Professional N SP1, 32bit and 64bit DLLs | no |
 | `win10_prof_1803_example.json` | Windows 10 Pro 1803, 32bit and 64bit DLLs | yes |
 | `win2022_server_21h2_example.json` | Windows Server 2022 21H2, 32bit and 64bit DLLs | yes |
+
+`apiscout dbs download` fetches them from the release tag of the installed version and checks them against [`dbs/SHA256SUMS`](https://github.com/danielplohmann/apiscout/blob/master/dbs/SHA256SUMS). It stores them in `~/.local/share/apiscout/dbs` (Linux), `~/Library/Application Support/apiscout/dbs` (macOS) or `%LOCALAPPDATA%\apiscout\dbs` (Windows), or in `--db-dir`.
 
 The DBs with ASLR offsets carry the load addresses of the boot they were built in. They show the format and serve the tests, but do not fit dumps from other machines.
 
@@ -217,6 +222,7 @@ All references are annotated and the database is saved:
 idat -A -TBinary -b<dump address / 16, hex> -pmetapc -S"ida_scout.py <API DB> [<API DB> ...]" <dump>
 ```
 
+- An API DB can be given by its file name when it is in the plugin's `dbs` folder or was downloaded with `apiscout dbs download`; the options dialog lists the DBs of that folder, too.
 - The segment base that `-b` sets is reset to 0 so that calls reference the API pointers.
 - Without `-TBinary`, IDA loads a dump that starts with a PE header as file instead of as memory image.
 - idat creates a 64bit database for binary files, so 32bit dumps are best prepared as database first.
