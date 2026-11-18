@@ -1,2 +1,4 @@
 # the files of dbs are downloaded and checked against dbs/SHA256SUMS, keep their bytes as they are
 dbs/* -text
+# every open pull request appends to the same [Unreleased] section; union keeps both sides' lines (see RELEASING.md)
+CHANGELOG.md merge=union

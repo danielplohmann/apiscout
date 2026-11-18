@@ -32,6 +32,8 @@ Changelog = "https://github.com/danielplohmann/apiscout/blob/master/CHANGELOG.md
 
 [dependency-groups]
 dev = ["ruff==0.17.5", "ty==0.0.104", "requests"]
+# what publish-release.yml builds and checks the distribution with
+release = ["build==1.6.1", "twine==7.0.0"]
 
 [tool.setuptools.packages.find]
 include = ["apiscout"]
@@ -51,7 +53,8 @@ ignore = ["E501"]
 known-first-party = ["apiscout"]
 
 [tool.ty.src]
-exclude = ["apiscout/db_builder"]
+# .github: release_guard.py runs on the Python 3.11 of publish-release.yml and reads tomllib, which 3.10 lacks
+exclude = ["apiscout/db_builder", ".github"]
 
 [tool.ty.analysis]
 allowed-unresolved-imports = ["idaapi", "idc", "idautils", "ida_*", "binaryninja", "binaryninja.*", "ghidra.**", "java.**", "jpype"]
