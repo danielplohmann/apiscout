@@ -3,6 +3,7 @@
 import argparse
 import datetime
 import difflib
+import functools
 import importlib.metadata
 import json
 import logging
@@ -19,6 +20,14 @@ from . import db_index
 from .ApiQR import ApiQR
 from .ApiScout import ApiScout
 from .FingerprintCrawler import FingerprintCrawler
+from .LoadAddresses import (
+    SOURCE_MINIDUMP,
+    SOURCE_MODULES,
+    DllPlacer,
+    find_dll_images,
+    normalize_dll_path,
+    read_load_addresses,
+)
 from .Minidump import Minidump, MinidumpError
 from .PeTools import PeTools
 
@@ -59,6 +68,7 @@ repository: {PROJECT_URL}
   apiscout scan sample.exe --import-table
   cat dump.bin | apiscout scan - --base-addr 0x400000
   apiscout scan crash.dmp --db win10_prof_1803_example.json
+  apiscout scan dump.bin --base-addr 0x400000 --db win11_pro_26h2_example.json --modules modules.txt
 """,
     "match": """examples:
   apiscout match 'WDBCAgBBAAgCA159' 'WDBCABBACAgAEAAgA155'
@@ -305,6 +315,18 @@ def report(args, message):
         print(message, file=sys.stderr)
 
 
+def report_placements(args, placer):
+    """how many DLLs of each API DB were placed at the addresses the dump tells, and from which source"""
+    for db_path, _, num_dlls, counts in placer.summaries:
+        placed = sum(counts.values())
+        sources = ", ".join(f"{count} from the {source}" for source, count in counts.items())
+        has_module_list = bool(placer.module_lists)
+        message = f"Placed {placed} of {num_dlls} DLLs of {os.path.basename(db_path)} at their load addresses"
+        message += f" ({sources})" if sources else ""
+        message += f", {num_dlls - placed} keep the addresses of the DB." if num_dlls != placed else "."
+        report(args, ("Warning: " if has_module_list and num_dlls != placed else "") + message)
+
+
 def scan_minidump(scout, minidump, args):
     """scan the memory ranges of a minidump at their addresses, without the images of the system DLLs in its module
     list: what they hold are the export tables and import address tables of the DLLs, not references of the sample"""
@@ -332,6 +354,15 @@ def scan_minidump(scout, minidump, args):
 
 def cmd_scan(args):
     check_output(args.output)
+    placer = DllPlacer(args.ignore_aslr)
+    if args.modules:
+        if args.import_table:
+            raise CliError("--modules places the DLLs of an API DB, which --import-table does not use.")
+        check_file(args.modules, "module list")
+        load_addresses = read_load_addresses(args.modules)
+        if not load_addresses:
+            raise CliError(f"no lines of '<hex load address> <DLL path>' in {args.modules}.")
+        placer.addModuleList(SOURCE_MODULES, load_addresses)
     binary = read_input(args.dump)
     minidump = None
     if Minidump.isMinidump(binary):
@@ -361,6 +392,13 @@ def cmd_scan(args):
     scout.setBaseAddress(base_address)
     scout.ignoreAslrOffsets(args.ignore_aslr)
     db_paths = []
+    if minidump:
+        placer.addModuleList(
+            SOURCE_MINIDUMP,
+            [(normalize_dll_path(module.name), module.base_address) for module in minidump.getModules() if module.name],
+        )
+    elif not args.import_table:
+        placer.addImages(find_dll_images(binary, base_address))
     if args.import_table:
         if not PeTools.checkPe(binary):
             raise CliError(f"not a PE file: {args.dump}. --import-table needs a PE file as it is stored on disk.")
@@ -370,9 +408,10 @@ def cmd_scan(args):
         db_paths = resolve_db_files(args)
         for db_path in db_paths:
             try:
-                scout.loadDbFile(db_path)
+                scout.loadDbFile(db_path, functools.partial(placer, db_path=db_path) if not placer.isEmpty() else None)
             except (ValueError, KeyError, TypeError, AttributeError):
                 raise not_an_api_db(db_path) from None
+        report_placements(args, placer)
         source = f"{scout.getNumApisLoaded()} APIs of {len(db_paths)} DBs"
         if minidump:
             results, summary = scan_minidump(scout, minidump, args)
@@ -388,6 +427,7 @@ def cmd_scan(args):
         document = {
             "base_address": base_address,
             "api_dbs": db_paths,
+            "placed_dlls": placer.placed,
             "apis": results_to_records(results),
             "apivector": vector["vector"],
             "apis_in_vector": vector["in_api_vector"],
@@ -773,7 +813,9 @@ def build_parser():
         help="list the Windows APIs referenced in a memory dump",
         description="List the Windows APIs referenced in a memory dump, with its ApiVector. The base address is taken "
         "from a file name ending in 0x and 8 to 16 hex digits, and is 0 otherwise; --base-addr sets it. A Windows "
-        "minidump (MDMP) is detected by its signature and scanned range by range at the addresses of its memory.",
+        "minidump (MDMP) is detected by its signature and scanned range by range at the addresses of its memory. The DLLs "
+        "of the API DBs are placed at the load addresses of the module list of a minidump, of --modules, or of DLL "
+        "images found in the dump, so that one API DB per Windows build fits dumps of every boot.",
     )
     scan.add_argument("dump", help="memory dump to scan, - reads standard input")
     add_db_options(scan)
@@ -798,6 +840,13 @@ def build_parser():
         default=0,
         metavar="N",
         help="drop APIs without another API within N bytes (e.g. 32)",
+    )
+    scan.add_argument(
+        "-m",
+        "--modules",
+        metavar="FILE",
+        help="lines of '<hex load address> <DLL path>', the module list of the process: the DLLs of the API DBs are "
+        "placed at these addresses instead of those of the DB (as DatabaseBuilder.py --load_addresses does)",
     )
     scan.add_argument("--ignore-aslr", action="store_true", help="do not apply the ASLR offsets stored in an API DB")
     scan.add_argument("-c", "--collection", metavar="FILE", help="also match the ApiVector against this collection")

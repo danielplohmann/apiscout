@@ -1,3 +1,4 @@
+import atexit
 import contextlib
 import io
 import json
@@ -12,13 +13,43 @@ from apiscout.ApiScout import ApiScout
 from apiscout.Minidump import Minidump, MinidumpError
 
 THIS_DIR = os.path.abspath(os.path.dirname(__file__))
-DB_PATH = os.path.join(THIS_DIR, "minimal_db.json")
+TEMP_DIR = tempfile.TemporaryDirectory()
+DB_PATH = os.path.join(TEMP_DIR.name, "minidump_db.json")
 SAMPLES_DIR = os.environ.get("APISCOUT_SAMPLES", "")
 
-# minimal_db.json: KernelBase.dll (32bit) exports InterlockedIncrement at 0x7D8F6A50, KernelBase.dll (64bit)
-# WaitForSingleObjectEx at 0x7FF8 00001010 (base 8792746491904 + 0x1010)
-API32 = 2105868288 + 27216
-API64 = 8792746491904 + 4112
+# the DB of the tests: KernelBase.dll (32bit, loaded at 0x10000000 as the module list says) exports InterlockedIncrement
+# at RVA 0x6A50, KernelBase.dll (64bit) WaitForSingleObjectEx at RVA 0x1010 of 0x7FF800000000
+API32 = 0x10006A50
+API64 = 0x7FF800001010
+
+DB = {
+    "aslr_offsets": False,
+    "dlls": {
+        "32_10.0.19045.1_KernelBase.dll_0x10000000": {
+            "aslr_offset": 0,
+            "base_address": 268435456,
+            "bitness": 32,
+            "exports": [{"address": 27216, "name": "InterlockedIncrement", "ordinal": 383}],
+            "filepath": "C:\\Windows\\SysWOW64\\KernelBase.dll",
+            "version": "10.0.19045.1",
+        },
+        "64_10.0.19045.1_KernelBase.dll_0x7ff800000000": {
+            "aslr_offset": 0,
+            "base_address": 140703128616960,
+            "bitness": 64,
+            "exports": [{"address": 4112, "name": "WaitForSingleObjectEx", "ordinal": 598}],
+            "filepath": "C:\\Windows\\System32\\KernelBase.dll",
+            "version": "10.0.19045.1",
+        },
+    },
+    "os_name": "Windows 10",
+    "os_version": "10.0.19045",
+}
+
+
+with open(DB_PATH, "w") as f_db:
+    json.dump(DB, f_db)
+atexit.register(TEMP_DIR.cleanup)
 
 STREAM_MODULE_LIST, STREAM_MEMORY_LIST, STREAM_SYSTEM_INFO, STREAM_MEMORY64_LIST = 4, 5, 7, 9
 
