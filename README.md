@@ -37,6 +37,8 @@ Microsoft Windows 7 Professional N: 154 / 181 (85.08%) APIs covered in WinApi102
 
 `dbs download` fetches the example API DBs. Those for Windows XP SP3 and 7 SP1 fit most dumps of [Malpedia](https://malpedia.caad.fkie.fraunhofer.de). The base address is read from a file name ending in `0x` and 8 to 16 hex digits, otherwise give `--base-addr`. Without a dump, `apiscout scan program.exe --import-table` reads the imports of a program instead.
 
+A Windows minidump (`MDMP` signature, e.g. `crash.dmp`) is scanned as it is, range by range at its own addresses: offsets are virtual addresses (relative to `--base-addr`, if given), and references inside the images of the system DLLs of its module list are left out.
+
 <details>
 <summary>How to read the listing</summary>
 

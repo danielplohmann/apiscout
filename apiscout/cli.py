@@ -19,6 +19,7 @@ from . import db_index
 from .ApiQR import ApiQR
 from .ApiScout import ApiScout
 from .FingerprintCrawler import FingerprintCrawler
+from .Minidump import Minidump, MinidumpError
 from .PeTools import PeTools
 
 PROJECT_URL = "https://github.com/danielplohmann/apiscout"
@@ -57,6 +58,7 @@ repository: {PROJECT_URL}
   apiscout scan dump.bin --base-addr 0x400000 --filter 32 --json -o result.json
   apiscout scan sample.exe --import-table
   cat dump.bin | apiscout scan - --base-addr 0x400000
+  apiscout scan crash.dmp --db win10_prof_1803_example.json
 """,
     "match": """examples:
   apiscout match 'WDBCAgBBAAgCA159' 'WDBCABBACAgAEAAgA155'
@@ -303,9 +305,42 @@ def report(args, message):
         print(message, file=sys.stderr)
 
 
+def scan_minidump(scout, minidump, args):
+    """scan the memory ranges of a minidump at their addresses, without the images of the system DLLs in its module
+    list: what they hold are the export tables and import address tables of the DLLs, not references of the sample"""
+    for warning in minidump.warnings:
+        report(args, f"Warning: {warning}")
+    if minidump.bitness == 32:
+        scout.setBitness(32)
+    ranges = minidump.getRanges()
+    results = scout.crawlRegions(ranges)
+    dll_images = [
+        (module.base_address, module.end_address)
+        for module in minidump.getModules()
+        if scout.hasDll(module.name.replace("\\", "/").rsplit("/", 1)[-1])
+    ]
+    num_hits = sum(len(hits) for hits in results.values())
+    results = scout.filter(results, 0, 0, 0, own_image=False, exclude_ranges=dll_images)
+    num_excluded = num_hits - sum(len(hits) for hits in results.values())
+    summary = (
+        f"Scanned a {minidump.bitness or 'unknown'}bit minidump: {sum(len(data) for _, data in ranges)} bytes in "
+        f"{len(ranges)} memory ranges, {len(minidump.getModules())} modules, "
+        f"{num_excluded} hits in the images of {len(dll_images)} system DLLs left out"
+    )
+    return results, summary
+
+
 def cmd_scan(args):
     check_output(args.output)
     binary = read_input(args.dump)
+    minidump = None
+    if Minidump.isMinidump(binary):
+        if args.import_table:
+            raise CliError(f"{args.dump} is a minidump. --import-table needs a PE file as it is stored on disk.")
+        try:
+            minidump = Minidump(binary)
+        except MinidumpError as exc:
+            raise CliError(f"can not read {args.dump} as minidump: {exc}.") from None
     scout = ApiScout()
     if args.collection:
         args.collection = locate(args.collection, args, "collection")
@@ -316,7 +351,10 @@ def cmd_scan(args):
         finally:
             logging.disable(logging.NOTSET)
     base_address = args.base_addr
-    if base_address is None:
+    if base_address is None and minidump:
+        # a minidump has the addresses of its memory ranges, offsets are their virtual addresses
+        base_address = 0
+    elif base_address is None:
         # memory dumps are commonly named after the address they were taken from
         match = re.search(r"0x(?P<base_addr>[0-9a-fA-F]{8,16})$", args.dump)
         base_address = int(match.group("base_addr"), 16) if match else 0
@@ -327,7 +365,7 @@ def cmd_scan(args):
         if not PeTools.checkPe(binary):
             raise CliError(f"not a PE file: {args.dump}. --import-table needs a PE file as it is stored on disk.")
         results = scout.evaluateImportTable(binary, is_unmapped=True)
-        source = "the import table"
+        summary = f"Scanned {len(binary)} bytes at base address 0x{base_address:x} with the import table."
     else:
         db_paths = resolve_db_files(args)
         for db_path in db_paths:
@@ -335,10 +373,15 @@ def cmd_scan(args):
                 scout.loadDbFile(db_path)
             except (ValueError, KeyError, TypeError, AttributeError):
                 raise not_an_api_db(db_path) from None
-        results = scout.crawl(binary)
         source = f"{scout.getNumApisLoaded()} APIs of {len(db_paths)} DBs"
+        if minidump:
+            results, summary = scan_minidump(scout, minidump, args)
+            summary += f", with {source}."
+        else:
+            results = scout.crawl(binary)
+            summary = f"Scanned {len(binary)} bytes at base address 0x{base_address:x} with {source}."
     results = scout.filter(results, 0, 0, args.filter)
-    report(args, f"Scanned {len(binary)} bytes at base address 0x{base_address:x} with {source}.")
+    report(args, summary)
     vector = scout.getPrimaryVector(scout.getWinApi1024Vectors(results))[1]
     matches = match_collection(scout, vector["vector"], args.collection) if args.collection else None
     if args.json:
@@ -729,11 +772,19 @@ def build_parser():
         "scan",
         help="list the Windows APIs referenced in a memory dump",
         description="List the Windows APIs referenced in a memory dump, with its ApiVector. The base address is taken "
-        "from a file name ending in 0x and 8 to 16 hex digits, and is 0 otherwise; --base-addr sets it.",
+        "from a file name ending in 0x and 8 to 16 hex digits, and is 0 otherwise; --base-addr sets it. A Windows "
+        "minidump (MDMP) is detected by its signature and scanned range by range at the addresses of its memory.",
     )
     scan.add_argument("dump", help="memory dump to scan, - reads standard input")
     add_db_options(scan)
-    scan.add_argument("-b", "--base-addr", type=parse_address, metavar="ADDR", help="address the dump was taken from")
+    scan.add_argument(
+        "-b",
+        "--base-addr",
+        type=parse_address,
+        metavar="ADDR",
+        help="address the dump was taken from; offsets are relative to it (a minidump: 0 by default, so they are "
+        "virtual addresses)",
+    )
     scan.add_argument(
         "-t",
         "--import-table",
