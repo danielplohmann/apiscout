@@ -308,6 +308,35 @@ class DllImageTestSuite(unittest.TestCase):
             document = json.loads(run("scan", path, "--db", db_path, "--base-addr", hex(base), "--json")[1])
             self.assertEqual(([], []), (document["apis"], document["placed_dlls"]))
 
+    def testImagesDoNotMoveADllThatTheDbHasTheLoadAddressOf(self):
+        # a DB with the ASLR offsets of its boot has the load address, an image in the dump may be a private copy
+        exports = {383: 0x6A50, 384: 0x6A80, 390: 0x7000}
+        base, load_address = 0x20000000, 0x30000000
+        image_address = base + 0x3000
+        sample = page((0x10, image_address + 0x6A50, "<I"), (0x20, load_address + 0x6A80, "<I"), size=0x1000)
+        dump = sample + bytes(0x2000) + build_dll_image("KERNELBASE.dll", exports) + bytes(0x1000)
+        dlls = {
+            "32_10.0.1_KernelBase.dll_0x10000000": dll_entry(
+                "C:\\Windows\\SysWOW64\\KernelBase.dll", 0x10000000, 32, exports, load_address
+            )
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = write_db(directory, dlls)
+            path = os.path.join(directory, "dump.bin")
+            with open(path, "wb") as f_dump:
+                f_dump.write(dump)
+            arguments = ("scan", path, "--db", db_path, "--base-addr", hex(base), "--json")
+            code, output, errors = run(*arguments)
+            self.assertEqual(0, code, errors)
+            document = json.loads(output)
+            self.assertEqual((["Api384"], []), ([api["api"] for api in document["apis"]], document["placed_dlls"]))
+            # without the offsets, the DB only has the file ImageBase, and the image places the DLL
+            code, output, errors = run(*arguments, "--ignore-aslr")
+            self.assertEqual(0, code, errors)
+            document = json.loads(output)
+            self.assertEqual(["Api383"], [api["api"] for api in document["apis"]])
+            self.assertEqual([image_address], [placed["load_address"] for placed in document["placed_dlls"]])
+
     def testTheOwnImageOfTheDumpIsNotLookedAt(self):
         exports = {383: 0x6A50, 384: 0x6A80, 390: 0x7000}
         # a sample that is a DLL with the name and exports of a system DLL, at the start of the dump
