@@ -552,16 +552,12 @@ def build_db(out_dir, update, os_version_hint, outfile, files=None, def_files=()
 
 def read_def_files(args):
     """(bitness, DLL file name, {ordinal: name}) of the DEF files of --def32 and --def64"""
-    from .DatabaseBuilder import read_def_file
+    from .DatabaseBuilder import read_def_files as read
 
-    def_files = []
-    for bitness, paths in ((32, args.def32), (64, args.def64)):
-        for path in paths or ():
-            try:
-                def_files.append((bitness, *read_def_file(path)))
-            except (OSError, ValueError) as exc:
-                raise DownloaderError(f"--def{bitness}: {exc}") from None
-    return def_files
+    try:
+        return read(args.def32, args.def64)
+    except ValueError as exc:
+        raise DownloaderError(str(exc)) from None
 
 
 def run(args, fetch=None, out=None):
