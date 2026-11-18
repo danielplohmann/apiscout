@@ -14,6 +14,7 @@ hits that were reported before, which a release says here.
 
 ### Fixed
 
+- IDA plugin: the ApiScout view stays open when `ida_scout.py` is started with `-S`. It was opened while IDA was still loading, and IDA closed it again when it restored its window layout.
 - Handle early stdout pipe closure on Windows without an error or shutdown traceback.
 
 ### Changed
