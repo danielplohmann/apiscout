@@ -4,7 +4,7 @@ ApiScout recovers the Windows API calls of malware from memory dumps.
 
 A dumped process has no usable import table any more, but it still holds the addresses of the API functions it calls. ApiScout checks every pointer-sized value of a dump against a database of the API addresses of the system the dump was taken from. The result is the list of APIs the code uses, where it references them, and an **ApiVector**: a compact fingerprint of API usage that can be compared with those of other samples to find the malware family.
 
-It comes as a command line tool, a Python library, a plugin for IDA Pro and a script for Ghidra.
+It comes as a command line tool, a Python library, a plugin for IDA Pro, a script for Ghidra and a plugin for Binary Ninja.
 
 ![IDA Pro listing the API references ApiScout found in a memory dump](https://raw.githubusercontent.com/danielplohmann/apiscout/master/docs/images/ida.png)
 
@@ -116,9 +116,9 @@ apiscout export "$VECTOR" --png vector.png --html vector.html
 
 Vectors contain characters that are special to the shell. Quote them, or keep them in a variable as here.
 
-### Annotate a dump in IDA Pro or Ghidra
+### Annotate a dump in IDA Pro, Ghidra or Binary Ninja
 
-Both integrations name the API pointers, type them and apply the prototypes to the calls. The disassembly and the decompiler then read like those of a file with an intact import table. See [IDA Pro](#ida-pro) and [Ghidra](#ghidra).
+The integrations name the API pointers, type them and apply the prototypes to the calls. The disassembly and the decompiler then read like those of a file with an intact import table. See [IDA Pro](#ida-pro), [Ghidra](#ghidra) and [Binary Ninja](#binary-ninja).
 
 ### Use the results in your own tools
 
@@ -265,6 +265,57 @@ A 32bit dump needs `-processor x86:LE:32:default`.
 
 </details>
 
+## Binary Ninja
+
+> [!NOTE]
+> Verified with Binary Ninja 6.0.10905 Ultimate on macOS 27.2, in its user interface, and headless on Linux: memory dumps of Malpedia loaded as `Mapped` view, annotated with `win7_prof-n_sp1_example.json`. TrickBot (32bit, base 0x400000): 183 references found like `apiscout scan` does, 182 annotated, 179 of them with prototype, the remaining one is a chance hit inside code. Cobalt Strike (64bit, base 0x1c0000): all 196 annotated with prototype. The decompiler then shows e.g. `ReadProcessMemory(hProcess: arg2, lpBaseAddress: arg3, lpBuffer: arg4, nSize: arg5, lpNumberOfBytesRead: &numberOfBytesRead)` instead of `0x7dd8cfcc(arg2, arg3, arg4, arg5, &var_c)`. Menu, forms, report with its address links and undo (one step per annotation) were used in the user interface. Installing through the extension manager was tested on 6.0.10905 against Binary Ninja's mock extension server: it installs the whole repository with numpy and loads the plugin through the `__init__.py` at its root; a listing in the manager needs a submission to [community-plugins](https://github.com/Vector35/community-plugins), whose `validate_json.py` accepts `plugin.json`.
+
+1. Install ApiScout for the Python of Binary Ninja: the `Install python3 module` action of the command palette with `apiscout`, or `pip install apiscout` with the interpreter set in the `python.interpreter` setting. It needs Python 3.10 or newer.
+2. Copy or link the folder `binja_scout` of the repository into the `plugins` folder of the [user folder](https://docs.binary.ninja/guide/index.html#user-folder) (`~/.binaryninja/plugins` on Linux, `~/Library/Application Support/Binary Ninja/plugins` on macOS). From a checkout, the plugin also finds the `apiscout` package next to it. The extension manager needs neither step: it installs the repository with numpy.
+
+Open a memory dump with Open with Options as `Mapped` view, with the address it was dumped from as image base and `windows-x86` or `windows-x86_64` as platform. A dump that starts with a PE header would otherwise be loaded as PE file. The commands are in the Plugins menu under ApiScout:
+
+| Command | Action |
+| :--- | :--- |
+| Scan for API references... | Choose the API DBs and list the references found in the memory of the view |
+| Show results | List the references of the last scan, with the outcome of their annotation |
+| Annotate all | Annotate all references of the last scan |
+| Annotate filtered... | Annotate the references with another one within a given distance |
+| Scan and annotate all... | Both in one step |
+
+The API DBs are offered from `$APISCOUT_DB_DIR` or the folder of `apiscout dbs download` and from the `dbs` folder of the repository (a name once), any other file can be typed or chosen as well. Every command that lists results opens the report in a new tab. Annotating a reference names its location as import address symbol and types it as pointer to the API's prototype from the type libraries of the view's platform, so that calls through it are shown as calls of the API. A function that the linear sweep found in a table of pointers and that nothing refers to is removed when a pointer is annotated over it; a location inside the code of any other function is skipped. `Zw*` APIs of ntdll get the prototype of their `Nt*` counterpart. A pointer of the other bitness, for example a 32bit API address in a 64bit view, is only named.
+
+<details>
+<summary>Headless</summary>
+
+With a license for headless use, `scan_and_annotate` does the same from a script:
+
+```python
+import binaryninja
+from apiscout.BinaryNinjaTools import scan_and_annotate
+
+with binaryninja.load("dump.bndb") as bv:
+    result = scan_and_annotate(bv, ["dbs/win7_prof-n_sp1_example.json"])
+    bv.update_analysis_and_wait()
+    print(result["annotated"], "of", len(result["rows"]), "API references annotated")
+    bv.file.save_auto_snapshot()
+```
+
+A dump without PE header can also be loaded directly, e.g. with `options={"loader.platform": "windows-x86", "loader.imageBase": 0x400000}`. A dump with PE header is loaded as `Mapped` view with the load settings of the raw view:
+
+```python
+raw = binaryninja.BinaryView.open("trickbot_dump7_0x00400000")
+settings = binaryninja.BinaryViewType["Mapped"].get_load_settings_for_data(raw)
+settings.set_integer("loader.imageBase", 0x400000, raw)
+settings.set_string("loader.platform", "windows-x86", raw)
+raw.set_load_settings("Mapped", settings)
+bv = binaryninja.load(raw, options={"loader.imageBase": 0x400000, "loader.platform": "windows-x86"})
+```
+
+ `distance=32` only annotates references with another one within 32 bytes.
+
+</details>
+
 ## Background
 
 - [ApiScout: Painless Windows API information recovery](http://byte-atlas.blogspot.com/2017/04/apiscout.html) describes the method.
@@ -280,6 +331,8 @@ uv sync
 uv run python -m unittest discover -s tests -p "test*.py" -t .
 uv run ruff check && uv run ruff format --check && uv run ty check
 ```
+
+The tests of the Binary Ninja plugin on memory dumps (TrickBot and Cobalt Strike samples of Malpedia) run when `APISCOUT_SAMPLES` names the folder with them, otherwise they are reported as skipped. `tests/testBinaryNinjaHeadless.py` runs the plugin in Binary Ninja itself on generated dumps when the Python of the tests can import `binaryninja` with a license for headless use.
 
 Changes are listed in the [changelog](https://github.com/danielplohmann/apiscout/blob/master/CHANGELOG.md).
 
