@@ -9,8 +9,10 @@
 #
 ########################################################################
 
-"""Where the DLLs of an API DB are really loaded in a dump, so that one API DB per Windows build fits the dumps of
-every boot (with ASLR, a DB only knows the load addresses of the boot it was built in).
+"""Where the DLLs of an API DB are really loaded in a dump.
+
+One API DB per Windows build then fits the dumps of every boot (with ASLR, a DB only knows the load addresses of the
+boot it was built in).
 
 There are two sources, tried in this order for each DLL:
  * module lists: lines of "<hex load address> <DLL path>", as `apiscout scan --modules` reads them and as the module
@@ -50,13 +52,13 @@ LOW_64BIT_DLLS = ("ntdll.dll", "kernel32.dll", "user32.dll")
 
 
 def normalize_dll_path(path):
-    """DLL file name with its folder in lower case (system32/kernel32.dll), which identifies a DLL regardless of where a copy of the system is mounted"""
+    """DLL file name with its folder in lower case (system32/kernel32.dll), which identifies a DLL regardless of where a copy of the system is mounted."""
     parts = [part for part in path.strip().strip('"').lower().replace("\\", "/").split("/") if part]
     return "/".join(parts[-2:])
 
 
 def read_load_addresses(filepath):
-    """read lines of "<load address> <path of DLL>", as taken from the module list of a process on the target system"""
+    """Read lines of "<load address> <path of DLL>", as taken from the module list of a process on the target system."""
     load_addresses = []
     with open(filepath, "rb") as f_in:
         content = f_in.read()
@@ -74,8 +76,10 @@ def read_load_addresses(filepath):
 
 
 def match_load_addresses(dlls, load_addresses):
-    """the load addresses of the DLLs of an API DB ({key: DLL entry}) found in a list of (normalized path, address),
-    as {key: address}"""
+    """The load addresses, as {key: address}, of the DLLs of an API DB ({key: DLL entry}) in a list of (path, address).
+
+    The paths of the list are normalized.
+    """
 
     def all_paths(dll):
         return [normalize_dll_path(path) for path in [dll.get("filepath", "")]]
@@ -156,10 +160,12 @@ def match_load_addresses(dlls, load_addresses):
 
 
 def warn_about_low_64bit_dlls(dlls, placements):
-    """The module list of a 32bit process names the 32bit copies in SysWOW64 by their System32 path. Without a SysWOW64
-    folder in the DB, such a list fits the 64bit DLLs of System32 by name, and every offset of them is wrong. An address
-    below 4 GB is no proof, as Windows 7 loads 64bit ntdll, kernel32 and user32 there, so this only warns. It is
-    called once for the placements of a DB that were chosen, not for each source that has some."""
+    """The module list of a 32bit process names the 32bit copies in SysWOW64 by their System32 path.
+
+    Without a SysWOW64 folder in the DB, such a list fits the 64bit DLLs of System32 by name, and every offset of them
+    is wrong. An address below 4 GB is no proof, as Windows 7 loads 64bit ntdll, kernel32 and user32 there, so this only
+    warns. It is called once for the placements of a DB that were chosen, not for each source that has some.
+    """
     if any(normalize_dll_path(dll.get("filepath", "")).startswith("syswow64/") for dll in dlls.values()):
         return
     low = sorted(
@@ -188,8 +194,11 @@ class DumpImage:
 
 
 def find_dll_images(binary, base_address=0):
-    """the DLL images in a flat dump: PE headers at page-aligned offsets that have an export directory, with the
-    address they are loaded at. A PE file at offset 0 is the image the dump was taken of and is not looked at."""
+    """The DLL images in a flat dump with the address they are loaded at.
+
+    An image is a PE header at a page-aligned offset that has an export directory. A PE file at offset 0 is the image
+    the dump was taken of and is not looked at.
+    """
     images = []
     for offset in range(PAGE_SIZE, len(binary) - 0x40, PAGE_SIZE):
         if binary[offset : offset + 2] == b"MZ":
@@ -200,8 +209,10 @@ def find_dll_images(binary, base_address=0):
 
 
 def _readImage(binary, offset, load_address):
-    """the image whose header is at the offset in the dump, None if it is no PE file with an export directory or if
-    the dump does not hold its export address table"""
+    """The image whose header is at the offset in the dump.
+
+    None if it is no PE file with an export directory or if the dump does not hold its export address table.
+    """
     limit = len(binary) - offset
     pe_offset = struct.unpack_from("<I", binary, offset + 0x3C)[0]
     if not 0 < pe_offset <= PAGE_SIZE or pe_offset + 0x18 + 0x78 > limit:
@@ -234,13 +245,13 @@ def _readImage(binary, offset, load_address):
 
 
 def dll_file_name(dll_key, dll):
-    """lower case file name of a DLL of an API DB, from its key ("32_10.0.26100.1882_midimap.dll_0x6b700000")"""
+    """Lower case file name of a DLL of an API DB, from its key ("32_10.0.26100.1882_midimap.dll_0x6b700000")."""
     name = re.sub(r"_0x[0-9a-fA-F]+$", "", "_".join(dll_key.split("_")[2:]))
     return (name or re.split(r"[\\/]", dll.get("filepath", ""))[-1]).lower()
 
 
 def _exportScore(image, dll):
-    """share of the exports of a DB entry that the image has at the same ordinal and RVA"""
+    """Share of the exports of a DB entry that the image has at the same ordinal and RVA."""
     exports = dll.get("exports") or []
     if dll.get("bitness") != image.bitness or not exports:
         return 0
@@ -248,11 +259,13 @@ def _exportScore(image, dll):
 
 
 def match_images(dlls, images):
-    """the load addresses of the DLLs of an API DB ({key: DLL entry}) found among the images of a dump, as
-    {key: address}. An image is the DLL of the DB that has its file name and bitness, and at least 90% of its
-    exports at the same RVAs and ordinals. The name in the export directory is not always the file name (the export
-    directory of kernel.appcore.dll names appcore.dll): an image with an unknown name is the DLL of the DB that is
-    alone in having its exports, if there are at least 8."""
+    """The load addresses of the DLLs of an API DB ({key: DLL entry}) found among the images of a dump, as {key: address}.
+
+    An image is the DLL of the DB that has its file name and bitness, and at least 90% of its exports at the same RVAs
+    and ordinals. The name in the export directory is not always the file name (the export directory of
+    kernel.appcore.dll names appcore.dll): an image with an unknown name is the DLL of the DB that is alone in having
+    its exports, if there are at least 8.
+    """
     placements = {}
     by_name = {}
     for dll_key, dll in dlls.items():
@@ -285,8 +298,10 @@ def match_images(dlls, images):
 
 
 class DllPlacer:
-    """Places the DLLs of API DBs at the load addresses a dump tells: pass it to ApiScout.loadDbFile(). Each source
-    is asked in turn for the DLLs the earlier ones did not know, `placed` lists all placements."""
+    """Places the DLLs of API DBs at the load addresses a dump tells: pass it to ApiScout.loadDbFile().
+
+    Each source is asked in turn for the DLLs the earlier ones did not know, `placed` lists all placements.
+    """
 
     def __init__(self, ignore_aslr_offsets=False):
         # (source, [(normalized path, address)])
@@ -307,7 +322,7 @@ class DllPlacer:
         return not (self.module_lists or self.images)
 
     def forDb(self, db_path):
-        """the argument of ApiScout.loadDbFile() for the API DB in this file, None if there is nothing to place by"""
+        """The argument of ApiScout.loadDbFile() for the API DB in this file, None if there is nothing to place by."""
         return None if self.isEmpty() else functools.partial(self, db_path=db_path)
 
     def __call__(self, api_db, db_path=""):
@@ -346,15 +361,17 @@ class DllPlacer:
 
 
 class ModuleListError(ValueError):
-    """a module list that can not be used: no file given, not readable, or without a line of a module"""
+    """A module list that can not be used: no file given, not readable, or without a line of a module."""
 
 
 def placer_for_modules(modules_path=None):
-    """the DllPlacer for the module list in the file modules_path, as `apiscout scan --modules` reads it, which places
-    nothing without a file. Raises ModuleListError. The plugins of the disassemblers place by the module list only, not
-    by DLL images in the memory they analyse: IDA and Binary Ninja leave out references into their memory, so a DLL
-    placed at its image yields none, and an image that is a private copy of a DLL that the sample mapped would move
-    the DLL away from where the real one is."""
+    """The DllPlacer for the module list in the file modules_path, as `apiscout scan --modules` reads it.
+
+    It places nothing without a file. Raises ModuleListError. The plugins of the disassemblers place by the module list
+    only, not by DLL images in the memory they analyse: IDA and Binary Ninja leave out references into their memory, so
+    a DLL placed at its image yields none, and an image that is a private copy of a DLL that the sample mapped would
+    move the DLL away from where the real one is.
+    """
     placer = DllPlacer()
     if modules_path:
         try:
@@ -368,7 +385,7 @@ def placer_for_modules(modules_path=None):
 
 
 def describe_placements(placer):
-    """one line per loaded API DB: how many of its DLLs were placed and from which source"""
+    """One line per loaded API DB: how many of its DLLs were placed and from which source."""
     lines = []
     for db_path, _, num_dlls, counts in placer.summaries:
         placed = sum(counts.values())
@@ -381,8 +398,10 @@ def describe_placements(placer):
 
 
 def read_from_regions(regions, address, size):
-    """the bytes at an address of memory given as [(start address, buffer)], fewer where the buffer ends, none
-    where there is no memory"""
+    """The bytes at an address of memory given as [(start address, buffer)].
+
+    Fewer where the buffer ends, none where there is no memory.
+    """
     for start, binary in regions:
         if start <= address < start + len(binary):
             return binary[address - start : address - start + size]
@@ -390,8 +409,10 @@ def read_from_regions(regions, address, size):
 
 
 def _imageSize(header):
-    """SizeOfImage of the header of a DLL at the start of the bytes, 0 if it is not one (the sample's own image is
-    not a DLL listed at its address, unless it is a DLL itself)"""
+    """SizeOfImage of the header of a DLL at the start of the bytes, 0 if it is not one.
+
+    The sample's own image is not a DLL listed at its address, unless it is a DLL itself.
+    """
     if len(header) < 0x40 or header[:2] != b"MZ":
         return 0
     pe_offset = struct.unpack_from("<I", header, 0x3C)[0]
@@ -412,11 +433,13 @@ def _imageSize(header):
 
 
 def placed_image_ranges(placer, read_memory):
-    """(start, end) of the images that the placed DLLs have in the memory of the plugin. What these hold are the export
-    tables and import address tables of the DLLs, not references of the sample, so they are left out as `apiscout scan`
-    leaves them out for a minidump. read_memory(address, size) gives the bytes at an address, fewer or none where the
-    memory ends. The size of an image is the SizeOfImage of its PE header at the load address: a DLL whose header
-    is not in the memory leaves nothing out."""
+    """(start, end) of the images that the placed DLLs have in the memory of the plugin.
+
+    What these hold are the export tables and import address tables of the DLLs, not references of the sample, so they
+    are left out as `apiscout scan` leaves them out for a minidump. read_memory(address, size) gives the bytes at an
+    address, fewer or none where the memory ends. The size of an image is the SizeOfImage of its PE header at the load
+    address: a DLL whose header is not in the memory leaves nothing out.
+    """
     ranges = set()
     for placement in placer.placed:
         address = placement["load_address"]
@@ -427,9 +450,11 @@ def placed_image_ranges(placer, read_memory):
 
 
 def split_modules_argument(arguments):
-    """(the other arguments, the module list file) of the arguments of a script, which take the module list as
-    `apiscout scan` does: `--modules FILE`, `-m FILE` or `--modules=FILE`, the last one counts. Raises ModuleListError
-    for an option without a file or with one that looks like an option."""
+    """(the other arguments, the module list file) of the arguments of a script.
+
+    The arguments take the module list as `apiscout scan` does: `--modules FILE`, `-m FILE` or `--modules=FILE`, the
+    last one counts. Raises ModuleListError for an option without a file or with one that looks like an option.
+    """
     others = []
     modules_path = None
     iterator = iter(arguments)

@@ -1,5 +1,4 @@
-"""
-APIs that a program resolves at run time and therefore never stores as pointers: hashes of export names and export names as strings.
+"""APIs that a program resolves at run time and therefore never stores as pointers: hashes of export names and export names as strings.
 
 Hashes: shellcode and loaders walk the export table of a DLL and compare a hash of each name with a constant. For every export name
 of an API DB, the hashes of six common algorithms are computed once (with numpy) and searched in the dump as 32bit little endian
@@ -168,8 +167,10 @@ def _getPool():
 
 
 def _map(function, items, parallel=True):
-    """the results of the function for the items in order, computed by the threads of a pool if parallel; the function must not call
-    _map() itself, its threads would wait for each other"""
+    """The results of the function for the items in order, computed by the threads of a pool if parallel.
+
+    The function must not call _map() itself, its threads would wait for each other.
+    """
     items = list(items)
     if not parallel or len(items) < 2 or _getThreads() < 2:
         return [function(item) for item in items]
@@ -177,10 +178,13 @@ def _map(function, items, parallel=True):
 
 
 class DynamicApi(NamedTuple):
-    """an API found by one of its hashes (kind "hash", algorithm one of HASH_ALGORITHMS, value the constant; with a key of the sample
-    it is the algorithm, ^ for XOR or + for ADD, and the key, e.g. "sdbm^0x1e5c48de") or by its name (kind "string", algorithm "ascii"
-    or "utf16le"). offset is the position in the dump; dlls are all DLLs of the API DB that export the name (the one that was hashed,
-    for block_api)."""
+    """An API found by one of its hashes or by its name.
+
+    By a hash: kind "hash", algorithm one of HASH_ALGORITHMS, value the constant; with a key of the sample, algorithm is
+    the algorithm, ^ for XOR or + for ADD, and the key, e.g. "sdbm^0x1e5c48de". By its name: kind "string", algorithm
+    "ascii" or "utf16le". offset is the position in the dump; dlls are all DLLs of the API DB that export the name (the
+    one that was hashed, for block_api).
+    """
 
     offset: int
     kind: str
@@ -191,7 +195,7 @@ class DynamicApi(NamedTuple):
 
 
 def hashRor13(name):
-    """ROR13 of the bytes of a name: rotate right by 13, then add the byte"""
+    """ROR13 of the bytes of a name: rotate right by 13, then add the byte."""
     value = 0
     for char in name:
         value = (((value >> 13) | (value << 19)) & _MASK) + char & _MASK
@@ -199,12 +203,12 @@ def hashRor13(name):
 
 
 def _hashModule(module):
-    """ROR13 of the upper case UTF-16LE name of a module including its terminator"""
+    """ROR13 of the upper case UTF-16LE name of a module including its terminator."""
     return hashRor13(module.upper().encode("utf-16-le") + b"\x00\x00")
 
 
 def hashBlockApi(module, name):
-    """the hash of Metasploit's block_api for a module name and an API name"""
+    """The hash of Metasploit's block_api for a module name and an API name."""
     return hashRor13(name + b"\x00") + _hashModule(module) & _MASK
 
 
@@ -227,7 +231,7 @@ def hashFnv1a(name):
 
 
 def hashSdbm(name):
-    """hash * 65599 + c from 0 (65599 is 2**6 + 2**16 - 1, the shifts of the sdbm function)"""
+    """The sdbm hash, hash * 65599 + c from 0 (65599 is 2**6 + 2**16 - 1, the shifts of the sdbm function)."""
     value = 0
     for char in name:
         value = (value * 65599 + char) & _MASK
@@ -242,10 +246,11 @@ def getKeyedLabel(algorithm, mode, key):
 
 
 def getMinimumHits(num_hashes, size, gap=REGION_GAP, floor=MIN_REGION_HITS, budget=MAX_CHANCE_REGIONS):
-    """the fewest hits of one algorithm that make a region in a dump of the given size
+    """The fewest hits of one algorithm that make a region in a dump of the given size.
 
     A hit at a given offset happens by chance with probability p = num_hashes / 2**32, and the next one follows within gap bytes with
-    probability p * gap. So a dump of this size holds fewer than size * p * (p * gap) ** (hits - 1) regions of that many hits by chance."""
+    probability p * gap. So a dump of this size holds fewer than size * p * (p * gap) ** (hits - 1) regions of that many hits by chance.
+    """
     probability = num_hashes / 2**32
     hits = floor
     while hits < 64 and size * probability * (probability * gap) ** (hits - 1) > budget:
@@ -254,11 +259,12 @@ def getMinimumHits(num_hashes, size, gap=REGION_GAP, floor=MIN_REGION_HITS, budg
 
 
 def getMinimumKeyApis(num_values, trials=1, num_probes=NUM_PROBE_APIS, floor=MIN_KEY_APIS, budget=MAX_CHANCE_KEYS):
-    """the fewest different probe APIs that make a key, when num_values different values are searched in each of trials searches
+    """The fewest different probe APIs that make a key, when num_values different values are searched in each of trials searches.
 
     A probe hash plus key (or xor key) is one of the num_values values by chance with probability q = num_values / 2**32, so a given
     key is made by at least that many of the num_probes probes with probability tail(q), and of the 2**32 keys there are
-    trials * 2**32 * tail(q) by chance. More than num_probes is returned if even all probes would not do."""
+    trials * 2**32 * tail(q) by chance. More than num_probes is returned if even all probes would not do.
+    """
     probability = num_values / 2**32
     needed = floor
     while needed <= num_probes:
@@ -273,14 +279,16 @@ def getMinimumKeyApis(num_values, trials=1, num_probes=NUM_PROBE_APIS, floor=MIN
 
 
 def getExpectedChanceHits(num_hashes, size):
-    """expected number of offsets of a dump of this size that equal one of num_hashes distinct 32bit constants by chance"""
+    """Expected number of offsets of a dump of this size that equal one of num_hashes distinct 32bit constants by chance."""
     return size * num_hashes / 2**32
 
 
 def _hashNames(flat, lengths):
-    """the hashes of ror13, djb2, fnv1a and sdbm of byte strings, as {algorithm: array of uint32 in the order of the strings}; the
-    strings follow each other in flat (bytes) and have the given lengths (array). One numpy operation per character position
-    instead of one Python operation per character."""
+    """The hashes of ror13, djb2, fnv1a and sdbm of byte strings.
+
+    As {algorithm: array of uint32 in the order of the strings}. The strings follow each other in flat (bytes) and have
+    the given lengths (array). One numpy operation per character position instead of one Python operation per character.
+    """
     count = len(lengths)
     values = {
         "ror13": np.zeros(count, dtype=np.uint32),
@@ -312,14 +320,14 @@ def _hashNames(flat, lengths):
 
 
 def _hashModules(modules):
-    """_hashModule() of the module names (a list), as an array of uint32"""
+    """_hashModule() of the module names (a list), as an array of uint32."""
     encoded = [module.upper().encode("utf-16-le") + b"\x00\x00" for module in modules]
     lengths = np.fromiter(map(len, encoded), dtype=np.int64, count=len(encoded))
     return _hashNames(b"".join(encoded), lengths)["ror13"]
 
 
 class _HashTable(NamedTuple):
-    """the hashes of one algorithm in ascending order, and for each of them its entry: a name, for block_api a name of a module"""
+    """The hashes of one algorithm in ascending order, and for each of them its entry: a name, for block_api a name of a module."""
 
     hashes: np.ndarray
     entries: np.ndarray
@@ -327,10 +335,10 @@ class _HashTable(NamedTuple):
 
 
 class ApiNameIndex:
-    """the export names of an API DB, and their hashes, which are computed once when asked for"""
+    """The export names of an API DB, and their hashes, which are computed once when asked for."""
 
     def __init__(self, exports):
-        """exports: (DLL, API name, ...) of every export of an API DB; the load address behind a DLL name is dropped"""
+        """exports: (DLL, API name, ...) of every export of an API DB; the load address behind a DLL name is dropped."""
         dlls_by_name = {}
         forms = {}
         for entry in exports:
@@ -365,7 +373,7 @@ class ApiNameIndex:
         return self._tables[algorithm]
 
     def getKeyedTable(self, algorithm, mode, key):
-        """the table of an algorithm with every hash combined with a key (mode "xor" or "add"); the unchanged table without a mode"""
+        """The table of an algorithm with every hash combined with a key (mode "xor" or "add"); the unchanged table without a mode."""
         table = self.getTable(algorithm)
         if mode is None:
             return table
@@ -373,14 +381,14 @@ class ApiNameIndex:
         return self._sortTable(hashes, table.entries, table.modules)
 
     def getNumHashes(self, algorithm):
-        """number of distinct hashes of an algorithm"""
+        """Number of distinct hashes of an algorithm."""
         if algorithm not in self._num_hashes:
             hashes = self.getTable(algorithm).hashes
             self._num_hashes[algorithm] = int(np.count_nonzero(hashes[1:] != hashes[:-1])) + 1 if len(hashes) else 0
         return self._num_hashes[algorithm]
 
     def getNamesWithMinLength(self, min_length):
-        """{name: DLLs} of the names with at least min_length characters"""
+        """{name: DLLs} of the names with at least min_length characters."""
         if min_length not in self._long_names:
             self._long_names[min_length] = {
                 name: dlls for name, dlls in zip(self.names, self.dlls, strict=True) if len(name) >= min_length
@@ -388,11 +396,11 @@ class ApiNameIndex:
         return self._long_names[min_length]
 
     def resolve(self, algorithm, row, table=None):
-        """the API name and DLLs of a row of the table of an algorithm (the table of getKeyedTable(), if it is given)"""
+        """The API name and DLLs of a row of the table of an algorithm (the table of getKeyedTable(), if it is given)."""
         return self.resolveRows(algorithm, range(row, row + 1), table)[0]
 
     def resolveRows(self, algorithm, rows, table=None):
-        """the API names and DLLs of the rows (a range) of the table of an algorithm (the table of getKeyedTable(), if it is given)"""
+        """The API names and DLLs of the rows (a range) of the table of an algorithm (the table of getKeyedTable(), if it is given)."""
         table = table or self.getTable(algorithm)
         entries = table.entries[rows.start : rows.stop].tolist()
         if table.modules is None:
@@ -403,7 +411,7 @@ class ApiNameIndex:
         ]
 
     def _getHashes(self):
-        """ror13, djb2, fnv1a and sdbm of all names"""
+        """ror13, djb2, fnv1a and sdbm of all names."""
         if self._hashes is None:
             lengths = np.fromiter(map(len, self.names), dtype=np.int64, count=len(self.names))
             self._hashes = _hashNames("".join(self.names).encode("ascii"), lengths)
@@ -445,7 +453,7 @@ class ApiNameIndex:
 
 
 class _ConstantSet:
-    """32bit constants that are searched together, with a table that rules out most other values with one lookup"""
+    """32bit constants that are searched together, with a table that rules out most other values with one lookup."""
 
     def __init__(self, values):
         self.values = _getDifferent(np.array(values, dtype=np.uint32))
@@ -456,15 +464,17 @@ class _ConstantSet:
         self.table[self.values & self.mask] = True
 
     def select(self, offsets, values):
-        """the offsets and values (as found by find() of a set that has more constants) of the hits that are one of the constants"""
+        """The offsets and values (as found by find() of a set that has more constants) of the hits that are one of the constants."""
         if not len(self.values):
             return offsets[:0], values[:0]
         member = self.values[np.minimum(np.searchsorted(self.values, values), len(self.values) - 1)] == values
         return offsets[member], values[member]
 
     def find(self, binary, chunk_size=None, parallel=False):
-        """offsets (ascending) and values of all DWORDs of the binary at any offset that are one of the constants; parallel: by several
-        threads"""
+        """Offsets (ascending) and values of all DWORDs of the binary at any offset that are one of the constants.
+
+        parallel: by several threads.
+        """
         chunk_size = chunk_size or SEARCH_CHUNK_SIZE
         if not len(self.values):
             return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.uint32)
@@ -510,7 +520,7 @@ class _ConstantSet:
         return offsets[order], found[order]
 
     def _findInPiece(self, binary, alignment, first, count):
-        """the indices (in DWORDs of that alignment) and the values of the constants in count DWORDs from the first one on"""
+        """The indices (in DWORDs of that alignment) and the values of the constants in count DWORDs from the first one on."""
         words = np.frombuffer(binary, dtype="<u4", count=count, offset=alignment + first * 4)
         indices = np.flatnonzero(self.table[words & self.mask])
         candidates = words[indices]
@@ -525,16 +535,21 @@ def _getRepeated(values):
 
 
 def getRegions(hits, min_hits, gap=REGION_GAP):
-    """the hits ((offset, value) in ascending order of the offsets) that are in a chain of at least min_hits distinct values, in which
-    each hit is at most gap bytes behind the previous one; a hit that overlaps the previous one is skipped, constants do not overlap"""
+    """The hits that are in a chain of at least min_hits distinct values, each at most gap bytes behind the previous one.
+
+    hits are (offset, value) in ascending order of the offsets. A hit that overlaps the previous one is skipped,
+    constants do not overlap.
+    """
     offsets = np.array([offset for offset, _ in hits], dtype=np.int64)
     values = np.array([value for _, value in hits], dtype=np.int64)
     return [hits[index] for index in _getRegionIndices(offsets, values, min_hits, gap).tolist()]
 
 
 def _getRegionIndices(offsets, values, min_hits, gap=REGION_GAP):
-    """the indices of the hits that getRegions() keeps, for the arrays of the offsets (ascending) and values of the hits; the
-    search for hashes finds its regions with this"""
+    """The indices of the hits that getRegions() keeps, for the arrays of the offsets (ascending) and values of the hits.
+
+    The search for hashes finds its regions with this.
+    """
     indices = np.arange(len(offsets))
     if len(offsets) > 1 and (np.diff(offsets) < 4).any():
         # hits that overlap the previous hit are skipped
@@ -560,9 +575,12 @@ def _getRegionIndices(offsets, values, min_hits, gap=REGION_GAP):
 
 
 def getStringRuns(strings, unit_size, min_run=MIN_STRING_RUN, gap=STRING_RUN_GAP):
-    """the strings ((offset, name) in ascending order of the offsets, of one encoding) that are in a run of at least min_run different
-    names, each starting at most gap bytes behind the end of the previous one, including its terminator. Lists of names, like the
-    names to resolve with GetProcAddress or an import name table, come in runs; an isolated word that is an export name does not."""
+    """The strings that are in a run of at least min_run different names.
+
+    strings are (offset, name) in ascending order of the offsets, of one encoding. Each string of a run starts at most
+    gap bytes behind the end of the previous one, including its terminator. Lists of names, like the names to resolve
+    with GetProcAddress or an import name table, come in runs; an isolated word that is an export name does not.
+    """
     kept = []
     run = []
     end = None
@@ -582,8 +600,11 @@ def getStringRuns(strings, unit_size, min_run=MIN_STRING_RUN, gap=STRING_RUN_GAP
 
 
 def _findStrings(binary, names, unit_size, min_length, max_length, chunk_size=None, parallel=False):
-    """(offset, name) of the strings in the binary that are a name of the dict, terminated by a NUL and not preceded by a printable
-    character; ASCII for unit_size 1 and UTF-16LE (with the ASCII characters only) for 2, found at any offset"""
+    """(offset, name) of the strings in the binary that are a name of the dict, found at any offset.
+
+    A string is terminated by a NUL and not preceded by a printable character; ASCII for unit_size 1 and UTF-16LE (with
+    the ASCII characters only) for 2.
+    """
     chunk_size = chunk_size or SEARCH_CHUNK_SIZE
     chunks = []
     for alignment in range(unit_size):
@@ -598,8 +619,10 @@ def _findStrings(binary, names, unit_size, min_length, max_length, chunk_size=No
 
 
 def _findStringsInChunk(binary, names, unit_size, min_length, max_length, alignment, start, end):
-    """(offset, name) of the strings that end in the units from start to end of the binary, in units of unit_size bytes from
-    alignment on"""
+    """(offset, name) of the strings that end in the units from start to end of the binary.
+
+    The units are unit_size bytes, from alignment on.
+    """
     dtype = np.dtype("u1") if unit_size == 1 else np.dtype("<u2")
     found = []
     # the units before the chunk are read as well, to see where a string that ends in the chunk begins
@@ -640,13 +663,13 @@ def _isPrintable(units):
 
 @functools.cache
 def _getProbeHashes(algorithm):
-    """the different hashes of PROBE_APIS of an algorithm, and those of the first KEY_ANCHORS ones, as numpy arrays"""
+    """The different hashes of PROBE_APIS of an algorithm, and those of the first KEY_ANCHORS ones, as numpy arrays."""
     hashes = list(dict.fromkeys(HASH_FUNCTIONS[algorithm](name.encode("ascii")) for name in PROBE_APIS))
     return np.array(sorted(hashes), dtype=np.uint32), np.array(hashes[:KEY_ANCHORS], dtype=np.uint32)
 
 
 def _getKeyWindows(size, window):
-    """(start, end) of the windows over a dump of the given size, each one overlapping the previous one by a quarter"""
+    """(start, end) of the windows over a dump of the given size, each one overlapping the previous one by a quarter."""
     if size <= window:
         return [(0, size)]
     starts = list(range(0, size - window + 1, window * 3 // 4))
@@ -656,8 +679,11 @@ def _getKeyWindows(size, window):
 
 
 def _isRandom(binary, start, end):
-    """whether the bytes are uniformly distributed, as in compressed or encrypted data; there is nothing to find in it, no table of
-    hashes can be told from the rest. Less than a block of bytes is never random, the entropy of a sample of random bytes is lower."""
+    """Whether the bytes are uniformly distributed, as in compressed or encrypted data.
+
+    There is nothing to find in it, no table of hashes can be told from the rest. Less than a block of bytes is never
+    random, the entropy of a sample of random bytes is lower.
+    """
     size = end - start
     if size < RANDOM_BLOCK_SIZE:
         return False
@@ -678,7 +704,7 @@ def _isRandom(binary, start, end):
 
 
 def _getRandomBlocks(binary, parallel=False):
-    """for every block of RANDOM_BLOCK_SIZE bytes of the dump (the last one is smaller) whether its bytes are uniformly distributed"""
+    """For every block of RANDOM_BLOCK_SIZE bytes of the dump (the last one is smaller) whether its bytes are uniformly distributed."""
     starts = range(0, len(binary), RANDOM_BLOCK_SIZE)
     # many blocks per task
     groups = [starts[first : first + 16] for first in range(0, len(starts), 16)]
@@ -694,7 +720,7 @@ def _getRandomBlocks(binary, parallel=False):
 
 
 def _getSpans(start, end, random_blocks):
-    """(start, end) of the parts of a window that are not in a random block"""
+    """(start, end) of the parts of a window that are not in a random block."""
     if random_blocks is None:
         return [(start, end)]
     spans = []
@@ -709,8 +735,10 @@ def _getSpans(start, end, random_blocks):
 
 
 def _getKeyCandidates(binary, start, end, random_blocks=None):
-    """the different 32bit values (at any offset) of a window, in ascending order, without those that have a zero byte and those in
-    random blocks (see _getRandomBlocks)"""
+    """The different 32bit values (at any offset) of a window, in ascending order.
+
+    Without those that have a zero byte and those in random blocks (see _getRandomBlocks).
+    """
     values = []
     for first, last in _getSpans(start, end, random_blocks):
         if last - first < 4:
@@ -727,7 +755,7 @@ def _getKeyCandidates(binary, start, end, random_blocks=None):
 
 
 def _getDifferent(values):
-    """the different values in ascending order (a sort and a comparison, np.unique is slower); the array is sorted in place"""
+    """The different values in ascending order (a sort and a comparison, np.unique is slower); the array is sorted in place."""
     values.sort()
     if len(values) > 1:
         different = np.empty(len(values), dtype=np.bool_)
@@ -738,7 +766,7 @@ def _getDifferent(values):
 
 
 def _getLookup(values):
-    """a table that rules out most 32bit values that are not one of the values with one lookup (as _ConstantSet does)"""
+    """A table that rules out most 32bit values that are not one of the values with one lookup (as _ConstantSet does)."""
     bits = min(24, max(16, len(values).bit_length() + 3))
     mask = np.uint32((1 << bits) - 1)
     table = np.zeros(1 << bits, dtype=np.bool_)
@@ -747,7 +775,7 @@ def _getLookup(values):
 
 
 def _findKeysInWindow(values, algorithm, mode, min_apis, lookup=None, buffer=None):
-    """the keys of one mode and algorithm that at least min_apis different probe APIs agree on in the sorted different values"""
+    """The keys of one mode and algorithm that at least min_apis different probe APIs agree on in the sorted different values."""
     probes, anchors = _getProbeHashes(algorithm)
     combine = np.bitwise_xor if mode == "xor" else np.subtract
     # the buffer of a window is used for all algorithms and modes
@@ -776,8 +804,11 @@ def _findKeysInWindow(values, algorithm, mode, min_apis, lookup=None, buffer=Non
 
 
 def _confirmKeys(values, algorithm, mode, keys, min_apis):
-    """the keys of one mode and algorithm (of those that are keys in a superset of the sorted different values) that two anchors and
-    at least min_apis different probe APIs agree on in the values; the same keys as _findKeysInWindow() finds in them"""
+    """The keys of one mode and algorithm that two anchors and at least min_apis different probe APIs agree on.
+
+    keys were found in a superset of the sorted different values; an API agrees on a key if its hash combined with the
+    key is one of the values. These are the same keys as _findKeysInWindow() finds in the values.
+    """
     probes, anchors = _getProbeHashes(algorithm)
     combine = np.bitwise_xor if mode == "xor" else np.add
     keys = np.array(keys, dtype=np.uint32)
@@ -791,13 +822,15 @@ def _confirmKeys(values, algorithm, mode, keys, min_apis):
 
 
 def _getSample(values):
-    """a part of the different values that is about 1 / SAMPLE_RATIO of them, the same for the same values in every window"""
+    """A part of the different values that is about 1 / SAMPLE_RATIO of them, the same for the same values in every window."""
     return values[(values * np.uint32(2654435761)) >> np.uint32(32 - SAMPLE_BITS) == 0]
 
 
 def _getUnion(sets, parallel):
-    """the different values of several sorted arrays of different values, in ascending order; each part of the value range is sorted
-    by a thread of its own"""
+    """The different values of several sorted arrays of different values, in ascending order.
+
+    Each part of the value range is sorted by a thread of its own.
+    """
     if len(sets) == 1:
         return sets[0]
     parts = 2 * _getThreads() if parallel else 1
@@ -817,12 +850,15 @@ def _getUnion(sets, parallel):
 
 
 def _findKeysInGroup(window_values, min_apis, trials, variants, parallel):
-    """the keys, as {(algorithm, mode): set of keys}, that the probe APIs agree on in at least one of the windows, whose different
-    values (ascending) are given, for a number of trials of searches (see getMinimumKeyApis())
+    """The keys, as {(algorithm, mode): set of keys}, that the probe APIs agree on in at least one of the windows.
+
+    The different values (ascending) of the windows are given, for a number of trials of searches (see
+    getMinimumKeyApis()).
 
     The keys are looked for in the different values of all windows together first, which is a superset of those of each window; many
     windows of a dump hold the same values, so there are much fewer of them than of all windows. The few keys that it finds are checked
-    for each window."""
+    for each window.
+    """
     if parallel is None:
         parallel = sum(map(len, window_values)) >= MIN_PARALLEL_VALUES
     needed = [min_apis or getMinimumKeyApis(len(values), trials) for values in window_values]
@@ -847,13 +883,15 @@ def _findKeysInGroup(window_values, min_apis, trials, variants, parallel):
 
 
 def findKeys(binary, algorithms=None, min_apis=None, window=None, skip_random=True, parallel=None):
-    """the keys that a program combines with the hashes of an algorithm, as {(algorithm, mode): [keys]}, mode "xor" (the value is
-    hash ^ key) or "add" (hash + key)
+    """The keys that a program combines with the hashes of an algorithm, as {(algorithm, mode): [keys]}.
+
+    The mode is "xor" (the value is hash ^ key) or "add" (hash + key).
 
     A key is found if at least min_apis (default: getMinimumKeyApis()) different PROBE_APIS have their value hash ^ key (hash + key) in
     the same window of the dump, see the module description. algorithms: of KEYED_ALGORITHMS, by default all. window: size of the
     windows in bytes (default: KEY_WINDOW). skip_random: leave out blocks of uniformly distributed bytes. parallel: by several threads (by
-    default, the windows if the dump has at least MIN_PARALLEL_SIZE bytes, the many values of windows)."""
+    default, the windows if the dump has at least MIN_PARALLEL_SIZE bytes, the many values of windows).
+    """
     algorithms = tuple(algorithm for algorithm in KEYED_ALGORITHMS if algorithms is None or algorithm in algorithms)
     found = {}
     if not algorithms or len(binary) < 4:
@@ -894,14 +932,14 @@ def findKeys(binary, algorithms=None, min_apis=None, window=None, skip_random=Tr
 
 
 class DynamicApiFinder:
-    """finds the APIs of API DBs by hashes and strings; the DBs are given as ApiNameIndex by the name of their API map"""
+    """Finds the APIs of API DBs by hashes and strings; the DBs are given as ApiNameIndex by the name of their API map."""
 
     def __init__(self, indexes):
         self.indexes = indexes
         self._constants = {}
 
     def _getConstants(self, algorithms):
-        """all hashes of the algorithms and DBs as one set of constants"""
+        """All hashes of the algorithms and DBs as one set of constants."""
         key = tuple(algorithms)
         if key not in self._constants:
             self._constants[key] = _ConstantSet(
@@ -914,15 +952,16 @@ class DynamicApiFinder:
         return self._constants[key]
 
     def findKeys(self, binary, algorithms=None, min_apis=None, window=None, skip_random=True):
-        """the keys of the algorithms in the binary, see findKeys()"""
+        """The keys of the algorithms in the binary, as the module function of the same name finds them."""
         return findKeys(binary, algorithms, min_apis, window, skip_random)
 
     def findHashes(self, binary, algorithms=None, min_hits=None, load_offset=0, keyed=True, min_key_apis=None):
-        """APIs of which the hash is in the binary, in regions of hits that chance is unlikely to form, as {API map name: [DynamicApi]}
+        """APIs of which the hash is in the binary, in regions of hits that chance is unlikely to form, as {API map name: [DynamicApi]}.
 
         min_hits: the fewest distinct constants of one algorithm in a region; given, it replaces the number that depends on the size of
         the binary and the number of hashes (getMinimumHits). keyed: also look for the hashes combined with a key that the binary holds
-        (findKeys(), min_key_apis), in regions with a larger gap."""
+        (findKeys(), min_key_apis), in regions with a larger gap.
+        """
         results = {name: [] for name in self.indexes}
         algorithms = tuple(
             algorithm
@@ -993,16 +1032,18 @@ class DynamicApiFinder:
     def _findHits(
         self, results, offsets, values, variants, binary, min_hits, gap, load_offset, taken, getTable, compete=False
     ):
-        """adds the APIs of which the hashes (variants: (label, algorithm, mode, key)) are in regions of the binary to the results;
-        offsets and values are the hits of the binary that are one of the hashes, getTable(API map name, variant) is the table of a
-        variant (see ApiNameIndex.getKeyedTable)
+        """Adds the APIs of which the hashes are in regions of the binary to the results.
+
+        variants are (label, algorithm, mode, key); offsets and values are the hits of the binary that are one of the
+        hashes, getTable(API map name, variant) is the table of a variant (see ApiNameIndex.getKeyedTable).
 
         compete: a constant is the hash of one API, so the variants that have it take turns, the one with the most hits first, and a
         variant does not get the hits at the offsets that earlier variants, or the hashes searched before (taken), have. This is what
         happens to a key that is a real key combined with the difference of the hashes of two names: CRC-32 (XOR) and the hashes that
         add the last character (ADD) have the same difference for all names that end with A and W, so the two keys have many probe
         APIs and many hits in common; the real key has more of both. The hashes without a key, the variant without a mode, take
-        part like the others but are not reported again, they were searched before (with the gap of unkeyed hashes)."""
+        part like the others but are not reported again, they were searched before (with the gap of unkeyed hashes).
+        """
         if not len(offsets):
             return
         for name, index in self.indexes.items():
@@ -1043,8 +1084,10 @@ class DynamicApiFinder:
                             results[name].append(DynamicApi(offset + load_offset, "hash", label, value, api, dlls))
 
     def findStrings(self, binary, min_length=None, load_offset=0, min_run=None, gap=STRING_RUN_GAP):
-        """APIs of which the name is a string in the binary, in runs of at least min_run different names (see getStringRuns), as
-        {API map name: [DynamicApi]}"""
+        """APIs of which the name is a string in the binary, as {API map name: [DynamicApi]}.
+
+        Only names in runs of at least min_run different names count, see getStringRuns().
+        """
         results = {}
         min_length = min_length or DEFAULT_MIN_STRING_LENGTH
         min_run = min_run or MIN_STRING_RUN

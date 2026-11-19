@@ -1,4 +1,4 @@
-"""the apiscout command line tool, see `apiscout --help`"""
+"""The apiscout command line tool, see `apiscout --help`."""
 
 import argparse
 import json
@@ -85,11 +85,11 @@ Quote vectors, they contain characters that are special to the shell.
 
 
 class CliError(Exception):
-    """an expected error, reported without traceback"""
+    """An expected error, reported without traceback."""
 
 
 class VersionAction(argparse.Action):
-    """argparse's own --version formats its output with a theme, which imports a module for colors (11 ms)"""
+    """argparse's own --version formats its output with a theme, which imports a module for colors (11 ms)."""
 
     def __init__(self, option_strings, dest=argparse.SUPPRESS, default=argparse.SUPPRESS, help=None):
         super().__init__(option_strings, dest=dest, default=default, nargs=0, help=help)
@@ -118,8 +118,10 @@ class Parser(argparse.ArgumentParser):
 
 
 def get_default_db_dir():
-    """the folder searched for API DBs and collections: $APISCOUT_DB_DIR, ./dbs, the folder of downloaded DBs
-    or the dbs folder of a checkout"""
+    """The folder searched for API DBs and collections.
+
+    $APISCOUT_DB_DIR, ./dbs, the folder of downloaded DBs or the dbs folder of a checkout.
+    """
     if os.environ.get(DB_DIR_VARIABLE):
         return os.environ[DB_DIR_VARIABLE]
     candidates = [
@@ -140,7 +142,7 @@ def get_db_files(db_dir):
 
 
 def locate(path, args, what):
-    """a file given by path, or by its bare name when it is in the DB folder (e.g. from `apiscout dbs download`)"""
+    """A file given by path, or by its bare name when it is in the DB folder (e.g. from `apiscout dbs download`)."""
     if path == "-" or os.path.exists(path) or os.path.basename(path) != path:
         check_file(path, what)
         return path
@@ -152,7 +154,7 @@ def locate(path, args, what):
 
 
 def resolve_db_files(args):
-    """the API DBs to use: those given with --db, otherwise all of the DB folder"""
+    """The API DBs to use: those given with --db, otherwise all of the DB folder."""
     if args.db:
         return [locate(db_path, args, "API DB") for db_path in args.db]
     db_paths = get_db_files(args.db_dir or get_default_db_dir())
@@ -176,7 +178,7 @@ def check_file(path, what):
 
 
 def check_output(path):
-    """found out before the work, not after it"""
+    """Found out before the work, not after it."""
     if not path or path == "-":
         return
     if os.path.isdir(path):
@@ -206,7 +208,7 @@ def explain_pair(scout, vector_a, vector_b):
 
 
 def explain_best_match(scout, vector, collection_path, matches):
-    """the explanation of the best match of the collection, which is first in matches"""
+    """The explanation of the best match of the collection, which is first in matches."""
     family, sample, _ = matches["match_results"][0]
     other = scout.getCollectionVector(collection_path, family, sample)
     return {"family": family, "sample": sample, **explain_pair(scout, vector, other)}
@@ -272,7 +274,7 @@ def read_input(path):
 
 
 def read_vector(value):
-    """a vector given as - is read from standard input, plain or within the JSON result of scan"""
+    """A vector given as - is read from standard input, plain or within the JSON result of scan."""
     if value != "-":
         return value
     if sys.stdin.isatty():
@@ -290,7 +292,7 @@ def read_vector(value):
 
 
 def results_to_records(results, confidences=None):
-    """JSON records of the hits, with their confidence from ApiScout.getConfidences() where it is given"""
+    """JSON records of the hits, with their confidence from ApiScout.getConfidences() where it is given."""
     records = []
     for api_map_name in results:
         for api in results[api_map_name]:
@@ -324,7 +326,7 @@ def dynamic_to_records(dynamic_results):
 
 
 def write_output(text, output_path):
-    """to the file given with --output, or to standard output"""
+    """To the file given with --output, or to standard output."""
     if output_path and output_path != "-":
         with open(output_path, "w", encoding="utf-8") as f_out:
             f_out.write(text)
@@ -333,7 +335,7 @@ def write_output(text, output_path):
 
 
 def write_file(write, output_path):
-    """lets write(path) produce a file, - sends its content to standard output instead"""
+    """Lets write(path) produce a file, - sends its content to standard output instead."""
     if output_path != "-":
         write(output_path)
         return
@@ -350,13 +352,13 @@ def write_file(write, output_path):
 
 
 def report(args, message):
-    """progress and results that are not the output of the command go to standard error"""
+    """Progress and results that are not the output of the command go to standard error."""
     if not args.quiet:
         print(message, file=sys.stderr)
 
 
 def report_placements(args, placer):
-    """how many DLLs of each API DB were placed at the addresses the dump tells, and from which source"""
+    """How many DLLs of each API DB were placed at the addresses the dump tells, and from which source."""
     from .LoadAddresses import describe_placements
 
     for line in describe_placements(placer):
@@ -364,8 +366,10 @@ def report_placements(args, placer):
 
 
 def scan_minidump(scout, minidump, args):
-    """scan the memory ranges of a minidump at their addresses, without the images of the system DLLs in its module
-    list: what they hold are the export tables and import address tables of the DLLs, not references of the sample"""
+    """Scan the memory ranges of a minidump at their addresses, without the images of the system DLLs in its module list.
+
+    What these images hold are the export tables and import address tables of the DLLs, not references of the sample.
+    """
     for warning in minidump.warnings:
         report(args, f"Warning: {warning}")
     if minidump.bitness == 32:
@@ -844,7 +848,7 @@ def cmd_dbs(args):
 
 
 def get_download_ref():
-    """the git tag of the installed version, so that code and DBs match; master for a checkout that is not installed"""
+    """The git tag of the installed version, so that code and DBs match; master for a checkout that is not installed."""
     version = get_version()
     return f"v{version}" if re.fullmatch(r"\d+(\.\d+)*", version) else "master"
 
@@ -1148,7 +1152,7 @@ def build_parser():
 
 
 def read_version(metadata_dir):
-    """the Version in the METADATA (of a dist-info folder) or the PKG-INFO (of an egg-info folder), None if there is none"""
+    """The Version in the METADATA (of a dist-info folder) or the PKG-INFO (of an egg-info folder), None if there is none."""
     for filename in ("METADATA", "PKG-INFO"):
         try:
             with open(os.path.join(metadata_dir, filename), encoding="utf-8") as f_metadata:
@@ -1162,9 +1166,11 @@ def read_version(metadata_dir):
 
 
 def get_version():
-    """the installed version, which is the one importlib.metadata.version() finds. The metadata of the installation is read
-    directly: importlib.metadata takes 30 ms to import and to find it, as much as numpy, and every command looks the
-    version up for its help."""
+    """The installed version, which is the one importlib.metadata.version() finds.
+
+    The metadata of the installation is read directly: importlib.metadata takes 30 ms to import and to find it, as much
+    as numpy, and every command looks the version up for its help.
+    """
     for folder in sys.path:
         try:
             names = os.listdir(folder or ".")

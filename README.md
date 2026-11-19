@@ -10,7 +10,7 @@ Command line tool, Python library, and plugins for IDA Pro, Ghidra and Binary Ni
 
 ## Quick start
 
-Python 3.10 or newer:
+Python 3.11 or newer:
 
 ```bash
 pip install apiscout
@@ -139,7 +139,7 @@ vector = scout.getPrimaryVector(scout.getWinApi1024Vectors(results))[1]["vector"
 
 `apiscout dbs download` checks them against [`dbs/SHA256SUMS`](https://github.com/danielplohmann/apiscout/blob/master/dbs/SHA256SUMS) and stores them in `~/.local/share/apiscout/dbs`, `~/Library/Application Support/apiscout/dbs` or `%LOCALAPPDATA%\apiscout\dbs`. DBs with ASLR offsets fit dumps of the boot they were built in, and those of other boots when the load addresses are given as described above.
 
-For your own analysis system, run the DB builder on it (Python 3.10 or newer, which Windows 7 has no build of: build the DB of such a system from a copy of its DLLs on another system, with `--os_name`, `--os_version` and `--load_addresses` as described below):
+For your own analysis system, run the DB builder on it (Python 3.11 or newer, which Windows 7 has no build of: build the DB of such a system from a copy of its DLLs on another system, with `--os_name`, `--os_version` and `--load_addresses` as described below):
 
 ```bash
 git clone https://github.com/danielplohmann/apiscout
@@ -257,7 +257,7 @@ bv = binaryninja.load(raw, options={"loader.imageBase": 0x400000, "loader.platfo
 
 ```bash
 uv sync
-uv run python -m unittest discover -s tests -p "test*.py" -t .
+uv run pytest
 uv run ruff check && uv run ruff format --check && uv run ty check
 ```
 

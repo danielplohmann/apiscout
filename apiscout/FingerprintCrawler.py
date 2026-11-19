@@ -36,18 +36,18 @@ class FingerprintCrawler:
 
     @staticmethod
     def readApiDb(db_path):
-        """the content of an API DB file, for apiDbHasAslrOffsets() and the api_dbs of the constructor"""
+        """The content of an API DB file, for apiDbHasAslrOffsets() and the api_dbs of the constructor."""
         with paused_garbage_collection():
             return read_json(db_path)
 
     @staticmethod
     def dbHasAslrOffsets(db_path):
-        """check if an API DB file carries per-module ASLR offsets, i.e. is bound to the boot it was built in"""
+        """Check if an API DB file carries per-module ASLR offsets, i.e. is bound to the boot it was built in."""
         return FingerprintCrawler.apiDbHasAslrOffsets(FingerprintCrawler.readApiDb(db_path))
 
     @staticmethod
     def apiDbHasAslrOffsets(api_db):
-        """dbHasAslrOffsets() for the content of an API DB"""
+        """dbHasAslrOffsets() for the content of an API DB."""
         if api_db.get("aslr_offsets", False):
             return True
         return any(dll.get("aslr_offset", 0) for dll in api_db.get("dlls", {}).values())
@@ -126,7 +126,7 @@ class FingerprintCrawler:
         return (family, path) in self._ignore_files
 
     def mergeWithIgnoreList(self, fingerprint_list):
-        """fingerprints of the loaded list that were not part of this crawl, followed by the given fingerprints"""
+        """Fingerprints of the loaded list that were not part of this crawl, followed by the given fingerprints."""
         crawled = {(entry[0], entry[1]) for entry in fingerprint_list}
         kept = [entry for key, entry in self._ignore_files.items() if key not in crawled]
         return kept + list(fingerprint_list)

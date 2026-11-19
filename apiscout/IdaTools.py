@@ -43,7 +43,7 @@ class IdaTools:
         self.ida_proxy = IdaProxy()
 
     def getAllMemoryFromIda(self):
-        """returns the bytes that have a value in the database, adjacent parts merged into one buffer: {start address: bytes}"""
+        """Returns the bytes that have a value in the database, adjacent parts merged into one buffer: {start address: bytes}."""
         result = {}
         block_start = None
         block_end = None
@@ -72,7 +72,7 @@ class IdaTools:
         return int(match.group("bitness")) if match else 0
 
     def makeDQWord(self, api, in_table=False):
-        """turn the location of an API reference into a pointer sized data item, returns the reason if this is not possible"""
+        """Turn the location of an API reference into a pointer sized data item, returns the reason if this is not possible."""
         bitness = self.getBitness(api)
         if bitness not in (32, 64):
             return "unknown pointer size"
@@ -97,11 +97,11 @@ class IdaTools:
         return str(api[3])
 
     def _isApiName(self, name, api):
-        """the name of the API, possibly with the numeric suffix IDA adds to a name used several times"""
+        """The name of the API, possibly with the numeric suffix IDA adds to a name used several times."""
         return bool(re.fullmatch(re.escape(self.getApiName(api)) + r"(_\d+)?", name or ""))
 
     def isAnnotated(self, api):
-        """the location still carries the name ApiScout gave it for this API"""
+        """The location still carries the name ApiScout gave it for this API."""
         name = self.ida_proxy.getName(api[0])
         recorded = self._recorded(api[0], self.TAG_LOCATION)
         return self._isApiName(name, api) and (recorded is None or name == recorded)
@@ -113,7 +113,7 @@ class IdaTools:
         return ida_netnode.netnode(self.ANNOTATIONS_NODE, 0, True)
 
     def _recorded(self, address, tag):
-        """the name or call type ApiScout set at the address, None if it set none"""
+        """The name or call type ApiScout set at the address, None if it set none."""
         return self._annotations().supstr(address, tag)
 
     def _record(self, address, tag, value):
@@ -124,7 +124,7 @@ class IdaTools:
         return str(tinfo) if ida_nalt.get_op_tinfo(tinfo, address, 0) else None
 
     def getAnalystName(self, api):
-        """the name an analyst gave the location, None if it has none or it still is the name ApiScout set"""
+        """The name an analyst gave the location, None if it has none or it still is the name ApiScout set."""
         if not ida_bytes.has_user_name(ida_bytes.get_flags(api[0])):
             return None
         name = self.ida_proxy.getName(api[0])
@@ -136,12 +136,12 @@ class IdaTools:
         return None if self._isApiName(name, api) else name
 
     def _hasAnalystCallType(self, address):
-        """the call has a type that ApiScout did not set, or changed since, e.g. with "Set call type" of the decompiler"""
+        """The call has a type that ApiScout did not set, or changed since, e.g. with "Set call type" of the decompiler."""
         current = self._getCallType(address)
         return current is not None and current != self._recorded(address, self.TAG_CALL)
 
     def importTypeLibraries(self):
-        """load the type libraries matching the bitness of the database, returns True if all of them are available"""
+        """Load the type libraries matching the bitness of the database, returns True if all of them are available."""
         bitness = 64 if self.ida_proxy.is64bit() else 32
         results = [self.ida_proxy.addTil(lib_name) for lib_name in self.TYPE_LIBRARIES[bitness]]
         return all(result == 1 for result in results)
@@ -157,7 +157,7 @@ class IdaTools:
         return tinfo, True
 
     def setFunctionInformation(self, funcName, callAddress):
-        """apply the prototype of the API to a call instruction referencing it"""
+        """Apply the prototype of the API to a call instruction referencing it."""
         tinfo, success = self.helper_getTinfoOfFuncName(funcName)
         if not success:
             return False
@@ -186,16 +186,16 @@ class IdaTools:
         return True
 
     def setPointerType(self, tinfo, address):
-        """type the location of the API address as pointer to the API's prototype"""
+        """Type the location of the API address as pointer to the API's prototype."""
         pointer_tinfo = ida_typeinf.tinfo_t()
         if not pointer_tinfo.create_ptr(tinfo):
             return False
         return bool(ida_typeinf.apply_tinfo(address, pointer_tinfo, ida_typeinf.TINFO_DEFINITE))
 
     def getResultRows(self, results):
-        """
-        unique API references over the results of all API DBs as rows [address, API address, DLL, API, references],
-        without pointers into the database itself
+        """Unique API references over the results of all API DBs, without pointers into the database itself.
+
+        Rows of [address, API address, DLL, API, references].
         """
         base_address = self.getBaseAddress()
         rows = {}
@@ -215,8 +215,8 @@ class IdaTools:
         return ApiScout._getFilteredList(distance, rows)
 
     def applyApiNames(self, api_results, status=None, known_locations=None):
-        """
-        annotate the given rows, a description of the outcome per row is stored in the optional dict status.
+        """Annotate the given rows, a description of the outcome per row is stored in the optional dict status.
+
         known_locations are the locations of all API references found, also of those that are not annotated now.
         """
         if status is None:

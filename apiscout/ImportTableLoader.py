@@ -19,7 +19,7 @@ class ImportDescriptor:
         self._is_64bit = is_64bit
 
     def parse(self, buf, max_imports=None, max_name_bytes=None, names=None):
-        """names: the names read so far by their offset, shared by the descriptors of a table"""
+        """names: the names read so far by their offset, shared by the descriptors of a table."""
         self.imports = {}
         self.name_bytes = 0
         names = {} if names is None else names

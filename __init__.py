@@ -1,6 +1,7 @@
-"""
-Binary Ninja entry point: the extension manager installs the whole repository into a folder and imports that folder
-as a package, so this file is what it runs.
+"""Binary Ninja entry point of the repository.
+
+The extension manager installs the whole repository into a folder and imports that folder as a package, so this file is
+what it runs.
 """
 
 import os

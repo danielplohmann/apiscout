@@ -18,7 +18,7 @@ server. This script looks the DLLs of config.DLL_FILTER up in the index, downloa
 32bit ones for SysWOW64, verifies each against the hash of the index and writes them to <out>/System32 and
 <out>/SysWOW64, the folders `python -m apiscout.db_builder --paths` takes. Then it builds the API DB from them
 (--download-only stops before). Run it from a clone as `python -m apiscout.db_builder.DllDownloader`. Like the DB
-builder, it only needs the standard library (Python 3.10 or newer).
+builder, it only needs the standard library (Python 3.11 or newer).
 
 The DB has no ASLR offsets: `apiscout scan` places the DLLs where the dump has them (--modules, minidumps).
 """
@@ -66,23 +66,23 @@ SAFE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*")
 
 
 class DownloaderError(Exception):
-    """a problem to report to the user without a traceback"""
+    """A problem to report to the user without a traceback."""
 
 
 class NotFound(DownloaderError):
-    """HTTP 404"""
+    """HTTP 404."""
 
 
 class Mismatch(DownloaderError):
-    """a download that is not the file the index describes"""
+    """A download that is not the file the index describes."""
 
 
 class Interrupted(DownloaderError):
-    """a request that was given up because the run was interrupted"""
+    """A request that was given up because the run was interrupted."""
 
 
 class Unavailable(DownloaderError):
-    """a file that can not be had, no matter how often it is tried; rejected if a download did not match the index"""
+    """A file that can not be had, no matter how often it is tried; rejected if a download did not match the index."""
 
     def __init__(self, message, rejected=False):
         super().__init__(message)
@@ -90,7 +90,7 @@ class Unavailable(DownloaderError):
 
 
 class FileEntry:
-    """one file of an update, as the index describes it"""
+    """One file of an update, as the index describes it."""
 
     def __init__(self, folder, filename, sha256, info, source_kb=None):
         self.folder = folder
@@ -106,7 +106,7 @@ class FileEntry:
         self.version = (info.get("version") or "").split(" ")[0]
 
     def imageSizes(self):
-        """the SizeOfImage values to try on the symbol server, the most likely first"""
+        """The SizeOfImage values to try on the symbol server, the most likely first."""
         if self.virtual_size:
             return [self.virtual_size]
         # Winbindex indexes some files with a limited amount of information, the SizeOfImage lies between these
@@ -125,7 +125,7 @@ class FileEntry:
 
 
 class Update:
-    """an update (or the first release, BASE) of a Windows version, as listed in the index"""
+    """An update (or the first release, BASE) of a Windows version, as listed in the index."""
 
     def __init__(self, windows, kb, update_info, primary, names=()):
         self.windows = windows
@@ -148,7 +148,7 @@ class Update:
 
 
 def parse_index(raw):
-    """the index of a file name: a gzip compressed JSON object, keyed by the SHA-256 of the files"""
+    """The index of a file name: a gzip compressed JSON object, keyed by the SHA-256 of the files."""
     try:
         data = json.loads(gzip.decompress(raw).decode("utf-8"))
     except (OSError, EOFError, ValueError) as exc:
@@ -159,7 +159,7 @@ def parse_index(raw):
 
 
 def iter_updates(index):
-    """(sha256, fileInfo, Windows versions, update name, entry of the update) for every file in every update"""
+    """(sha256, fileInfo, Windows versions, update name, entry of the update) for every file in every update."""
     for sha256, entry in index.items():
         if not isinstance(entry, dict):
             continue
@@ -172,7 +172,7 @@ def iter_updates(index):
 
 
 def list_updates(index):
-    """{(Windows version, update name): Update} of all the updates the index knows"""
+    """{(Windows version, update name): Update} of all the updates the index knows."""
     updates = {}
     for _, _, names, kb, _, update_info in iter_updates(index):
         for position, windows in enumerate(names):
@@ -182,7 +182,7 @@ def list_updates(index):
 
 
 def parse_update_selector(text):
-    """('kb', 'KB5046617'), ('build', '26100.2605') or ('base', 'BASE') from what the user typed"""
+    """('kb', 'KB5046617'), ('build', '26100.2605') or ('base', 'BASE') from what the user typed."""
     text = text.strip()
     if text.upper() == "BASE":
         return "base", "BASE"
@@ -198,7 +198,7 @@ def parse_update_selector(text):
 
 
 def select_update(updates, windows, update_text):
-    """the one Update that a Windows version (optional) and an update name or build identify"""
+    """The one Update that a Windows version (optional) and an update name or build identify."""
     kind, value = parse_update_selector(update_text)
     matches = []
     for (update_windows, kb), update in updates.items():
@@ -241,8 +241,11 @@ def select_update(updates, windows, update_text):
 
 
 def windows_family(updates, windows):
-    """the Windows versions that share updates with a Windows version (11-24H2, 11-25H2 and 11-26H2 do), as the files
-    that an update does not change come from the updates before it, which may be listed under a version of them"""
+    """The Windows versions that share updates with a Windows version (11-24H2, 11-25H2 and 11-26H2 do).
+
+    The files that an update does not change come from the updates before it, which may be listed under a version of
+    them.
+    """
     groups = [set(update.names) for update in updates.values()]
     family = {windows}
     changed = True
@@ -256,9 +259,11 @@ def windows_family(updates, windows):
 
 
 def find_files(index, name, update, fallback=True):
-    """{folder: [FileEntry]} with the 64bit System32 and the 32bit SysWOW64 files of the DLL for the update, the one to
-    use first. A DLL that the update does not list was not changed by it: the Windows of the update has the file of the
-    latest earlier update that lists it (fallback)."""
+    """{folder: [FileEntry]} with the 64bit System32 and the 32bit SysWOW64 files of the DLL for the update.
+
+    The first entry is the one to use first. A DLL that the update does not list was not changed by it: the Windows of
+    the update has the file of the latest earlier update that lists it (fallback).
+    """
     exact, earlier = {}, {}
     for sha256, info, names, kb, entry, update_info in iter_updates(index):
         # the key of the index is the SHA-256 of the file, without it the file can not be verified
@@ -292,7 +297,7 @@ def _safe_filename(name, fallback):
 
 
 def _install_targets(entry, machine, name):
-    """(folder, file name) where the Windows of the update puts a file of this machine type, if System32 or SysWOW64"""
+    """(folder, file name) where the Windows of the update puts a file of this machine type, if System32 or SysWOW64."""
     targets = set()
     for assembly in (entry.get("assemblies") or {}).values():
         architecture = (assembly.get("assemblyIdentity") or {}).get("processorArchitecture")
@@ -315,7 +320,7 @@ def _install_targets(entry, machine, name):
 
 
 def os_names(update, os_version_hint=None):
-    """(os_name, os_version) of the API DB of an update"""
+    """(os_name, os_version) of the API DB of an update."""
     windows = update.windows
     product = "Windows 11 " + windows[3:] if windows.startswith("11-") else "Windows 10 " + windows
     os_name = "{} {} (AMD64)".format(product, update.kb if update.kb != "BASE" else "RTM")
@@ -328,7 +333,7 @@ INTERRUPTED = threading.Event()
 
 
 def read_body(response, max_bytes):
-    """the body of a response, at most max_bytes and one byte more if it is longer"""
+    """The body of a response, at most max_bytes and one byte more if it is longer."""
     chunks, size = [], 0
     while size <= max_bytes:
         chunk = response.read(min(READ_SIZE, max_bytes + 1 - size))
@@ -342,8 +347,10 @@ def read_body(response, max_bytes):
 
 
 def http_get(url, max_bytes, retries=4, sleep=None, timeout=60):
-    """the body of an URL (at most max_bytes), retried with a growing pause on network errors and server errors; sleep
-    (default: waits for INTERRUPTED) makes the pause. An interrupted run (INTERRUPTED) ends the request."""
+    """The body of an URL (at most max_bytes), retried with a growing pause on network errors and server errors.
+
+    sleep (default: waits for INTERRUPTED) makes the pause. An interrupted run (INTERRUPTED) ends the request.
+    """
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     sleep = sleep or INTERRUPTED.wait
     for attempt in range(retries + 1):
@@ -390,7 +397,7 @@ def is_verified(path, file):
 
 
 def load_index(name, cache_dir, fetch=http_get, now=time.time):
-    """the parsed index of a file name, from the cache folder (if there is one) if it is less than a day old"""
+    """The parsed index of a file name, from the cache folder (if there is one) if it is less than a day old."""
     cache_path = os.path.join(cache_dir, name.lower() + ".json.gz") if cache_dir else None
     if cache_path and os.path.isfile(cache_path) and now() - os.path.getmtime(cache_path) < INDEX_MAX_AGE:
         try:
@@ -409,9 +416,11 @@ def load_index(name, cache_dir, fetch=http_get, now=time.time):
 
 
 def download_file(files, out_dir, fetch=http_get):
-    """download one of the files (the first that is available) to <out_dir>/<folder>/<name>, returns the file and
-    "present" if a verified copy is already there, otherwise "downloaded". A file is only put in place when its size
-    and SHA-256 are the ones of the index."""
+    """Download one of the files (the first that is available) to <out_dir>/<folder>/<name>.
+
+    Returns the file and "present" if a verified copy is already there, otherwise "downloaded". A file is only put in
+    place when its size and SHA-256 are the ones of the index.
+    """
     problem, rejected = "not on the symbol server", False
     for file in files:
         target = os.path.join(out_dir, file.folder, file.filename)
@@ -444,8 +453,10 @@ def download_file(files, out_dir, fetch=http_get):
 
 
 def fetch_dll(name, update, out_dir, cache_dir, fetch=http_get, verified=None):
-    """get the files of one DLL, returns (status, message) of each folder or of the DLL as a whole. The paths of the
-    files that are now the ones of the update are added to the list verified."""
+    """Get the files of one DLL, returns (status, message) of each folder or of the DLL as a whole.
+
+    The paths of the files that are now the ones of the update are added to the list verified.
+    """
     try:
         index = load_index(name, cache_dir, fetch)
     except NotFound:
@@ -474,7 +485,7 @@ def fetch_dll(name, update, out_dir, cache_dir, fetch=http_get, verified=None):
 
 
 def dll_names(extra_names=None):
-    """the DLLs of the DLL filter (config.py) without duplicates that only differ in case, or the given names"""
+    """The DLLs of the DLL filter (config.py) without duplicates that only differ in case, or the given names."""
     names, seen = [], set()
     for name in extra_names or config.DLL_FILTER:
         if not SAFE_NAME.fullmatch(name):
@@ -491,7 +502,7 @@ def default_db_name(update):
 
 
 def print_listing(index, name, windows, out=sys.stdout):
-    """the Windows versions of a DLL's index, or the updates of one Windows version with the files they have"""
+    """The Windows versions of a DLL's index, or the updates of one Windows version with the files they have."""
     updates = list_updates(index)
     if not windows:
         out.write(f"Windows versions and updates that Winbindex lists for {name}:\n")
@@ -532,8 +543,11 @@ def print_listing(index, name, windows, out=sys.stdout):
 
 
 def build_db(out_dir, update, os_version_hint, outfile, files=None, def_files=()):
-    """the API DB of the folders, with the DatabaseBuilder of this package. With files, only those files
-    of the folders are used. def_files name exports by ordinal only, see DatabaseBuilder.applyDefFiles."""
+    """The API DB of the folders, with the DatabaseBuilder of this package.
+
+    With files, only those files of the folders are used. def_files name exports by ordinal only, see
+    DatabaseBuilder.applyDefFiles.
+    """
     from . import DatabaseBuilder
 
     paths = [
@@ -551,7 +565,7 @@ def build_db(out_dir, update, os_version_hint, outfile, files=None, def_files=()
 
 
 def read_def_files(args):
-    """(bitness, DLL file name, {ordinal: name}) of the DEF files of --def32 and --def64"""
+    """(bitness, DLL file name, {ordinal: name}) of the DEF files of --def32 and --def64."""
     from .DatabaseBuilder import read_def_files as read
 
     try:
@@ -648,7 +662,7 @@ def run(args, fetch=None, out=None):
 
 
 def other_files(out_dir, files):
-    """the DLLs in the folders of out_dir that are not among files, e.g. left from a run for another update"""
+    """The DLLs in the folders of out_dir that are not among files, e.g. left from a run for another update."""
     # a file name is not case sensitive on Windows, the file may be there in another spelling than the one of the index
     kept = {os.path.normcase(os.path.abspath(path)) for path in files}
     others = []
@@ -672,9 +686,9 @@ def clean_partial_files(out_dir):
 
 
 def main(argv=None):
-    # the DB is built by DatabaseBuilder, which needs Python 3.10
-    if sys.version_info < (3, 10):  # noqa: UP036
-        sys.exit("The DllDownloader needs Python 3.10 or newer, this is Python {}.{}.".format(*sys.version_info[:2]))
+    # the DB is built by DatabaseBuilder, which needs Python 3.11
+    if sys.version_info < (3, 11):  # noqa: UP036
+        sys.exit("The DllDownloader needs Python 3.11 or newer, this is Python {}.{}.".format(*sys.version_info[:2]))
     parser = argparse.ArgumentParser(
         description="Build an API DB for a Windows build from DLLs of Microsoft's symbol server, found with Winbindex.",
         prog="python -m apiscout.db_builder.DllDownloader",

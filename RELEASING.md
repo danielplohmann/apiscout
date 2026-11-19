@@ -17,8 +17,8 @@ reads it from the installed metadata. The release workflow refuses a tag that do
 
 ## Supported Python versions
 
-ApiScout supports Python 3.10 and newer, and CI tests 3.10 through 3.15. The DB builder needs the same
-3.10; for a system that has no such Python (Windows 7), build the DB from a copy of its DLLs on
+ApiScout supports Python 3.11 and newer, and CI tests 3.11 through 3.15. The DB builder needs the same
+3.11; for a system that has no such Python (Windows 7), build the DB from a copy of its DLLs on
 another system (`--os_name`, `--os_version`, `--load_addresses`).
 
 The places that state the floor are `requires-python`, which ruff also takes its target version
@@ -72,9 +72,11 @@ Pushing the tag is the release. `.github/workflows/publish-release.yml` then:
    group, checks their metadata with `twine check --strict`, and installs the wheel into a clean
    virtual environment to import it, check the installed version and the shipped package data, and
    run `apiscout --version`.
-3. **Publish** — uploads to PyPI through [trusted publishing](https://docs.pypi.org/trusted-publishers/)
+3. **Attest** — records a [build provenance attestation](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations)
+   for the sdist and wheel, which `gh attestation verify <file> -R danielplohmann/apiscout` checks.
+4. **Publish** — uploads to PyPI through [trusted publishing](https://docs.pypi.org/trusted-publishers/)
    with signed provenance attestations. No API token is stored anywhere.
-4. **Release** — creates the GitHub release for the tag with the changelog section as its body,
+5. **Release** — creates the GitHub release for the tag with the changelog section as its body,
    GitHub's generated contributor and PR list appended under it, and the sdist and wheel attached;
    then closes the milestone.
 

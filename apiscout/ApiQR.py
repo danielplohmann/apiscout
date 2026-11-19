@@ -21,8 +21,8 @@ from .ApiVector import ApiVector
 
 
 class ApiQR:
-    """
-    Class for a two-dimensional vector where each component stands for one distinct API.
+    """Class for a two-dimensional vector where each component stands for one distinct API.
+
     The vector is saved one-dimensionally though.
     """
 
@@ -183,8 +183,9 @@ class ApiQR:
         )
 
     def __hilbertCurve(self, n):
-        """
-        Generate Hilbert curve indexing for (n, n) array. 'n' must be a power of two.
+        """Generate Hilbert curve indexing for (n, n) array.
+
+        'n' must be a power of two, see
         https://github.com/znah/notebooks/blob/master/hilbert_curve.ipynb
         """
         if n == 1:

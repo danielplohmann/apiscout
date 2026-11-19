@@ -47,6 +47,6 @@ def paused_garbage_collection():
 
 
 def read_json(path):
-    """the content of a JSON file, read as bytes and decoded at once, which is several times faster than text mode"""
+    """The content of a JSON file, read as bytes and decoded at once, which is several times faster than text mode."""
     with open(path, "rb") as f_json:
         return json.loads(f_json.read().decode("utf-8"))

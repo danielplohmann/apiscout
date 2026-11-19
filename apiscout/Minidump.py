@@ -55,7 +55,7 @@ MAX_ADDRESS = 1 << 64
 
 
 class MinidumpError(ValueError):
-    """the file is no minidump, or too damaged to be read"""
+    """The file is no minidump, or too damaged to be read."""
 
 
 @dataclass(frozen=True)
@@ -88,7 +88,7 @@ class Minidump:
 
     @property
     def bitness(self):
-        """32 or 64 by the processor architecture of the system, None if it is unknown"""
+        """32 or 64 by the processor architecture of the system, None if it is unknown."""
         if self.architecture == ARCHITECTURE_INTEL:
             return 32
         if self.architecture in (ARCHITECTURE_AMD64, ARCHITECTURE_ARM64, ARCHITECTURE_IA64):
@@ -135,8 +135,11 @@ class Minidump:
             self.architecture = self._unpack("<H", rva)[0]
 
     def _addRange(self, start, offset, size):
-        """keep a range of memory, as far as the file holds its data. The sizes of all ranges together stay within
-        the size of the file, so a damaged file can not make ApiScout work through more data than the file has."""
+        """Keep a range of memory, as far as the file holds its data.
+
+        The sizes of all ranges together stay within the size of the file, so a damaged file can not make ApiScout work
+        through more data than the file has.
+        """
         if size <= 0 or start + size > MAX_ADDRESS or offset >= len(self._data):
             return
         if offset + size > len(self._data):
@@ -181,7 +184,7 @@ class Minidump:
             self._addRange(start, data_rva, data_size)
 
     def _readString(self, rva):
-        """a MINIDUMP_STRING, empty if it is damaged"""
+        """A MINIDUMP_STRING, empty if it is damaged."""
         if not self._fits(rva, 4):
             return ""
         length = min(self._unpack("<I", rva)[0], MAX_NAME_BYTES, len(self._data) - rva - 4)
@@ -204,8 +207,10 @@ class Minidump:
             )
 
     def getRanges(self):
-        """memory ranges as (start address, bytes) sorted by address, adjacent ranges joined. Overlaps are cut off,
-        the data of the range with the lower address wins."""
+        """Memory ranges as (start address, bytes) sorted by address, adjacent ranges joined.
+
+        Overlaps are cut off, the data of the range with the lower address wins.
+        """
         merged = []
         for start, offset, size in sorted(self._ranges):
             if merged:
@@ -223,8 +228,10 @@ class Minidump:
         return [(start, self._join(pieces)) for start, _, pieces in merged]
 
     def _join(self, pieces):
-        """the data of the pieces as one buffer: a view of the file where they follow each other in it, else a copy.
-        The pieces together are not larger than the file, so a copy is not either."""
+        """The data of the pieces as one buffer: a view of the file where they follow each other in it, else a copy.
+
+        The pieces together are not larger than the file, so a copy is not either.
+        """
         joined = []
         for offset, size in pieces:
             if joined and joined[-1][0] + joined[-1][1] == offset:
