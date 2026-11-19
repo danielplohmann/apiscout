@@ -55,6 +55,7 @@ repository: {PROJECT_URL}
     "match": """examples:
   apiscout match 'WDBCAgBBAAgCA159' 'WDBCABBACAgAEAAgA155'
   apiscout match 'WDBCAgBBAAgCA159' --collection apivectors.csv -n 10
+  apiscout match 'WDBCAgBBAAgCA159' --collection apivectors.csv --min-score 0.5
   apiscout scan dump_0x00400000 --json | apiscout match - -c apivectors.csv
 
 Quote vectors, they contain characters that are special to the shell.
@@ -198,6 +199,31 @@ def match_collection(scout, vector, collection_path):
     return result
 
 
+def drop_weak_matches(args, matches):
+    """drops the matches of a collection with a score below --min-score"""
+    if not args.min_score:
+        return
+    results = matches["match_results"]
+    matches["match_results"] = [entry for entry in results if entry[2] >= args.min_score]
+    dropped = len(results) - len(matches["match_results"])
+    if dropped:
+        report(
+            args,
+            f"Dropped {dropped} of {len(results)} matches with a score below {args.min_score} "
+            "(--min-score 0 keeps all).",
+        )
+
+
+def render_matches(scout, args, matches):
+    if not matches["match_results"]:
+        # a collection without vectors is an error, so they were all dropped
+        return (
+            f"No match with a score of at least {args.min_score} in {matches['collection_filepath']} "
+            f"({matches['vectors_in_collection']} vectors).\n"
+        )
+    return scout.renderVectorCollectionResults(matches, args.max_results)
+
+
 def explain_pair(scout, vector_a, vector_b):
     try:
         return scout.explainMatch(vector_a, vector_b)
@@ -206,7 +232,9 @@ def explain_pair(scout, vector_a, vector_b):
 
 
 def explain_best_match(scout, vector, collection_path, matches):
-    """the explanation of the best match of the collection, which is first in matches"""
+    """the explanation of the best match of the collection, which is first in matches, None if --min-score left none"""
+    if not matches["match_results"]:
+        return None
     family, sample, _ = matches["match_results"][0]
     other = scout.getCollectionVector(collection_path, family, sample)
     return {"family": family, "sample": sample, **explain_pair(scout, vector, other)}
@@ -243,6 +271,16 @@ def parse_confidence(value):
     if number is None or not 0 <= number <= 100:
         raise argparse.ArgumentTypeError(f"expected a number from 0 to 100, got {value}")
     return number
+
+
+def parse_score(value):
+    try:
+        score = float(value)
+    except ValueError:
+        score = -1
+    if not 0 <= score <= 1:
+        raise argparse.ArgumentTypeError(f"expected a number from 0 to 1, got {value}")
+    return score
 
 
 def parse_timeout(value):
@@ -416,6 +454,8 @@ def cmd_scan(args):
     placer.ignore_aslr_offsets = args.ignore_aslr
     if args.explain and not args.collection:
         raise CliError("--explain explains the best match with a collection, give --collection as well.")
+    if args.min_score and not args.collection:
+        raise CliError("--min-score drops matches with a collection, give --collection as well.")
     binary = read_input(args.dump)
     minidump = None
     if Minidump.isMinidump(binary):
@@ -496,6 +536,8 @@ def cmd_scan(args):
         vector_results = scout.addDynamicApisToResults(results, dynamic)
     vector = scout.getPrimaryVector(scout.getWinApi1024Vectors(vector_results))[1]
     matches = match_collection(scout, vector["vector"], args.collection) if args.collection else None
+    if matches:
+        drop_weak_matches(args, matches)
     best_match = explain_best_match(scout, vector["vector"], args.collection, matches) if args.explain else None
     if args.json:
         document = {
@@ -520,7 +562,7 @@ def cmd_scan(args):
         lines.append(scout.renderDynamicApis(dynamic))
     lines.append(scout.renderVectorResults(vector_results))
     if matches:
-        lines.append(scout.renderVectorCollectionResults(matches, args.max_results))
+        lines.append(render_matches(scout, args, matches))
     if best_match:
         lines.append(scout.renderBestMatchExplanation(best_match))
     write_output("\n".join(lines) + "\n", args.output)
@@ -532,6 +574,8 @@ def cmd_match(args):
 
     if bool(args.other) == bool(args.collection):
         raise CliError("give either a second vector or --collection to match against.")
+    if args.min_score and not args.collection:
+        raise CliError("--min-score drops matches with a collection, give --collection instead of a second vector.")
     check_output(args.output)
     if args.collection:
         args.collection = locate(args.collection, args, "collection")
@@ -556,6 +600,7 @@ def cmd_match(args):
             text = f"Vector A: {vector}\nVector B: {args.other}\nScore: {score}\n"
     else:
         result = match_collection(scout, vector, args.collection)
+        drop_weak_matches(args, result)
         best_match = explain_best_match(scout, vector, args.collection, result) if args.explain else None
         if args.json:
             result["match_results"] = result["match_results"][: args.max_results]
@@ -563,7 +608,7 @@ def cmd_match(args):
                 result["best_match"] = best_match
             text = json.dumps(result, indent=1, default=list) + "\n"
         else:
-            lines = [scout.renderVectorCollectionResults(result, args.max_results)]
+            lines = [render_matches(scout, args, result)]
             if best_match:
                 lines.append(scout.renderBestMatchExplanation(best_match))
             text = "\n".join(lines) + "\n"
@@ -904,6 +949,17 @@ def add_db_options(parser, with_db=True):
     )
 
 
+def add_min_score_option(parser):
+    parser.add_argument(
+        "--min-score",
+        type=parse_score,
+        default=0,
+        metavar="S",
+        help="with --collection: drop matches with a score below S (0 to 1, default: 0 keeps all). The score counts as "
+        "--json has it, the list rounds it to 3 digits",
+    )
+
+
 def add_output_options(parser):
     parser.add_argument("--json", action="store_true", help="print the result as JSON")
     parser.add_argument("-o", "--output", metavar="FILE", help="write the result to FILE instead of standard output")
@@ -1003,6 +1059,7 @@ def build_parser():
         metavar="N",
         help="matches of the collection to list (default: 5)",
     )
+    add_min_score_option(scan)
     scan.add_argument(
         "--explain",
         action="store_true",
@@ -1025,6 +1082,7 @@ def build_parser():
     match.add_argument(
         "-n", "--max-results", type=parse_count(1), default=5, metavar="N", help="matches to list (default: 5)"
     )
+    add_min_score_option(match)
     match.add_argument(
         "--explain",
         action="store_true",

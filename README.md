@@ -75,6 +75,8 @@ win.trickbot    - 2021-10-05-v2000035/97b489b8[...]  - 1.000
 win.trickbot    - 2017-07-24/2ebeef90[...]           - 0.492
 ```
 
+A collection as large as Malpedia's always has five best matches, however little they share with the vector; `--min-score 0.5` drops those that score lower (`scan` and `match`).
+
 **Explain the match.** `--explain` lists the APIs that drive a score, shared or only on one side, with their weights (`apiscout match VECTOR OTHER --explain`).
 
 **See what a sample does.** `apiscout export` draws a vector as ApiQR diagram: each of the 1024 APIs has a fixed place and a colour for its topic (network, files, crypto, memory, ...), so similar samples look alike.

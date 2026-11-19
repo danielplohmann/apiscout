@@ -12,6 +12,10 @@ hits that were reported before, which a release says here.
 
 ## [Unreleased]
 
+### Added
+
+- `--min-score S` for `match --collection` and `scan --collection` drops the matches with a score below S (0 to 1, the score as `--json` has it, the list rounds it), before `--max-results` counts them, also from `--json`. A collection always has a best match, however little it shares with the vector; when none is left, the list is empty and `--explain` has nothing to explain.
+
 ### Fixed
 
 - IDA plugin: the ApiScout view stays open when `ida_scout.py` is started with `-S`. It was opened while IDA was still loading, and IDA closed it again when it restored its window layout.
