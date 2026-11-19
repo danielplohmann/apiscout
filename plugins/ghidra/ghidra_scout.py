@@ -452,7 +452,7 @@ class GhidraScout:
 
     def show_table(self, hits):
         from ghidra.app.tablechooser import AddressableRowObject, ColumnDisplay, TableChooserExecutor
-        from java.lang import String
+        from java.lang import Integer, String
         from jpype import JImplements, JOverride
 
         scout = self
@@ -469,10 +469,12 @@ class GhidraScout:
         # JPype proxies do not run the default methods of an interface, they are implemented here as well
         @JImplements(ColumnDisplay)
         class Column:
-            def __init__(self, name, get_value, get_sort_key=None):
+            def __init__(self, name, get_value, get_sort_key=None, column_class=String):
                 self.name = name
                 self.get_value = get_value
                 self.get_sort_key = get_sort_key or get_value
+                # the class decides the filter operators of the column: numbers for Integer, text for String
+                self.column_class = column_class
 
             @JOverride
             def getColumnName(self):
@@ -484,7 +486,7 @@ class GhidraScout:
 
             @JOverride
             def getColumnClass(self):
-                return String.class_
+                return self.column_class.class_
 
             @JOverride
             def getRenderer(self):
@@ -530,7 +532,10 @@ class GhidraScout:
         dialog.addCustomColumn(Column("API", lambda hit: get_label_name(hit.api, hit.dll)))
         dialog.addCustomColumn(Column("Library", lambda hit: hit.dll))
         dialog.addCustomColumn(Column("API Address", lambda hit: f"{hit.api_address:x}", lambda hit: hit.api_address))
-        dialog.addCustomColumn(Column("Confidence", lambda hit: str(hit.confidence), lambda hit: hit.confidence))
+        # a boxed Integer, as JPype would box a Python int as Long, which does not match the column class
+        dialog.addCustomColumn(
+            Column("Confidence", lambda hit: Integer.valueOf(int(hit.confidence)), lambda hit: hit.confidence, Integer)
+        )
         for hit in hits:
             dialog.add(ApiRow(hit))
         dialog.setClosedListener(self.close_windows_archive)
