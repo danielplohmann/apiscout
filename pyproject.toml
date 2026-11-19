@@ -31,7 +31,7 @@ Repository = "https://github.com/danielplohmann/apiscout"
 Changelog = "https://github.com/danielplohmann/apiscout/blob/master/CHANGELOG.md"
 
 [dependency-groups]
-dev = ["ruff==0.17.5", "ty==0.0.104", "requests"]
+dev = ["pytest==9.2.0", "ruff==0.17.5", "ty==0.0.104", "requests"]
 # what publish-release.yml builds and checks the distribution with
 release = ["build==1.6.1", "twine==7.0.0"]
 
@@ -51,6 +51,19 @@ ignore = ["E501"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["apiscout"]
+
+[tool.pytest]
+testpaths = ["tests"]
+# collect what unittest collects: the TestCase classes of the test*.py files
+python_files = ["test*.py"]
+python_classes = []
+python_functions = []
+# the repository root has an __init__.py too (the Binary Ninja entry point), so in a checkout named apiscout the test
+# modules are named apiscout.tests.* and that __init__.py would be imported as apiscout: import the package first
+addopts = ["-ra", "--import-mode=importlib", "-p", "apiscout"]
+# the tests import their helpers from each other as tests.*
+pythonpath = ["."]
+strict = true
 
 [tool.ty.src]
 # .github: release_guard.py runs on the Python 3.11 of publish-release.yml and reads tomllib, which 3.10 lacks

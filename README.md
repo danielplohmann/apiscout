@@ -257,7 +257,7 @@ bv = binaryninja.load(raw, options={"loader.imageBase": 0x400000, "loader.platfo
 
 ```bash
 uv sync
-uv run python -m unittest discover -s tests -p "test*.py" -t .
+uv run pytest
 uv run ruff check && uv run ruff format --check && uv run ty check
 ```
 

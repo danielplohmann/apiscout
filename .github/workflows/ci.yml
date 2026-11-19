@@ -48,7 +48,7 @@ jobs:
           version: "0.13.8"
           python-version: ${{ matrix.python-version }}
       - run: uv sync --locked
-      - run: uv run python -m unittest discover -s tests -p "test*.py" -t .
+      - run: uv run pytest
 
   zizmor:
     name: Workflow security audit
