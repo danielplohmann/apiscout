@@ -30,6 +30,71 @@ def get_data_dir():
     return os.path.join(base, "apiscout", "dbs")
 
 
+def default_db_dirs():
+    """Candidate folders in priority order, with an explicit environment override."""
+    if override := os.environ.get("APISCOUT_DB_DIR"):
+        return [override]
+    return list(
+        dict.fromkeys(
+            [
+                os.path.join(os.getcwd(), "dbs"),
+                get_data_dir(),
+                os.path.join(os.path.dirname(os.path.dirname(__file__)), "dbs"),
+            ]
+        )
+    )
+
+
+def db_paths(directory):
+    if not os.path.isdir(directory):
+        return []
+    return sorted(
+        os.path.join(directory, name)
+        for name in os.listdir(directory)
+        if name.endswith(".json") and os.path.isfile(os.path.join(directory, name))
+    )
+
+
+def find_db_file(path, directories=None):
+    """Find a database basename while preserving explicitly given paths."""
+    if os.path.exists(path) or os.path.basename(path) != path:
+        return path
+    for directory in default_db_dirs() if directories is None else directories:
+        candidate = os.path.join(directory, path)
+        if os.path.isfile(candidate):
+            return candidate
+    return path
+
+
+def is_api_db(document):
+    """Identify API DB JSON by its top-level schema."""
+    return (
+        isinstance(document, dict)
+        and isinstance(document.get("os_name"), str)
+        and isinstance(document.get("dlls"), dict)
+    )
+
+
+def read_api_db(path):
+    """Read a database for discovery, returning None for other JSON or unreadable files."""
+    from .utility import paused_garbage_collection, read_json
+
+    try:
+        with paused_garbage_collection():
+            document = read_json(path)
+    except (OSError, ValueError):
+        return None
+    return document if is_api_db(document) else None
+
+
+def first_db_dir():
+    directories = default_db_dirs()
+    return next(
+        (directory for directory in directories if any(read_api_db(path) is not None for path in db_paths(directory))),
+        None,
+    )
+
+
 def get_sha256(path):
     digest = hashlib.sha256()
     with open(path, "rb") as f_in:

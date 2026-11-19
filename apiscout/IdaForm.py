@@ -3,14 +3,13 @@
 # https://github.com/idapython/src/blob/master/examples/ex_askusingform.py
 # (c) Hex-Rays
 #
-import json
 import os
 import re
 
 import ida_kernwin
 from ida_kernwin import Choose, Form
 
-from apiscout.LoadAddresses import ModuleListError
+from apiscout.db_index import db_paths, read_api_db
 
 ICONS = {}
 
@@ -48,25 +47,19 @@ class ApiDbChooser(Choose):
 
     def populate(self, api_db_folder):
         api_dbs = []
-        if not os.path.isdir(api_db_folder):
-            return api_dbs
-        for filename in sorted(os.listdir(api_db_folder)):
-            if not filename.endswith(".json"):
+        for path in db_paths(api_db_folder):
+            document = read_api_db(path)
+            if document is None:
                 continue
-            try:
-                with open(api_db_folder + os.sep + filename) as f_api_file:
-                    db_data = json.loads(f_api_file.read())
-                api_dbs.append(
-                    [
-                        filename,
-                        str(db_data["os_version"]).split(" ")[0],
-                        "yes" if db_data["aslr_offsets"] else "no",
-                        str(int(db_data["num_dlls"])),
-                        str(int(db_data["num_apis"])),
-                    ]
-                )
-            except (OSError, ValueError, KeyError, TypeError):
-                continue
+            api_dbs.append(
+                [
+                    os.path.basename(path),
+                    str(document.get("os_version", "")).partition(" ")[0],
+                    "yes" if document.get("aslr_offsets") else "no",
+                    str(document.get("num_dlls", len(document["dlls"]))),
+                    str(document.get("num_apis", "")),
+                ]
+            )
         return api_dbs
 
     def OnClose(self):
@@ -94,7 +87,7 @@ BUTTON CANCEL Cancel
 ApiScout
 
 {FormChangeCb}
-Select the API DBs of the system the memory dump was taken from (found in apiscout/dbs):
+Select the API DBs of the system the memory dump was taken from:
 <:{cApiDbChooser}>
 <Other API DB file:{iFileOpen}>
 Module list with the load addresses of the DLLs (optional, lines of hex address and DLL path):
@@ -127,6 +120,7 @@ class ApiResultsChooser(Choose):
     ACTION_ANNOTATE = "apiscout:annotate"
     ACTION_ANNOTATE_ALL = "apiscout:annotate_all"
     ACTION_FILTER = "apiscout:filter"
+    ACTION_CONFIDENCE = "apiscout:confidence"
 
     def __init__(self, tools, rows, rescan):
         Choose.__init__(
@@ -138,6 +132,7 @@ class ApiResultsChooser(Choose):
                 ["Library", 20],
                 ["API Address", 16 | Choose.CHCOL_HEX],
                 ["References", 8 | Choose.CHCOL_DEC],
+                ["Confidence", 8 | Choose.CHCOL_DEC],
                 ["Status", 30],
             ],
             flags=Choose.CH_MULTI | Choose.CH_RESTORE | Choose.CH_CAN_REFRESH,
@@ -146,6 +141,7 @@ class ApiResultsChooser(Choose):
         self.tools = tools
         self.rescan = rescan
         self.distance = 0
+        self.min_confidence = 0
         self._keep_rows = False
         self.all_rows = rows
         self.rows = rows
@@ -158,7 +154,15 @@ class ApiResultsChooser(Choose):
     def OnGetLine(self, n):
         row = self.rows[n]
         library = re.sub(r"(_0x[0-9a-fA-F]+)? \(\d+bit\)$", "", row[2])
-        return [f"{row[0]:X}", row[3], library, f"{row[1]:X}", str(row[4]), self.status.get(tuple(row[:4]), "")]
+        return [
+            f"{row[0]:X}",
+            row[3],
+            library,
+            f"{row[1]:X}",
+            str(row[4]),
+            str(row[5]),
+            self.status.get(tuple(row[:4]), ""),
+        ]
 
     def OnGetEA(self, n):
         return self.rows[n][0]
@@ -174,7 +178,7 @@ class ApiResultsChooser(Choose):
         else:
             try:
                 self.all_rows = self.rescan()
-            except ModuleListError as exc:
+            except ValueError as exc:
                 # e.g. the module list was deleted since the scan before, the rows of that scan stay
                 print(f"ApiScout: {exc}.")
             self._applyFilter()
@@ -212,13 +216,25 @@ class ApiResultsChooser(Choose):
         self._applyFilter()
         self._redraw()
 
+    def filterByConfidence(self, confidence):
+        self.min_confidence = confidence
+        self._applyFilter()
+        self._redraw()
+
     def _applyFilter(self):
-        self.rows = self.tools.filterByDistance(self.all_rows, self.distance) if self.distance else self.all_rows
+        rows = self.tools.filterByDistance(self.all_rows, self.distance) if self.distance else self.all_rows
+        self.rows = [row for row in rows if row[5] >= self.min_confidence]
 
     def show(self):
         if self.Show() < 0:
             return False
-        for action_name in ("-", self.ACTION_ANNOTATE, self.ACTION_ANNOTATE_ALL, self.ACTION_FILTER):
+        for action_name in (
+            "-",
+            self.ACTION_ANNOTATE,
+            self.ACTION_ANNOTATE_ALL,
+            self.ACTION_FILTER,
+            self.ACTION_CONFIDENCE,
+        ):
             ida_kernwin.attach_action_to_popup(self.GetWidget(), None, action_name)
         return True
 

@@ -24,8 +24,8 @@ class ImportTableLoaderTestSuite(unittest.TestCase):
     """Basic test cases."""
 
     simple_peheader = b"MZ" + b"\x00" * 0x3A + b"\x60\x00\x00\x00" + b"\x00" * 0x20 + b"PE\x00\x00"
-    simple_x86 = simple_peheader + b"\x4c\x01" + b"\x00" * 0x12 + b"\x0b\x01"
-    simple_x64 = simple_peheader + b"\x64\x86" + b"\x00" * 0x12 + b"\x0b\x02"
+    simple_x86 = simple_peheader + struct.pack("<HHIIIHHH", 0x14C, 0, 0, 0, 0, 0xE0, 0, 0x10B)
+    simple_x64 = simple_peheader + struct.pack("<HHIIIHHH", 0x8664, 0, 0, 0, 0, 0xF0, 0, 0x20B)
 
     def testPeParsing(self):
         loader_fail = ImportTableLoader(ImportTableLoaderTestSuite.simple_peheader)

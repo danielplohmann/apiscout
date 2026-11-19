@@ -19,6 +19,22 @@ hits that were reported before, which a release says here.
 ### Fixed
 
 - IDA plugin: the ApiScout view stays open when `ida_scout.py` is started with `-S`. It was opened while IDA was still loading, and IDA closed it again when it restored its window layout.
+- Handle early stdout pipe closure on Windows without an error or shutdown traceback.
+- `match` and `scan --collection` no longer fail with `-o FILE`, or on a terminal or pipe that is strict about its encoding, when a sample name of the collection is not valid UTF-8. A file and a UTF-8 terminal or pipe get the name as the bytes it has in the collection, another encoding gets them as backslash escapes.
+- `update` reports an answer of Malpedia that is not JSON as an answer it does not understand, not as a failed request.
+- Binary Ninja plugin: an import table that the linear sweep took for code is annotated. The calls through the first pointer under such a function counted as references to its code, so every pointer under it was skipped as part of an instruction, 53 of 71 imports in a PlugX dump. Only reads and writes of a pointer at the start of the function are no longer taken for references: code that is called, jumped to or has its address taken is left alone as before.
+- Binary Ninja plugin: a report lists at most 2,000 API references, those with the highest confidence, and the status bar shows the progress of an annotation of more than 500 references. A report of 24,000 chance hits froze Binary Ninja for about a minute.
+- `update` reads a token file that PowerShell or Notepad stored as UTF-16 or with a byte order mark, and refuses one that holds more than the token. Until now a second line in the file ended in an error message that showed the token.
+
+### Changed
+
+- Shorter README with a runnable example and separate usage, database, and integration guides.
+- Shared database discovery across the CLI and integrations. Plugin results show hit confidence and can be filtered before annotation.
+- `collect` recognizes minidumps and uses the same DLL placement logic as `scan`. Use `--refresh` to rescan cached paths and `--jobs` to limit workers.
+- Fixed missed pointer references and incorrect confidence in flat and sparse captures. Text collection matches now report zero overlap without suggesting a best sample.
+- Collection updates validate downloads before replacement. Scan output cannot overwrite its inputs.
+- The DB builder parses custom DLL paths statically by default. Use `--load-dlls` for trusted custom DLLs on Windows. Default filenames include the full Windows version, and DB writes are atomic.
+- ApiQR writes standalone HTML by default, and hover labels work offline.
 
 ## [3.0.0] - 2026-11-18
 

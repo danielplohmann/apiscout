@@ -182,9 +182,9 @@ class GhidraScoutTestSuite(unittest.TestCase):
 
     def testDbChoices(self):
         with tempfile.TemporaryDirectory() as directory:
-            for name in ("win7.json", "win10.json", "notes.txt"):
+            for name in ("win7.json", "win10.json", "notes.json", "notes.txt"):
                 with open(os.path.join(directory, name), "w") as f_out:
-                    f_out.write("{}")
+                    f_out.write('{"os_name":"Example","dlls":{}}' if name.startswith("win") else "{}")
             self.assertEqual(
                 ["win10.json", "win7.json", "Other file...", "Module list file..."],
                 ghidra_scout.get_db_choices(directory),
@@ -360,8 +360,8 @@ class PlacementTestSuite(unittest.TestCase):
         hits, script = self.scan(dump, modules_path, blocks)
         self.assertEqual([(0x400010, "Api2"), (0x400014, "Api1")], found(hits))
         self.assertEqual([], script.errors)
-        # `scan` of a flat dump does not leave them out
-        self.assertEqual(3, len(self.case.cli_apis("--modules", modules_path, dump_path=self.flat(dump))))
+        # Flat scans also leave out hits inside placed DLLs.
+        self.assertEqual(2, len(self.case.cli_apis("--modules", modules_path, dump_path=self.flat(dump))))
         # in one region as well
         hits, _ = self.scan(dump, modules_path)
         self.assertEqual([(0x400010, "Api2"), (0x400014, "Api1")], found(hits))
@@ -441,7 +441,7 @@ class PlacementTestSuite(unittest.TestCase):
         os.mkdir(folder)
         for name in ("a.json", "b.json"):
             with open(os.path.join(folder, name), "w") as f_db:
-                f_db.write("{}")
+                f_db.write('{"os_name":"Example","dlls":{}}')
         modules = {
             "ghidra": mock.Mock(),
             "ghidra.util": mock.Mock(),
@@ -455,7 +455,10 @@ class PlacementTestSuite(unittest.TestCase):
             db_paths, module_list = FakeGhidraScout(script).ask_for_databases(folder)
             self.assertEqual([os.path.join(folder, "b.json")], db_paths)
             self.assertEqual(self.case.modules_path, module_list)
-            self.assertEqual(["a.json", "b.json", "Other file...", "Module list file..."], script.asked[2])
+            self.assertEqual(
+                ["a.json", "b.json", "Other file...", "Module list file...", ghidra_scout.CONFIDENCE_FILTER],
+                script.asked[2],
+            )
             # the module list is optional
             script = HeadlessScript(program, answers=[["a.json"], ""])
             self.assertEqual(

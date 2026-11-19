@@ -13,6 +13,7 @@
 import numbers
 import operator
 import os
+from html import escape
 
 import numpy as np
 
@@ -87,28 +88,28 @@ class ApiQR:
         hilbert_size = int(len(self.vector_unsorted) ** 0.5)
         return f"""\
         <meta charset="utf-8">
-        <link href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-Gn5384xqQ1aoWXA+058RXPxPg6fy4IWvTNh0E263XmFcJlSAwiGgFAW/dAiS6JXm" crossorigin="anonymous">
-        <script src="https://code.jquery.com/jquery-3.3.1.min.js" integrity="sha256-FgpCb/KJQlLNfOu91ta32o/NMZxltwRo8QtmkMRdAu8=" crossorigin="anonymous"></script>
-        <script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0/js/bootstrap.bundle.min.js" integrity="sha384-feJI7QwhOS+hwpX2zkaeJQjeiwlhOP+SdQDqhgvvo1DsjtiSQByFdThsxO669S2D" crossorigin="anonymous"></script>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>ApiQR</title>
         <style>
+        main {{
+            max-width: 40rem;
+        }}
+        table {{
+            width: 100%;
+            table-layout: fixed;
+            border-collapse: collapse;
+        }}
         td.apicell {{
-            position: relative;
-            width: {1.0 / hilbert_size:.4f}%;
+            padding: 0;
+            width: {100.0 / hilbert_size:.4f}%;
         }}
-        td.apicell-white {{
-            background-color: rgb({self.context.colors_white[0]:d}, {self.context.colors_white[1]:d}, {self.context.colors_white[2]:d});
-        }}
-        td.apicell:after {{
+        td.apicell::after {{
             content: '';
             display: block;
             margin-top: 100%;
         }}
-        td.apicell .content {{
-            position: absolute;
-            top: 0;
-            bottom: 0;
-            left: 0;
-            right: 0;
+        p {{
+            overflow-wrap: anywhere;
         }}
         </style>\n"""
 
@@ -122,17 +123,16 @@ class ApiQR:
                 value, raw_color = vector[index], colors[index]
                 color = self.__mapColor(value, raw_color)
                 if color == self.context.colors_white:
-                    # result += '<td class="api-cell api-cell-white"></td>'
                     color = self.__mapColor(0.2, raw_color)
-                    text = ":".join(apis[index])
-                    result += f'<td data-toggle="popover" data-content="{text:s}" data-delay="200" class="apicell" style="background-color: rgb({color[0]:d}, {color[1]:d}, {color[2]:d});"></td>'
                 else:
-                    text = ":".join(apis[index])
                     # rescale value to range 0.4-1.0
                     value = 0.4 + (value * (1 - 0.4))
                     color = self.__mapColor(value, raw_color)
-                    result += f'<td data-toggle="popover" data-content="{text:s}" class="apicell" style="background-color: rgb({color[0]:d}, {color[1]:d}, {color[2]:d});"></td>'
-                result += "\n"
+                text = escape(":".join(apis[index]))
+                result += (
+                    f'<td title="{text}" class="apicell" '
+                    f'style="background-color: rgb({color[0]}, {color[1]}, {color[2]});"></td>\n'
+                )
             result += "</tr>\n"
         return result
 
@@ -142,19 +142,19 @@ class ApiQR:
         result = "<table>\n"
         result += self._getHtmlTableContent(hilbert_size, vector)
         result += "</table>\n"
-        result += "<script>$('td.apicell').popover({trigger: 'hover'})</script>"
         return result
 
-    def exportHtml(self, output_path, full=False):
+    def exportHtml(self, output_path, full=True):
+        """Write a standalone HTML diagram, or return the table fragment with full=False."""
         result = self.getHtmlTable()
         if not full:
             return result
         this_path = os.path.abspath(os.path.join(os.path.dirname(__file__)))
-        with open(os.sep.join([this_path, "data", "html_frame.html"])) as f_html:
+        with open(os.sep.join([this_path, "data", "html_frame.html"]), encoding="utf-8") as f_html:
             # the vector is kept in the order of the (rank sorted) WinApi1024 definition, which is also the order of its compressed form
             compressed_vector = self._apivector.compress([1 if value else 0 for value in self.vector])
             result = f_html.read().format(vector=compressed_vector, body=result, head=self.getHtmlHeader())
-        with open(output_path, "w") as f_out:
+        with open(output_path, "w", encoding="utf-8") as f_out:
             f_out.write(result)
 
     def __mapColor(self, value, color):

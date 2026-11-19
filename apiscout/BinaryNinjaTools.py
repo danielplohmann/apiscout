@@ -18,18 +18,27 @@ import os
 import re
 
 from binaryninja import interaction
-from binaryninja.enums import SymbolType, TypeClass
+from binaryninja.enums import LowLevelILOperation, SymbolType, TypeClass
 from binaryninja.log import log_error, log_info, log_warn
 from binaryninja.plugin import BackgroundTaskThread, PluginCommand
 from binaryninja.types import Symbol, Type
 
+from apiscout import db_index
 from apiscout.ApiScout import ApiScout
 from apiscout.LoadAddresses import describe_placements, placed_image_ranges, placer_for_modules, read_from_regions
+from apiscout.utility import paused_garbage_collection, read_json
 
 LOGGER = "ApiScout"
 SESSION_KEY = "apiscout"
+ANNOTATIONS_KEY = "apiscout.annotations"
 # the default of the neighbourhood filter, as in the IDA plugin
 DEFAULT_DISTANCE = 0x800
+CONFIDENCE_PROMPT = "Minimum confidence (0 keeps all, maximum 100)"
+# Binary Ninja lays out the report in the thread of its user interface: a table of 24,000 rows blocked it for a
+# minute, one of 2,800 rows was up in under two seconds. A dump scanned with the API DB of its system stays far below.
+REPORT_MAX_ROWS = 2000
+# the rows annotated between two updates of the progress text of the task
+PROGRESS_INTERVAL = 500
 DLL_SUFFIX = re.compile(r"(_0x[0-9a-fA-F]+)? \(\d+bit\)$")
 ORDINAL_ONLY = re.compile(r"None<(?P<ordinal>\d+)>$")
 
@@ -86,23 +95,26 @@ def _count_references(bv, address):
     return sum(1 for _ in bv.get_code_refs(address)) + sum(1 for _ in bv.get_data_refs(address))
 
 
-def get_result_rows(bv, results):
+def get_result_rows(bv, results, confidences=None, confidence_scores=None):
     """
     unique API references over the results of all API DBs as rows [address, API address, DLL, API, references],
     without pointers into the view's own memory
     """
     rows = {}
-    for entries in results.values():
+    for map_name, entries in results.items():
         for entry in entries:
             if bv.get_segment_at(entry[1]) is not None:
                 continue
             key = (bv.start + entry[0], entry[1], f"{entry[2]} ({entry[4]}bit)", entry[3])
             rows[key] = max(rows.get(key, 0), entry[6] - 1)
+            if confidence_scores is not None and confidences is not None:
+                score = confidences[map_name][entry[0], entry[4]]
+                confidence_scores[key] = max(score, confidence_scores.get(key, 0))
     # the references known to Binary Ninja include those from other segments
     return [list(key) + [max(references, _count_references(bv, key[0]))] for key, references in sorted(rows.items())]
 
 
-def scan(bv, db_paths, ignore_aslr_offsets=False, task=None, modules=None):
+def scan(bv, db_paths, ignore_aslr_offsets=False, task=None, modules=None, *, confidence_scores=None):
     """the API references found in the view's memory with the given API DBs as rows, see get_result_rows().
     The DLLs of the API DBs are placed where the module list in the file `modules` has them, as `apiscout scan
     --modules` does; raises ModuleListError if it can not be used."""
@@ -110,11 +122,32 @@ def scan(bv, db_paths, ignore_aslr_offsets=False, task=None, modules=None):
     scout = ApiScout()
     scout.ignoreAslrOffsets(ignore_aslr_offsets)
     for path in db_paths:
-        scout.loadDbFile(path, placer.forDb(path))
+        path = os.fspath(path)
+        if os.path.basename(path) == path and not os.path.isfile(path):
+            path = next(
+                (
+                    os.path.join(folder, path)
+                    for folder in get_db_folders()
+                    if os.path.isfile(os.path.join(folder, path))
+                ),
+                path,
+            )
+        if not os.path.isfile(path):
+            raise ValueError(f"API DB not found: {path}. Run apiscout dbs download or choose an existing API DB.")
+        try:
+            with paused_garbage_collection():
+                document = read_json(path)
+            if not db_index.is_api_db(document):
+                raise ValueError("expected an API database JSON object")
+            scout.loadDbFile(path, placer.forDb(path), api_db=document)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise ValueError(f"Cannot read API DB {path}: {exc}") from exc
     for line in describe_placements(placer):
         _info(line)
     bitness_string = "32bit and 64bit" if scout.has_64bit else "32bit"
     memory = sorted(get_memory(bv).items())
+    if not memory:
+        return []
     results = {}
     for segment_address, binary in memory:
         if task is not None and task.cancelled:
@@ -128,15 +161,23 @@ def scan(bv, db_paths, ignore_aslr_offsets=False, task=None, modules=None):
         _merge_results(results, scout.crawl(binary))
     # the images of the DLLs in the memory hold their export tables and import address tables, not references
     ranges = placed_image_ranges(placer, functools.partial(read_from_regions, memory))
+    scout.setBaseAddress(bv.start)
     if ranges:
-        scout.setBaseAddress(bv.start)
         results = scout.filter(results, 0, 0, 0, own_image=False, exclude_ranges=ranges)
-    return get_result_rows(bv, results)
+    confidences = scout.getConfidences(results) if confidence_scores is not None else None
+    return get_result_rows(bv, results, confidences, confidence_scores)
 
 
 def filter_by_distance(rows, distance):
     """only the rows with another API reference within the given distance, 0 keeps all of them"""
     return ApiScout._getFilteredList(distance, rows) if distance else list(rows)
+
+
+def _select_rows(rows, distance, confidence_scores, min_confidence):
+    selected = filter_by_distance(rows, distance)
+    if min_confidence:
+        selected = [row for row in selected if confidence_scores.get(tuple(row[:4]), 0) >= min_confidence]
+    return selected
 
 
 class PrototypeResolver:
@@ -183,10 +224,62 @@ class PrototypeResolver:
         return None
 
 
+def _uses_as_pointer(reference, address, size):
+    """
+    whether the instruction of a code reference only reads or writes a pointer of the given size at the address, as
+    `call [address]`, `mov edi, [address]` and `mov [address], eax` do. That is how code uses the slot of an import
+    and no sign of code at the address. False where the address is a value (`call address`, `push address`), where
+    the access is of another size (`cmp byte [address], 0xcc`) or where the address is not found in the IL of the
+    instruction.
+    """
+    if reference.function is None:
+        return False
+    constants = (LowLevelILOperation.LLIL_CONST, LowLevelILOperation.LLIL_CONST_PTR)
+    # Binary Ninja has the constants of the IL as signed numbers
+    mask = (1 << (8 * size)) - 1
+    found = False
+    pending = [(il, False) for il in reference.function.get_llils_at(reference.address, reference.arch)]
+    while pending:
+        expression, in_pointer = pending.pop()
+        if isinstance(expression, list):
+            pending.extend((operand, in_pointer) for operand in expression)
+            continue
+        operation = getattr(expression, "operation", None)
+        if operation is None:
+            # a register, a flag or a number, no expression
+            continue
+        if operation in constants:
+            if expression.constant & mask == address:
+                if not in_pointer:
+                    return False
+                found = True
+            continue
+        for index, operand in enumerate(expression.operands):
+            is_pointer = expression.size == size and (
+                operation == LowLevelILOperation.LLIL_LOAD
+                or (operation == LowLevelILOperation.LLIL_STORE and index == 0)
+            )
+            pending.append((operand, in_pointer or is_pointer))
+    return found
+
+
 def _is_referenced(bv, function):
+    """
+    whether the function is an entry of the view or something refers to it otherwise than code does to a pointer
+    in its place. The linear sweep also finds functions in a table of imports, and the calls through its first
+    pointer are then code references to its start.
+    """
     if function.start == bv.entry_point or any(entry.start == function.start for entry in bv.entry_functions):
         return True
-    return any(True for _ in bv.get_code_refs(function.start)) or any(True for _ in bv.get_data_refs(function.start))
+    if any(True for _ in bv.get_data_refs(function.start)):
+        return True
+    for reference in bv.get_code_refs(function.start):
+        if reference.function is not None and reference.function.start == function.start:
+            # a jump or call of the function to its own start is no reference from outside
+            continue
+        if not _uses_as_pointer(reference, function.start, bv.address_size):
+            return True
+    return False
 
 
 def _check_location(bv, address, size):
@@ -213,7 +306,7 @@ def _check_location(bv, address, size):
 
 
 def _set_name(bv, address, name, symbol_type):
-    """a user symbol of an earlier annotation, e.g. with another API DB, gives way to the new one"""
+    """Replace a symbol previously added by ApiScout, after the caller checks ownership."""
     symbol = bv.get_symbol_at(address)
     if (
         symbol is not None
@@ -249,6 +342,34 @@ def _apply(bv, row, resolver):
     return "annotated"
 
 
+def _current_annotations(bv):
+    annotations = bv.session_data.get(ANNOTATIONS_KEY)
+    if annotations is None:
+        annotations = {}
+        bv.session_data[ANNOTATIONS_KEY] = annotations
+    for address, (key, _) in list(annotations.items()):
+        symbol = bv.get_symbol_at(address)
+        expected_type = (
+            SymbolType.ImportAddressSymbol if get_bitness(key) == bv.address_size * 8 else SymbolType.DataSymbol
+        )
+        if symbol is None or symbol.auto or symbol.name != get_api_name(key) or symbol.type != expected_type:
+            del annotations[address]
+    return annotations
+
+
+def _refresh_status(bv, status, rows=()):
+    annotations = _current_annotations(bv)
+    current = {key: outcome for key, outcome in annotations.values()}
+    for key, outcome in list(status.items()):
+        if outcome.startswith("annotated") and key not in current:
+            del status[key]
+    for row in rows:
+        key = tuple(row[:4])
+        if key in current:
+            status[key] = current[key]
+    return annotations
+
+
 def annotate(bv, rows, status=None, task=None):
     """
     annotate the given rows, a description of the outcome per row is stored in the optional dict status.
@@ -256,29 +377,24 @@ def annotate(bv, rows, status=None, task=None):
     """
     if status is None:
         status = {}
-    for key in [key for key, outcome in status.items() if outcome.startswith("annotated")]:
-        # an undo removed the annotation, the report must not claim it any longer
-        symbol = bv.get_symbol_at(key[0])
-        if symbol is None or symbol.name != get_api_name(key):
-            del status[key]
+    annotations = _refresh_status(bv, status)
     resolver = PrototypeResolver(bv)
     num_annotated = 0
     num_skipped = 0
     unresolved_types = set()
     annotated_locations = {}
     # pointers annotated earlier or in this run as {location: (API name, size, row)}, which a later row must not cut
-    pointers = {
-        key[0]: (get_api_name(key), get_bitness(key) // 8, key)
-        for key, outcome in status.items()
-        if outcome.startswith("annotated")
-    }
+    pointers = {key[0]: (get_api_name(key), get_bitness(key) // 8, key) for key, _ in annotations.values()}
     pointer_bits = bv.address_size * 8
     undo_state = bv.begin_undo_actions()
     try:
         # of several rows for one location, the one of the view's pointer size is applied
-        for row in sorted(rows, key=lambda row: (row[0], get_bitness(row) != pointer_bits, row[1:4])):
+        ordered = sorted(rows, key=lambda row: (row[0], get_bitness(row) != pointer_bits, row[1:4]))
+        for index, row in enumerate(ordered):
             if task is not None and task.cancelled:
                 break
+            if task is not None and index % PROGRESS_INTERVAL == 0 and len(ordered) > PROGRESS_INTERVAL:
+                task.progress = f"ApiScout: annotating {index} of {len(ordered)}"
             key = tuple(row[:4])
             if row[0] in annotated_locations:
                 # several API DBs can resolve one location differently, the first one listed is applied
@@ -293,6 +409,8 @@ def annotate(bv, rows, status=None, task=None):
             ]
             if overlapped:
                 reason, in_the_way = "overlapping " + overlapped[0], []
+            elif (symbol := bv.get_symbol_at(row[0])) is not None and not symbol.auto and row[0] not in annotations:
+                reason, in_the_way = f"already named {symbol.name}", []
             else:
                 reason, in_the_way = _check_location(bv, row[0], size)
             if reason:
@@ -311,6 +429,7 @@ def annotate(bv, rows, status=None, task=None):
                 status[pointers[row[0]][2]] = "skipped: location is annotated as " + get_api_name(row)
             pointers[row[0]] = (get_api_name(row), size, key)
             status[key] = outcome
+            annotations[row[0]] = (key, outcome)
             if outcome == "annotated (no type information)" and not ORDINAL_ONLY.match(str(row[3])):
                 unresolved_types.add(str(row[3]))
     finally:
@@ -329,22 +448,36 @@ def get_state(bv):
     return bv.session_data.get(SESSION_KEY)
 
 
-def scan_and_annotate(bv, db_paths, ignore_aslr_offsets=False, distance=0, task=None, modules=None):
+def scan_and_annotate(
+    bv, db_paths, ignore_aslr_offsets=False, distance=0, task=None, modules=None, *, min_confidence=0
+):
     """
     scan the view with the given API DBs and annotate all references found, with distance > 0 only those with
     another reference within this many bytes. modules is the file with the module list that gives the load addresses
     of the DLLs (lines of hex load address and DLL path, as `apiscout scan --modules`).
+    min_confidence (0 to 100) limits annotation to hits at or above that score.
     Returns the state also kept in bv.session_data["apiscout"]:
     {"rows": rows found, "status": {row[:4]: outcome}, "annotated": number, "skipped": number}.
     A scan cancelled with the task annotates nothing and keeps the state of the last scan.
     """
-    rows = scan(bv, db_paths, ignore_aslr_offsets, task, modules)
-    state = {"rows": rows, "status": {}, "db_paths": list(db_paths), "annotated": 0, "skipped": 0}
+    if not 0 <= min_confidence <= 100:
+        raise ValueError("Minimum confidence must be between 0 and 100.")
+    db_paths = list(db_paths)
+    confidence_scores = {}
+    rows = scan(bv, db_paths, ignore_aslr_offsets, task, modules, confidence_scores=confidence_scores)
+    state = {
+        "rows": rows,
+        "status": {},
+        "db_paths": db_paths,
+        "confidence": confidence_scores,
+        "annotated": 0,
+        "skipped": 0,
+    }
     if task is not None and task.cancelled:
         _info("ApiScout: the scan was cancelled, nothing annotated.")
         return state
     bv.session_data[SESSION_KEY] = state
-    selected = filter_by_distance(rows, distance)
+    selected = _select_rows(rows, distance, confidence_scores, min_confidence)
     state["annotated"], state["skipped"] = annotate(bv, selected, state["status"], task)
     _info(f"ApiScout: annotated {state['annotated']} of {len(rows)} API references ({state['skipped']} skipped).")
     return state
@@ -361,71 +494,123 @@ def _as_text(value):
 
 
 def get_db_folders():
-    """folders searched for API DBs: the default one of "apiscout dbs download" and the dbs folder of a checkout"""
-    from apiscout.cli import get_default_db_dir
-
-    folders = [get_default_db_dir(), os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "dbs")]
-    unique = []
-    for folder in folders:
-        if os.path.isdir(folder) and os.path.realpath(folder) not in map(os.path.realpath, unique):
-            unique.append(folder)
-    return unique
+    """Existing API DB folders in the same search order as the CLI."""
+    return list(
+        dict.fromkeys(os.path.realpath(folder) for folder in db_index.default_db_dirs() if os.path.isdir(folder))
+    )
 
 
-def ask_parameters():
+def _minimum_confidence(field):
+    value = field.result if field.result is not None else 0
+    if 0 <= value <= 100:
+        return value
+    log_warn("Minimum confidence must be between 0 and 100.", LOGGER)
+    return None
+
+
+def ask_parameters(for_annotation=False):
     """the API DBs and options chosen in a form, None if cancelled or nothing chosen"""
     db_files = []
     listed = set()
     for folder in get_db_folders():
-        for name in sorted(os.listdir(folder)):
+        try:
+            paths = db_index.db_paths(folder)
+        except OSError as exc:
+            log_warn(f"Cannot list API DB folder {folder}: {exc}", LOGGER)
+            continue
+        for path in paths:
             # the same DB in several folders is offered once, from the first folder
-            if name.endswith(".json") and name not in listed:
-                listed.add(name)
-                db_files.append(os.path.join(folder, name))
+            name = os.path.basename(path)
+            if name in listed:
+                continue
+            if db_index.read_api_db(path) is None:
+                continue
+            listed.add(name)
+            db_files.append(path)
     fields = ["API DBs of the system the memory dump was taken from:"]
+    if not db_files:
+        fields.append("Run apiscout dbs download or choose an existing API DB file below.")
     checkboxes = [interaction.CheckboxField(os.path.basename(path), False) for path in db_files]
     other_db = interaction.OpenFileNameField("Other API DB file", "*.json")
     modules = interaction.OpenFileNameField("Module list with the load addresses of the DLLs (optional)")
     ignore_aslr = interaction.CheckboxField("Ignore the ASLR offsets stored in the API DBs", False)
     fields.extend(checkboxes)
     fields.extend([None, other_db, modules, ignore_aslr])
+    confidence = interaction.IntegerField(CONFIDENCE_PROMPT, 0) if for_annotation else None
+    if confidence is not None:
+        fields.append(confidence)
     if not interaction.get_form_input(fields, "ApiScout"):
         return None
     db_paths = [path for path, checkbox in zip(db_files, checkboxes, strict=True) if checkbox.result]
     other_path = _as_text(other_db.result)
-    if other_path and os.path.isfile(other_path) and os.path.abspath(other_path) not in map(os.path.abspath, db_paths):
+    if other_path and not os.path.isfile(other_path):
+        log_error(f"API DB not found: {other_path}", LOGGER)
+        return None
+    if other_path and os.path.realpath(other_path) not in map(os.path.realpath, db_paths):
         db_paths.append(other_path)
     if not db_paths:
         log_warn("No API DB selected, nothing to do.", LOGGER)
         return None
-    return {
+    parameters = {
         "db_paths": db_paths,
         "ignore_aslr_offsets": bool(ignore_aslr.result),
         "modules": _as_text(modules.result) or None,
     }
+    if confidence is not None:
+        minimum = _minimum_confidence(confidence)
+        if minimum is None:
+            return None
+        parameters["min_confidence"] = minimum
+    return parameters
 
 
-def render_markdown(rows, status):
-    lines = [
-        f"# ApiScout: {len(rows)} API references",
-        "",
-        "| Address | API | Library | API Address | References | Status |",
-        "| :--- | :--- | :--- | :--- | ---: | :--- |",
-    ]
-    for row in rows:
+def get_report_rows(rows, confidence):
+    """(the rows a report lists, a note on those it leaves out): of more than REPORT_MAX_ROWS those with the highest
+    confidence, as the rows that are left out are mostly chance hits"""
+    if len(rows) <= REPORT_MAX_ROWS:
+        return rows, ""
+    ranked = sorted(range(len(rows)), key=lambda index: (-confidence.get(tuple(rows[index][:4]), 0), index))
+    listed = [rows[index] for index in sorted(ranked[:REPORT_MAX_ROWS])]
+    note = (
+        f"Listed are the {REPORT_MAX_ROWS} with the highest confidence. The ApiScout commands work on all "
+        f"{len(rows)}, which are the rows of the scan in the session data of the view."
+    )
+    return listed, note
+
+
+def render_markdown(rows, status, confidence=None):
+    confidence = confidence or {}
+    listed, note = get_report_rows(rows, confidence)
+    lines = [f"# ApiScout: {len(rows)} API references", ""]
+    if note:
+        lines.extend([note, ""])
+    lines.extend(
+        [
+            "| Address | API | Library | API Address | References | Confidence | Status |",
+            "| :--- | :--- | :--- | :--- | ---: | ---: | :--- |",
+        ]
+    )
+    for row in listed:
+        key = tuple(row[:4])
         lines.append(
             f"| [0x{row[0]:x}](binaryninja://?expr=0x{row[0]:x}) | {get_api_name(row)} | {get_dll_name(row)} "
-            f"({get_bitness(row)}bit) | 0x{row[1]:x} | {row[4]} | {status.get(tuple(row[:4]), '')} |"
+            f"({get_bitness(row)}bit) | 0x{row[1]:x} | {row[4]} | {confidence.get(key, '')} | {status.get(key, '')} |"
         )
     return "\n".join(lines) + "\n"
 
 
-def render_text(rows, status):
+def render_text(rows, status, confidence=None):
+    confidence = confidence or {}
+    listed, note = get_report_rows(rows, confidence)
     lines = [f"ApiScout: {len(rows)} API references"]
-    for row in rows:
+    if note:
+        lines.append(note)
+    for row in listed:
+        key = tuple(row[:4])
         library = f"{get_dll_name(row)} ({get_bitness(row)}bit)"
-        outcome = status.get(tuple(row[:4]), "")
-        lines.append(f"0x{row[0]:x}  {get_api_name(row):40} {library:30} 0x{row[1]:x}  {row[4]:4}  {outcome}")
+        outcome = status.get(key, "")
+        score = f"  confidence {confidence[key]}" if key in confidence else ""
+        lines.append(f"0x{row[0]:x}  {get_api_name(row):40} {library:30} 0x{row[1]:x}  {row[4]:4}{score}  {outcome}")
     return "\n".join(lines) + "\n"
 
 
@@ -434,8 +619,11 @@ def show_results(bv):
     if not state:
         log_warn("ApiScout: no scan results for this view, scan it first.", LOGGER)
         return
+    _refresh_status(bv, state["status"], state["rows"])
     bv.show_markdown_report(
-        "ApiScout", render_markdown(state["rows"], state["status"]), render_text(state["rows"], state["status"])
+        "ApiScout",
+        render_markdown(state["rows"], state["status"], state.get("confidence")),
+        render_text(state["rows"], state["status"], state.get("confidence")),
     )
 
 
@@ -446,6 +634,7 @@ class ScanTask(BackgroundTaskThread):
         self.parameters = parameters
 
     def run(self):
+        confidence = {}
         try:
             rows = scan(
                 self.bv,
@@ -453,26 +642,36 @@ class ScanTask(BackgroundTaskThread):
                 self.parameters["ignore_aslr_offsets"],
                 self,
                 self.parameters.get("modules"),
+                confidence_scores=confidence,
             )
         except (OSError, ValueError, KeyError, TypeError) as exc:
             log_error(f"ApiScout: the scan failed: {exc!r}", LOGGER)
             return
         if self.cancelled:
             return
-        self.bv.session_data[SESSION_KEY] = {"rows": rows, "status": {}, "db_paths": self.parameters["db_paths"]}
+        self.bv.session_data[SESSION_KEY] = {
+            "rows": rows,
+            "status": {},
+            "db_paths": self.parameters["db_paths"],
+            "confidence": confidence,
+        }
         _info(f"ApiScout: {len(rows)} API references found, annotate them with the ApiScout commands.")
         show_results(self.bv)
 
 
 class AnnotateTask(BackgroundTaskThread):
-    def __init__(self, bv, distance=0):
+    def __init__(self, bv, distance=0, min_confidence=0):
         BackgroundTaskThread.__init__(self, "ApiScout: annotating", True)
         self.bv = bv
         self.distance = distance
+        self.min_confidence = min_confidence
 
     def run(self):
         state = get_state(self.bv)
-        rows = filter_by_distance(state["rows"], self.distance)
+        if not state or not state["rows"]:
+            log_warn("ApiScout: no API references to annotate, scan this view first.", LOGGER)
+            return
+        rows = _select_rows(state["rows"], self.distance, state.get("confidence", {}), self.min_confidence)
         num_annotated, num_skipped = annotate(self.bv, rows, state["status"], self)
         _info(f"ApiScout: annotated {num_annotated} APIs ({num_skipped} skipped).")
         show_results(self.bv)
@@ -492,6 +691,7 @@ class ScanAndAnnotateTask(BackgroundTaskThread):
                 self.parameters["ignore_aslr_offsets"],
                 task=self,
                 modules=self.parameters.get("modules"),
+                min_confidence=self.parameters.get("min_confidence", 0),
             )
         except (OSError, ValueError, KeyError, TypeError) as exc:
             log_error(f"ApiScout: the scan failed: {exc!r}", LOGGER)
@@ -506,7 +706,7 @@ def command_scan(bv):
 
 
 def command_scan_and_annotate(bv):
-    parameters = ask_parameters()
+    parameters = ask_parameters(for_annotation=True)
     if parameters:
         ScanAndAnnotateTask(bv, parameters).start()
 
@@ -519,12 +719,15 @@ def command_annotate_filtered(bv):
     field = interaction.IntegerField(
         "Maximum distance in bytes to the next API (0 annotates all APIs)", DEFAULT_DISTANCE
     )
-    if not interaction.get_form_input([field], "ApiScout"):
+    confidence = interaction.IntegerField(CONFIDENCE_PROMPT, 0)
+    if not interaction.get_form_input([field, confidence], "ApiScout"):
         return
     distance = field.result
     if distance is None or distance < 0:
         return
-    AnnotateTask(bv, distance).start()
+    minimum = _minimum_confidence(confidence)
+    if minimum is not None:
+        AnnotateTask(bv, distance, minimum).start()
 
 
 def has_results(bv):
@@ -549,7 +752,7 @@ def register_commands():
     )
     PluginCommand.register(
         "ApiScout\\Annotate filtered...",
-        "Annotate the API references found that have another one within a given distance",
+        "Annotate the API references that meet the selected distance and confidence filters",
         command_annotate_filtered,
         has_results,
     )

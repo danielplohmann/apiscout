@@ -78,17 +78,10 @@ class ImportTableLoader:
         self._buffer = buf
         self._max_thunks = max_thunks
         self._max_name_bytes = max_name_bytes
-        self._is_pe = PeTools.checkPe(buf)
-        self._is_64bit = self._check_64bit()
+        bitness = PeTools.getBitness(buf)
+        self._is_pe = bitness != 0
+        self._is_64bit = bitness == 64
         self._sample_name = sample_name
-
-    def _check_64bit(self):
-        pe_offset = PeTools.getPeOffset(self._buffer)
-        file_characteristics_offset = pe_offset + 0x18
-        if len(self._buffer) >= pe_offset + 0x18 + 2:
-            file_characteristics = get_word(self._buffer, file_characteristics_offset)
-            return file_characteristics == 0x20B
-        return False
 
     def _get_64bit_bonus_offset(self):
         # in case of a PE32+, we need to adjust the data directory offset by 0x10 bytes.

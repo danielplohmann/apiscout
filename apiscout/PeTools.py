@@ -8,6 +8,7 @@ LOG = logging.getLogger(__name__)
 
 
 class PeTools:
+    OPTIONAL_MAGIC_BITNESS = {0x10B: 32, 0x20B: 64}
     BITNESS_MAP = {0x14C: 32, 0x8664: 64}
     # images beyond this size, or this multiple of the file size, are not mapped as their section table is most likely corrupt
     MAX_MAPPED_SIZE = 0x10000000
@@ -117,24 +118,30 @@ class PeTools:
 
     @staticmethod
     def getBitness(binary):
-        bitness_id = 0
-        pe_offset = PeTools.getPeOffset(binary)
-        if pe_offset and pe_offset and len(binary) >= pe_offset + 0x6:
-            bitness_id = struct.unpack("<H", binary[pe_offset + 0x4 : pe_offset + 0x6])[0]
-        return PeTools.BITNESS_MAP.get(bitness_id, 0)
+        optional_offset = PeTools._getOptionalHeaderOffset(binary)
+        if not optional_offset:
+            return 0
+        return PeTools.OPTIONAL_MAGIC_BITNESS.get(get_word(binary, optional_offset), 0)
+
+    @staticmethod
+    def getMachine(binary):
+        optional_offset = PeTools._getOptionalHeaderOffset(binary)
+        return get_word(binary, optional_offset - 0x14) if optional_offset else 0
 
     @staticmethod
     def getBaseAddressFromPeHeader(binary):
-        pe_offset = PeTools.getPeOffset(binary)
-        if pe_offset and len(binary) >= pe_offset + 0x38:
-            if get_word(binary, pe_offset + 0x18) == 0x20B:
-                # PE32+: ImageBase is a QWORD at offset 0x18 of the optional header
-                base_addr = get_qword(binary, pe_offset + 0x30)
-            else:
-                base_addr = get_dword(binary, pe_offset + 0x34)
-            LOG.debug("Using base address 0x%x from PE header for inference of reference counts", base_addr)
-            return base_addr
-        return 0
+        optional_offset = PeTools._getOptionalHeaderOffset(binary)
+        if not optional_offset or get_word(binary, optional_offset - 4) < 0x20 or len(binary) < optional_offset + 0x20:
+            return 0
+        magic = get_word(binary, optional_offset)
+        if magic == 0x20B:
+            base_addr = get_qword(binary, optional_offset + 0x18)
+        elif magic == 0x10B:
+            base_addr = get_dword(binary, optional_offset + 0x1C)
+        else:
+            return 0
+        LOG.debug("Using base address 0x%x from PE header for inference of reference counts", base_addr)
+        return base_addr
 
     @staticmethod
     def getPeOffset(binary):
@@ -145,8 +152,19 @@ class PeTools:
         return 0
 
     @staticmethod
-    def checkPe(binary):
+    def _getOptionalHeaderOffset(binary):
         pe_offset = PeTools.getPeOffset(binary)
-        if binary[:2] == b"MZ" and pe_offset and binary[pe_offset : pe_offset + 4] == b"PE\x00\x00":
-            return PeTools.getBitness(binary) != 0
-        return False
+        optional_offset = pe_offset + 0x18
+        if (
+            binary[:2] == b"MZ"
+            and pe_offset >= 0x40
+            and len(binary) >= optional_offset + 2
+            and binary[pe_offset : pe_offset + 4] == b"PE\x00\x00"
+            and get_word(binary, pe_offset + 0x14) >= 2
+        ):
+            return optional_offset
+        return 0
+
+    @staticmethod
+    def checkPe(binary):
+        return PeTools.getBitness(binary) != 0

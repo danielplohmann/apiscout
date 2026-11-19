@@ -83,15 +83,41 @@ class ApiScoutTestSuite(unittest.TestCase):
         binary[1:7] = b"\xff\x15" + struct.pack("<I", 0x400020)
         binary[8:14] = b"\xff\x25" + struct.pack("<I", 0x400020)
         binary[21:27] = b"\xff\x15" + struct.pack("<i", 0x10 - 0x1B)
+        binary[32:38] = b"\xff\x15" + struct.pack("<I", 0x400000)
         binary[58:64] = b"\xff\x25" + struct.pack("<I", 0x400000 + 63)
         binary += b"\xff\x25\x01\x00\x00"
         binary = bytes(binary)
         targets = {0x20, 0x10, 63, 0}
-        expected = {32: {0x20: {1, 8}, 63: {58}}, 64: {0x10: {21}}}
+        expected = {32: {0: {32}, 0x20: {1, 8}, 63: {58}}, 64: {0x10: {21}}}
         self.assertEqual(expected, scout._getCodeReferences(binary, targets))
         self.assertEqual({32: {}, 64: {}}, scout._getCodeReferences(binary, set()))
         with mock.patch.object(scout_module, "numpy_search", None):
             self.assertEqual(expected, scout._getCodeReferences(binary, targets))
+
+    def testCallersInAnotherRegion(self):
+        scout = ApiScout()
+        scout.setBaseAddress(0x401000)
+        scout.has_64bit = True
+        dll = "kernel32.dll_0x10000000"
+        api32, api64 = 0x71AB1000, 0x7FF800001010
+        scout.api_maps["test"] = {api32: (dll, "CreateFileW", 32), api64: (dll, "WriteFile", 64)}
+        slots = struct.pack("<I4xQ", api32, api64)
+        calls = (
+            b"\xff\x15"
+            + struct.pack("<I", 0x402000)
+            + b"\x90\x90"
+            + b"\xff\x25"
+            + struct.pack("<i", 0x402008 - 0x40400E)
+        )
+        results = scout.crawlRegions(iter([(0x404000, calls), (0x402000, slots)]))
+        self.assertEqual(
+            [
+                (0x1000, api32, dll, "CreateFileW", 32, None, 2, {0x3000}),
+                (0x1008, api64, dll, "WriteFile", 64, None, 2, {0x3008}),
+            ],
+            results["test"],
+        )
+        self.assertEqual(2, len(scout.filterByConfidence(results, 20)["test"]))
 
     def testResolveAddressCandidates(self):
         scout = ApiScout()
@@ -368,6 +394,15 @@ class ApiScoutTestSuite(unittest.TestCase):
             (20, 20, 10), (confidences["a"][(0x100, 32)], confidences["b"][(0x100, 32)], confidences["c"][(0x100, 32)])
         )
         self.assertEqual(10, scout.getConfidences({"a": [entry]})["a"][(0x100, 32)])
+
+    def testOverlappingCandidateDoesNotBreakPointerTableConfidence(self):
+        scout = ApiScout()
+        hits = [
+            (offset, 0x71AB1000 + offset, "a.dll", "Api", 32, None, 1, set()) for offset in (0x100, 0x101, 0x104, 0x108)
+        ]
+        scores = scout.getConfidences({"db": hits})["db"]
+        self.assertEqual([60, 60, 60], [scores[(offset, 32)] for offset in (0x100, 0x104, 0x108)])
+        self.assertLess(scores[(0x101, 32)], 20)
 
     def testFilterByConfidence(self):
         scout = ApiScout()

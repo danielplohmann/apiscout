@@ -30,7 +30,7 @@ if not __package__:
     # run as a file (python DatabaseBuilder.py) instead of as module, the imports of the package below would fail
     sys.exit("Run the DB builder from the root of the clone: python -m apiscout.db_builder")
 
-from . import config  # noqa: E402
+from . import config, write_atomic  # noqa: E402
 from ._vendor import pefile  # noqa: E402
 from .ThreadedCommand import ThreadedCommand  # noqa: E402
 
@@ -54,13 +54,11 @@ def is_windows():
     return platform.system() == "Windows"
 
 
-# characters that Windows does not allow in a file name, and so no DB that is shared is named with them on any OS
-INVALID_FILE_NAME_CHARACTERS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-
-
 def default_file_stem(os_version):
-    """the start of the name of the DB file that is written without --outfile: the first two numbers of the version"""
-    return ".".join(os_version.split(".")[:2])
+    """Use the complete Windows version in the default filename."""
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", os_version):
+        raise ValueError(f"--os_version {os_version!r} can not be part of a default file name, give --outfile.")
+    return os_version
 
 
 def get_system_info():
@@ -804,7 +802,7 @@ class DatabaseBuilder:
         return api_db
 
     def applyLoadAddresses(self, api_db, load_addresses):
-        """derive ASLR offsets from known load addresses of the DLLs, given as (normalized path, address)"""
+        """Replace ASLR offsets with those from the given (normalized path, address) pairs."""
 
         def all_paths(dll_key, dll):
             return [normalize_dll_path(path) for path in [dll["filepath"]] + self._duplicate_paths.get(dll_key, [])]
@@ -856,6 +854,7 @@ class DatabaseBuilder:
         used_paths = set(ambiguous_paths)
         unmatched_dlls = {}
         for dll_key, dll in api_db["dlls"].items():
+            dll["aslr_offset"] = 0
             for dll_path in all_paths(dll_key, dll):
                 load_address = None if dll_path in ambiguous_paths else matching_address(dll, dll_path)
                 if load_address is not None:
@@ -940,11 +939,11 @@ class DatabaseBuilder:
         if filepath is None:
             filtered = "_filtered" if api_db["filtered"] else ""
             filepath = "." + os.sep + default_file_stem(api_db["os_version"]) + filtered + ".json"
+        filepath = os.fspath(filepath)
         if not filepath.endswith(".json"):
             filepath += ".json"
         # the same bytes on every OS, as the DBs are shared and checked against SHA256SUMS
-        with open(filepath, "w", encoding="utf-8", newline="\n") as f_out:
-            f_out.write(dumps_api_db(api_db))
+        write_atomic(filepath, dumps_api_db(api_db).encode("utf-8"))
 
 
 def check_python_version(script):
@@ -966,19 +965,20 @@ def main():
     parser.add_argument(
         "--filter", dest="filter_dlls", action="store_true", help="(optional) filter DLLs by name (see config.py)"
     )
-    parser.add_argument(
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument(
         "--auto",
         dest="auto",
         action="store_true",
-        help="Use default configuration (filtered DLLs from preconfigured paths (see config.py) and extract ASLR offsets.",
+        help="Scan the configured system folders and load the selected system DLLs to extract ASLR offsets.",
     )
-    parser.add_argument(
+    source.add_argument(
         "--paths",
         metavar="P",
         type=str,
         nargs="+",
         default=None,
-        help="the paths to recursively crawl for DLLs (None -> use default, see config.py).",
+        help="directories to recursively scan for DLL exports without loading the DLLs.",
     )
     parser.add_argument(
         "--outfile",
@@ -989,6 +989,11 @@ def main():
     )
     parser.add_argument(
         "--ignore_aslr", dest="ignore_aslr", action="store_true", help="Do not perform extraction of ASLR offsets."
+    )
+    parser.add_argument(
+        "--load-dlls",
+        action="store_true",
+        help="Load the DLLs given by --paths on Windows to extract ASLR offsets. Use only with trusted DLLs.",
     )
     parser.add_argument("--aslr_check", dest="aslr_check", action="store_true", help="Only show ASLR offset.")
 
@@ -1027,16 +1032,14 @@ def main():
     if (args.def32 or args.def64) and (args.aslr_check or not (args.auto or args.paths)):
         parser.error("--def32 and --def64 name exports in the DB that --auto or --paths build.")
     offline = bool(args.os_name and args.os_version)
-    if (
-        offline
-        and not args.output_file
-        and (args.auto or args.paths)
-        and INVALID_FILE_NAME_CHARACTERS.search(default_file_stem(args.os_version))
-    ):
-        # the version names the file that is written without --outfile, which would fail after all DLLs were read
+    if offline and not args.output_file and (args.auto or args.paths):
+        try:
+            default_file_stem(args.os_version)
+        except ValueError as exc:
+            parser.error(str(exc))
+    if args.load_dlls and (not args.paths or not is_windows() or offline or args.ignore_aslr or args.load_addresses):
         parser.error(
-            f'--os_version {args.os_version!r} can not be part of a file name (not / \\ < > : " | ? * or a control '
-            "character), give --outfile."
+            "--load-dlls requires --paths on Windows. Remove --os_name, --os_version, --ignore_aslr and --load_addresses."
         )
     if not is_windows() and (not offline or args.aslr_check):
         parser.error(
@@ -1063,7 +1066,7 @@ def main():
             api_db = builder.applyDefFiles(api_db, def_files)
         if load_addresses is not None:
             api_db = builder.applyLoadAddresses(api_db, load_addresses)
-        elif not args.ignore_aslr and not offline:
+        elif not args.ignore_aslr and not offline and (args.auto or args.load_dlls):
             api_db = builder.extractAslrOffsets(api_db)
         builder.persistApiDb(api_db, args.output_file)
     else:

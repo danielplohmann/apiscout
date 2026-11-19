@@ -13,6 +13,7 @@
 import contextlib
 import logging
 import math
+import operator
 import os
 import re
 from operator import and_, itemgetter, or_
@@ -72,25 +73,45 @@ class ApiVector:
                 raise ValueError
         return winapi1024
 
+    @staticmethod
+    def parseCollection(lines, strict=False):
+        vectors = {}
+        for number, line in enumerate(lines, 1):
+            if not line.strip():
+                continue
+            fields = line.strip().split(";")
+            if len(fields) < 5 or (strict and (len(fields) != 5 or not all(fields[:2]))):
+                if strict:
+                    raise ValueError(f"Invalid collection row {number}.")
+                continue
+            family, sample = fields[0], fields[1].strip()
+            samples = vectors.setdefault(family, {})
+            if sample in samples:
+                if strict:
+                    raise ValueError(f"Duplicate sample {family}/{sample} in the collection.")
+                LOG.warning("Duplicate sample %s/%s in the collection. Using its first vector.", family, sample)
+                continue
+            samples[sample] = fields[4].strip()
+        return vectors
+
+    def validateCollection(self, lines):
+        collection = self.parseCollection(lines, strict=True)
+        if not collection:
+            raise ValueError("No vectors.")
+        for samples in collection.values():
+            for vector in samples.values():
+                self._getBitString(vector)
+
     def _loadCollectionData(self, collection_filepath):
-        vectors_by_family = {}
-        if collection_filepath:
-            if os.path.isfile(collection_filepath):
-                with open(collection_filepath, encoding="utf-8", errors="surrogateescape") as infile:
-                    for line in infile.readlines():
-                        fields = line.strip().split(";")
-                        if len(fields) < 5:
-                            continue
-                        family = fields[0]
-                        sample_path = fields[1].strip()
-                        compressed_api_vector = fields[4].strip()
-                        if family not in vectors_by_family:
-                            vectors_by_family[family] = {}
-                        vectors_by_family[family][sample_path] = compressed_api_vector
-            else:
-                LOG.error("Not a file: %s!", collection_filepath)
-                raise ValueError
-        return vectors_by_family
+        if not collection_filepath:
+            return {}
+        if not os.path.isfile(collection_filepath):
+            raise ValueError(f"Not a file: {collection_filepath}")
+        with open(collection_filepath, encoding="utf-8", errors="surrogateescape") as infile:
+            return self.parseCollection(infile)
+
+    def loadCollection(self, path):
+        return self._loadCollectionData(path)
 
     def getWinApi1024(self):
         return self._winapi1024
@@ -229,13 +250,8 @@ class ApiVector:
         return not isinstance(vector, str)
 
     def matchVectors(self, vector_a, vector_b):
-        # ensure binary representation and apply weights
-        if not self._isDecompressed(vector_a):
-            vector_a = self.decompress(vector_a)
-        vector_a = self._apply_weights(vector_a)
-        if not self._isDecompressed(vector_b):
-            vector_b = self.decompress(vector_b)
-        vector_b = self._apply_weights(vector_b)
+        vector_a = self._apply_weights(self._validatedVector(vector_a))
+        vector_b = self._apply_weights(self._validatedVector(vector_b))
         # calculate Jaccard index
         if NUMPY_AVAILABLE:
             maxPQ = np.sum(np.maximum(vector_a, vector_b))
@@ -279,27 +295,49 @@ class ApiVector:
     def _getBits(self, vector):
         if not self._isDecompressed(vector):
             vector = self.decompress(vector)
-        bits = [int(bit) for bit in vector]
+        bits = [int(bit) for bit in self._validatedVector(vector)]
         if len(bits) != len(self._winapi1024):
             raise ValueError(f"Not a valid ApiVector: expected {len(self._winapi1024)} bits, got {len(bits)}.")
         return bits
+
+    def _validatedVector(self, vector):
+        if isinstance(vector, str):
+            return self.decompress(vector)
+        try:
+            if NUMPY_AVAILABLE and isinstance(vector, np.ndarray):
+                if (
+                    vector.shape == (self._getVectorLength(),)
+                    and vector.dtype.kind in "biuf"
+                    and np.all((vector == 0) | (vector == 1))
+                ):
+                    return vector
+            elif len(vector) == self._getVectorLength():
+                # 0.0 and 1.0 are accepted as they always were in numpy arrays, strings and other values are not
+                bits = tuple(
+                    int(bit) if isinstance(bit, float) and bit in (0, 1) else operator.index(bit) for bit in vector
+                )
+                if all(bit in (0, 1) for bit in bits):
+                    return bits
+        except (TypeError, ValueError):
+            pass
+        raise ValueError(f"Not a valid ApiVector: expected {self._getVectorLength()} binary values.")
 
     def getCollectionVector(self, collection_filepath, family, sample):
         """the compressed ApiVector of a sample in a collection"""
         return self._loadCollectionData(collection_filepath)[family][sample]
 
     def matchVectorCollection(self, vector, collection_filepath):
-        collection_data = self._loadCollectionData(collection_filepath)
+        return self.matchLoadedCollection(vector, self.loadCollection(collection_filepath), collection_filepath)
+
+    def matchLoadedCollection(self, vector, collection_data, collection_filepath):
+        decompressed_vector = self._validatedVector(vector)
         results = {
             "vector": vector,
-            "confidence": self.getVectorConfidence(vector),
+            "confidence": self.getVectorConfidence(decompressed_vector),
             "collection_filepath": collection_filepath,
             "families_in_collection": len(collection_data),
             "vectors_in_collection": sum([len(samples) for family, samples in collection_data.items()]),
         }
-        decompressed_vector = vector
-        if not self._isDecompressed(vector):
-            decompressed_vector = self.decompress(vector)
         names = [(family, sample) for family, samples in collection_data.items() for sample in samples]
         sample_vectors = [sample_vector for samples in collection_data.values() for sample_vector in samples.values()]
         scores = self._matchAll(decompressed_vector, sample_vectors)
