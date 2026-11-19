@@ -72,9 +72,11 @@ Pushing the tag is the release. `.github/workflows/publish-release.yml` then:
    group, checks their metadata with `twine check --strict`, and installs the wheel into a clean
    virtual environment to import it, check the installed version and the shipped package data, and
    run `apiscout --version`.
-3. **Publish** — uploads to PyPI through [trusted publishing](https://docs.pypi.org/trusted-publishers/)
+3. **Attest** — records a [build provenance attestation](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations)
+   for the sdist and wheel, which `gh attestation verify <file> -R danielplohmann/apiscout` checks.
+4. **Publish** — uploads to PyPI through [trusted publishing](https://docs.pypi.org/trusted-publishers/)
    with signed provenance attestations. No API token is stored anywhere.
-4. **Release** — creates the GitHub release for the tag with the changelog section as its body,
+5. **Release** — creates the GitHub release for the tag with the changelog section as its body,
    GitHub's generated contributor and PR list appended under it, and the sdist and wheel attached;
    then closes the milestone.
 
