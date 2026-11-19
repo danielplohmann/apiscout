@@ -16,6 +16,9 @@ hits that were reported before, which a release says here.
 
 - IDA plugin: the ApiScout view stays open when `ida_scout.py` is started with `-S`. It was opened while IDA was still loading, and IDA closed it again when it restored its window layout.
 - Handle early stdout pipe closure on Windows without an error or shutdown traceback.
+- `match` and `scan --collection` no longer fail with `-o FILE`, or on a terminal or pipe that is strict about its encoding, when a sample name of the collection is not valid UTF-8. A file and a UTF-8 terminal or pipe get the name as the bytes it has in the collection, another encoding gets them as backslash escapes.
+- `update` reports an answer of Malpedia that is not JSON as an answer it does not understand, not as a failed request.
+- `update` reads a token file that PowerShell or Notepad stored as UTF-16 or with a byte order mark, and refuses one that holds more than the token. Until now a second line in the file ended in an error message that showed the token.
 
 ### Changed
 

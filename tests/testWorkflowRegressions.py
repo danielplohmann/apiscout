@@ -1,5 +1,6 @@
 import errno
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -13,7 +14,7 @@ from unittest import mock
 
 from apiscout import cli, db_index
 
-from .testCli import DB_PATH, DUMP_PATH, run
+from .testCli import DB_PATH, DUMP_PATH, VECTOR, run
 from .testLoadAddresses import build_dll_image
 from .testMinidump import build_minidump, page
 
@@ -236,3 +237,104 @@ class WorkflowRegressionTests(unittest.TestCase):
         self.assertIn("invalid collection", errors)
         self.assertEqual(original, previous.read_bytes())
         self.assertCountEqual([token, previous], list(self.folder.iterdir()))
+
+    def testOutputKeepsSampleNamesThatAreNotUtf8(self):
+        collection = self.folder / "collection.csv"
+        collection.write_bytes(b"family;caf\xe9;1;1;" + VECTOR.encode() + b"\n")
+        output = self.folder / "result.txt"
+        for explain in ([], ["--explain"]):
+            arguments = ["match", VECTOR, "-c", str(collection), *explain]
+            status, _, errors = run(*arguments, "-o", str(output))
+            self.assertEqual(0, status, errors)
+            expected = output.read_bytes().replace(os.linesep.encode(), b"\n")
+            self.assertIn(b"family - caf\xe9", expected)
+            # a terminal or a pipe is strict by default. UTF-8 takes the bytes, another encoding has none for them
+            for encoding, name in (("utf-8", b"caf\xe9"), ("cp1252", b"caf\\udce9")):
+                raw = io.BytesIO()
+                stream = io.TextIOWrapper(raw, encoding=encoding, errors="strict", newline="\n")
+                with self.subTest(arguments=arguments[3:], output=encoding), mock.patch.object(sys, "stdout", stream):
+                    self.assertEqual(0, cli.main(arguments))
+                    self.assertEqual(expected.replace(b"caf\xe9", name), raw.getvalue())
+                    self.assertEqual("strict", stream.errors)
+
+    def testOutputEscapesSurrogatesThatAreNoBytes(self):
+        # a file name of Windows can hold half a surrogate pair, which no encoding has bytes for
+        text = "caf\udce9 \ud800\n"
+        output = self.folder / "result.txt"
+        cli.write_output(text, str(output))
+        self.assertEqual(b"caf\\udce9 \\ud800", output.read_bytes().rstrip())
+        raw = io.BytesIO()
+        stream = io.TextIOWrapper(raw, encoding="utf-8", errors="strict", newline="\n")
+        with mock.patch.object(sys, "stdout", stream):
+            cli.write_output(text, "-")
+            cli.write_output("caf\udce9\n", None)
+            stream.flush()
+        self.assertEqual(b"caf\\udce9 \\ud800\ncaf\xe9\n", raw.getvalue())
+        self.assertEqual("strict", stream.errors)
+
+    @unittest.skipUnless(importlib.util.find_spec("requests"), "requests is not installed")
+    def testUpdateTellsAnAnswerThatIsNotJsonFromAFailedRequest(self):
+        import requests
+
+        token = self.folder / "token"
+        token.write_text("placeholder", encoding="utf-8")
+        for content in (
+            b"<html>maintenance</html>",
+            b"",
+            b"[7]",
+            b"{}",
+            b'{"version": "7"}',
+            b'{"version": true}',
+            b'{"version": 0}',
+            b"[" * 100000,
+        ):
+            # a real response, so that json() fails as it does in requests
+            answer = requests.Response()
+            answer.status_code, answer._content = 200, content
+            with self.subTest(content=content), mock.patch("requests.get", side_effect=[answer]):
+                status, _, errors = run("update", "--db-dir", str(self.folder), "--token-file", str(token))
+                self.assertEqual(1, status, errors)
+                self.assertIn("not understood", errors)
+                self.assertNotIn("request to Malpedia failed", errors)
+                self.assertNotIn("Traceback", errors)
+        with mock.patch("requests.get", side_effect=requests.ConnectionError("no route")):
+            status, _, errors = run("update", "--db-dir", str(self.folder), "--token-file", str(token))
+        self.assertEqual(1, status, errors)
+        self.assertIn("request to Malpedia failed: no route", errors)
+
+    @unittest.skipUnless(importlib.util.find_spec("requests"), "requests is not installed")
+    def testUpdateReadsTheTokenFile(self):
+        token = self.folder / "token"
+        arguments = ["update", "--db-dir", str(self.folder), "--token-file", str(token)]
+        download = mock.Mock(
+            status_code=200,
+            headers={"Content-Disposition": "filename=2026-01-02-apivectors-v2.csv"},
+            content=f"family;sample;1;1;{VECTOR}\n".encode(),
+        )
+        # as Notepad and PowerShell store it
+        utf16 = ["placeholder\r\n".encode(encoding) for encoding in ("utf-16", "utf-16-le", "utf-16-be")]
+        utf16[1:] = [b"\xff\xfe" + utf16[1], b"\xfe\xff" + utf16[2]]
+        for content in (b"placeholder\n", b"\xef\xbb\xbfplaceholder\r\n", *utf16):
+            token.write_bytes(content)
+            metadata = mock.Mock()
+            metadata.json.return_value = {"version": 2}
+            with self.subTest(content=content), mock.patch("requests.get", side_effect=[metadata, download]) as get:
+                status, _, errors = run(*arguments)
+                self.assertEqual(0, status, errors)
+                self.assertEqual("apitoken placeholder", get.call_args.kwargs["headers"]["Authorization"])
+            (self.folder / "2026-01-02-apivectors-v2.csv").unlink()
+        # requests names the value of a header it refuses, which must not get that far
+        for content in (
+            b"placeholder\nsecond line\n",
+            b"place holder",
+            b"placeholder\xe9",
+            "placeh\u00f6lder".encode(),
+            b"",
+        ):
+            token.write_bytes(content)
+            with self.subTest(content=content), mock.patch("requests.get") as get:
+                status, _, errors = run(*arguments)
+                self.assertEqual(1, status, errors)
+                self.assertIn("no API token in", errors)
+                self.assertNotIn("placeh", errors.replace(str(self.folder), ""))
+                get.assert_not_called()

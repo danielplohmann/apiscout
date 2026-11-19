@@ -1,6 +1,7 @@
 """the apiscout command line tool, see `apiscout --help`"""
 
 import argparse
+import codecs
 import errno
 import json
 import logging
@@ -381,10 +382,40 @@ def write_output(text, output_path):
     """to the file given with --output, or to standard output"""
     if output_path and output_path != "-":
         with open(output_path, "w", encoding="utf-8") as f_out:
-            f_out.write(text)
+            write_text(f_out, text)
     else:
         with stdout_pipe_errors():
-            sys.stdout.write(text)
+            write_text(sys.stdout, text)
+
+
+def write_text(stream, text):
+    try:
+        stream.write(text)
+    except UnicodeEncodeError:
+        # nothing of the text is written yet, a stream encodes what it is given as a whole
+        if not hasattr(stream, "reconfigure"):
+            raise
+        write_unencodable(stream, text)
+
+
+def write_unencodable(stream, text):
+    """writes text with characters the stream has no bytes for. A name that is not valid UTF-8 (the sample of a
+    collection, a path) was read with surrogate escapes: as UTF-8 it is written as the bytes it had. Everything else
+    becomes a backslash escape."""
+    errors = stream.errors
+    try:
+        if codecs.lookup(stream.encoding).name == "utf-8":
+            stream.reconfigure(errors="surrogateescape")
+            try:
+                stream.write(text)
+                return
+            except UnicodeEncodeError:
+                # a surrogate that is no escape, as file names of Windows can have them
+                pass
+        stream.reconfigure(errors="backslashreplace")
+        stream.write(text)
+    finally:
+        stream.reconfigure(errors=errors)
 
 
 def write_file(write, output_path):
@@ -821,6 +852,34 @@ def get_token_path():
     return os.path.join(config_home, "apiscout", "malpedia-token")
 
 
+def read_token(token_path):
+    """the Malpedia API token of a file. It is sent in a header, so it is one word of ASCII. PowerShell and Notepad
+    write a file as UTF-16 or with a byte order mark."""
+    with open(token_path, "rb") as f_token:
+        content = f_token.read()
+    encoding = "utf-16" if content[:2] in (b"\xff\xfe", b"\xfe\xff") else "utf-8-sig"
+    try:
+        token = content.decode(encoding).strip()
+    except UnicodeDecodeError:
+        token = ""
+    if not re.fullmatch(r"[\x21-\x7e]+", token):
+        # the token is not part of the message
+        raise CliError(f"no API token in {token_path}: the file has to hold the token and nothing else.")
+    return token
+
+
+def read_remote_version(response):
+    """the version of the collection that Malpedia has. requests reports an answer that is not JSON as a failed
+    request (its JSONDecodeError is a RequestException), while the request went well and the answer is what is wrong."""
+    try:
+        version = response.json()["version"]
+    except (ValueError, KeyError, TypeError, RecursionError):
+        version = None
+    if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+        raise CliError("Malpedia sent an answer that is not understood, try again later.")
+    return version
+
+
 def cmd_update(args):
     try:
         import requests
@@ -832,8 +891,7 @@ def cmd_update(args):
             f"no Malpedia API token found. Store the token of your account at {MALPEDIA_URL} in {token_path}, "
             "or pass a file that holds it with --token-file."
         )
-    with open(token_path, encoding="utf-8") as f_token:
-        token = f_token.read().strip()
+    token = read_token(token_path)
     db_dir = args.db_dir or get_default_db_dir()
     if os.path.exists(db_dir) and not os.path.isdir(db_dir):
         raise CliError(f"not a folder: {db_dir}")
@@ -845,9 +903,7 @@ def cmd_update(args):
     try:
         response = requests.get(f"{MALPEDIA_URL}/api/get/version", timeout=args.timeout)
         response.raise_for_status()
-        remote_version = response.json()["version"]
-        if not isinstance(remote_version, int):
-            raise ValueError
+        remote_version = read_remote_version(response)
         if local_version >= remote_version:
             report(args, f"The collection in {db_dir} is the most recent one ({remote_version}).")
             return EXIT_OK
@@ -861,8 +917,6 @@ def cmd_update(args):
         response.raise_for_status()
     except requests.RequestException as exc:
         raise CliError(f"request to Malpedia failed: {exc}") from None
-    except (ValueError, KeyError, TypeError):
-        raise CliError("Malpedia sent an answer that is not understood, try again later.") from None
     name = re.search(COLLECTION_PATTERN, response.headers.get("Content-Disposition", ""))
     if not name or not response.content.strip():
         raise CliError("Malpedia sent no collection.")
