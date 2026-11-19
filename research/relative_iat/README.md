@@ -75,7 +75,9 @@ the same DLL, does a wrong build fit?
 - **1-2 pointers into a DLL**: about 5 candidate names. Needs ranking (corpus frequency of each API,
   argument count at the call site on x86, co-occurring APIs) and output as a ranked list.
 - **The DLL's build is not in the reference set**: on real dumps 2.2 % of dumps still get a (wrong) answer,
-  the rest none (`exp6_corpus/`).
+  the rest none (`exp6_corpus/`). An adjacent build doesn't stand in for it: exports move in blocks between
+  monthly builds, and with all other Win10/11 builds in the set 15-65 % of names come out wrong
+  (`exp7_adjacent_builds/`). The solver needs the exact build.
 - **API sets and forwarders**: from Win8 on, `kernel32!Sleep` resolves into `kernelbase.dll`. Reference
   DBs must resolve forwarders and treat `kernel32!X` and `kernelbase!X` as one API.
 - **Hooks and shims** (EDR trampolines, apphelp): pointers into injected modules stay unexplained. Report
@@ -84,13 +86,14 @@ the same DLL, does a wrong build fit?
 
 ## Next steps
 
-1. **Adjacent-build test.** Collect `kernelbase`, `ntdll`, `kernel32`, `user32` and `advapi32` exports
-   over many Win10/11 builds (Winbindex lists them with Microsoft symbol-server links) and rerun
-   `e3_modern.py` on them. This decides whether one reference set can span many builds.
+1. **Adjacent-build test.** Done in `exp7_adjacent_builds/`: one reference set does not span many builds.
+   With the exact build present the solver is right 99-100 % of the time among ~150 layouts per DLL;
+   without it, 18-54 % right and 15-65 % wrong. Follow-ups there: a library of exact layouts from Winbindex
+   and the symbol server, an index that scales to it, build identification, kernel32 thunks, delay imports.
 2. **Real dumps.** Done in `exp6_corpus/`: 92.3 % recall at 99.6 % precision on 1,565 held-out Malpedia
    dumps, and answers for dumps classic `apiscout` can't place. Raw support >= 3 is not enough there; see
    its README for the filter rules.
-3. **Solver in the package.** A `scan` option that takes a set of API DBs of any builds and needs no
+3. **Solver in the package.** A `scan` option that takes a library of exact build layouts and needs no
    module list. Output stays in today's format, plus a confidence per reference, the alternatives for
    ambiguous ones, and the DLL builds that fit.
 4. **Fresh Win10/11 ground truth** with `capture_aslr_geometry.py` (below): dump with the module list
@@ -109,6 +112,7 @@ Run from the repository root, stdlib Python 3 only:
 | `exp5_delta_and_builds.py` | delta index selectivity; real build pairs |
 | `e3_modern.py` | cross-build fits over all five shipped DBs |
 | `exp6_corpus/` | the solver on 3,932 real dumps, with its own README |
+| `exp7_adjacent_builds/` | 1,880 Win10/11 builds of 5 DLLs: does one build stand in for another? |
 | `capture_aslr_geometry.py` | Windows capture tool for ground-truth dumps; `selftest` runs on any OS |
 
 `capture_aslr_geometry.py` records per boot the OS build, the allocation granularity, every module's base,
