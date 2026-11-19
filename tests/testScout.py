@@ -455,6 +455,52 @@ class ApiScoutTestSuite(unittest.TestCase):
         self.assertIsNot(first_finder, scout._getDynamicFinder())
         self.assertIs(scout._getDynamicFinder(), scout._getDynamicFinder())
 
+    def testVectorCountsForwardedExports(self):
+        """a pointer to the export that ole32.dll forwards to sets the bit of ole32.dll, also for an API found by name"""
+        from apiscout.DynamicApis import DynamicApi
+
+        db = {
+            "os_name": "Test Windows",
+            "dlls": {
+                "64_10.0_ole32.dll_0x180000000": {
+                    "aslr_offset": 0,
+                    "base_address": 0x7FF800000000,
+                    "bitness": 64,
+                    # a forwarder: the address is the one of its string in the export directory
+                    "exports": [{"address": 0x9000, "name": "CoCreateInstance", "ordinal": 1}],
+                },
+                "64_10.0_combase.dll_0x180000000": {
+                    "aslr_offset": 0,
+                    "base_address": 0x7FF810000000,
+                    "bitness": 64,
+                    "exports": [
+                        {"address": 0x1000, "name": "CoCreateInstance", "ordinal": 1},
+                        {"address": 0x2000, "name": "RoInitialize", "ordinal": 2},
+                    ],
+                },
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = os.path.join(directory, "db.json")
+            with open(db_path, "w", encoding="utf-8") as f_db:
+                json.dump(db, f_db)
+            scout = ApiScout(db_path)
+        scout.loadWinApi1024()
+        scout.setBaseAddress(0)
+        results = scout.crawl(struct.pack("<QQ", 0x7FF810001000, 0x7FF810002000))
+        self.assertEqual(
+            [("combase.dll_0x180000000", "CoCreateInstance"), ("combase.dll_0x180000000", "RoInitialize")],
+            [(row[2], row[3]) for row in results["Test Windows"]],
+        )
+        vector = scout.getWinApi1024Vectors(results)["Test Windows"]
+        self.assertEqual((2, 1), (vector["num_unique_apis"], vector["in_api_vector"]))
+        self.assertEqual(["ole32.dll!CoCreateInstance"], scout._apivector.getListFromApiVector(vector["vector"]))
+        # the name of the API is exported by both DLLs: it stays one API, whichever of them the name is found for
+        for dlls in (("ole32.dll", "combase.dll"), ("combase.dll",)):
+            dynamic = {"Test Windows": [DynamicApi(0x100, "string", "ascii", None, "CoCreateInstance", dlls)]}
+            combined = scout.addDynamicApisToResults(results, dynamic)
+            self.assertEqual(vector, scout.getWinApi1024Vectors(combined)["Test Windows"])
+
     def testCompleteCoverage(self):
         scout = ApiScout()
         scout.setBaseAddress(0x1000)

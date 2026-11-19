@@ -12,6 +12,14 @@ hits that were reported before, which a release says here.
 
 ## [Unreleased]
 
+### Changed
+
+- ApiVector: an API that `ole32.dll`, `netapi32.dll` or `secur32.dll` forwards to another DLL sets its bit. The WinApi1024 definition lists an API under the DLL that programs import it from, a dump holds the pointer into the DLL with the code, so these bits were never set for dumps of the Windows versions that forward, and the vector of a sample depended on where it was dumped. The exports of the DLLs with the code now count as the API of the same name that the definition lists for the forwarding DLL (`FORWARDED_DLLS` in `ApiVector.py`):
+   * `netapi32.dll`, since Windows 7: most of its 21 APIs of the definition (`NetUserAdd`, `NetShareEnum`, `NetApiBufferFree`...) are in `samcli.dll`, `srvcli.dll`, `netutils.dll` and `wkscli.dll`. Two more are in `schedcli.dll` and `browcli.dll`, which only a DB built without `--filter` has.
+   * `secur32.dll`, since Windows 7: all of its 5 are in `sspicli.dll`.
+   * `ole32.dll`, since Windows 8: `CoCreateInstance`, `CoInitializeEx`, `CoUninitialize` and 7 more are in `combase.dll`, which the example DBs of Windows Server 2022 and Windows 11 have.
+   * The APIs a scan lists do not change, no vector loses a bit, and an API found in both DLLs is counted once (it was two of the unique APIs before). Of 380 Malpedia dumps, 21 gain 1 to 6 bits, all of them Windows 7 dumps, for `netapi32.dll` and `secur32.dll`. Of 404 import tables resolved the way Windows 11 forwards them, 135 gain 1 to 11, mostly for COM. A collection built by an older version has these vectors without the bits, `apiscout collect` builds it again.
+
 ### Fixed
 
 - IDA plugin: the ApiScout view stays open when `ida_scout.py` is started with `-S`. It was opened while IDA was still loading, and IDA closed it again when it restored its window layout.

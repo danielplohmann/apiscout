@@ -28,6 +28,25 @@ except ImportError:
     LOG.warning("numpy/scipy not available, which could otherwise speed up matching.")
 
 
+# The WinApi1024 definition names an API by the DLL that programs import it from. Windows moved the code of some of
+# these DLLs into others and left forwarders behind: netapi32.dll and secur32.dll forward since Windows 7, ole32.dll
+# forwards CoCreateInstance and other COM functions to combase.dll since Windows 8. The pointer in a memory dump goes
+# to the DLL with the code, so an export of that DLL counts as the API of the same name that the definition lists for
+# the DLL which forwards to it: DLL with the code -> DLL of the definition. The DLLs are listed and not their exports,
+# as a DLL does not forward the same APIs in every Windows version: the netapi32.dll of Windows 10 1507 forwards
+# NetServerEnum, the one of Windows 11 imports and calls it, and both call NetWkstaGetInfo of wkscli.dll themselves.
+FORWARDED_DLLS = {
+    "browcli.dll": "netapi32.dll",
+    "combase.dll": "ole32.dll",
+    "netutils.dll": "netapi32.dll",
+    "samcli.dll": "netapi32.dll",
+    "schedcli.dll": "netapi32.dll",
+    "srvcli.dll": "netapi32.dll",
+    "sspicli.dll": "secur32.dll",
+    "wkscli.dll": "netapi32.dll",
+}
+
+
 class ApiVector:
     def __init__(self, winapi1024_filepath=None, sort_vector=True):
         self._sort_vector = sort_vector
@@ -414,6 +433,14 @@ class ApiVector:
         api_name = api_name.split("@")[0]
         if api_name.endswith("A") or api_name.endswith("W"):
             api_name = api_name[:-1]
+        forwarding_dll = FORWARDED_DLLS.get(dll_name)
+        if (
+            forwarding_dll
+            and (forwarding_dll, api_name) in self._dllapi_set
+            and (dll_name, api_name) not in self._dllapi_set
+        ):
+            # the API of the definition, unless the definition lists this export of the DLL with the code itself
+            dll_name = forwarding_dll
         return dll_name, api_name
 
     def _apply_weights(self, vector):
