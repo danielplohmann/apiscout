@@ -17,8 +17,8 @@ reads it from the installed metadata. The release workflow refuses a tag that do
 
 ## Supported Python versions
 
-ApiScout supports Python 3.10 and newer, and CI tests 3.10 through 3.15. The DB builder needs the same
-3.10; for a system that has no such Python (Windows 7), build the DB from a copy of its DLLs on
+ApiScout supports Python 3.11 and newer, and CI tests 3.11 through 3.15. The DB builder needs the same
+3.11; for a system that has no such Python (Windows 7), build the DB from a copy of its DLLs on
 another system (`--os_name`, `--os_version`, `--load_addresses`).
 
 The places that state the floor are `requires-python`, which ruff also takes its target version

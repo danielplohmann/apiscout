@@ -17,6 +17,10 @@ hits that were reported before, which a release says here.
 - DB builder and DllDownloader: `--def32` and `--def64` take the module-definition (`.def`) file of a DLL and use it to name the exports it has by ordinal only. `mfc42.dll` has about 6,400 of them, which a DB listed as `None<ordinal>` until now. A DEF file of the other bitness, or one that names an export otherwise than the DLL, is not used (#7).
 - Releases: the sdist and wheel of a release come with a GitHub build provenance attestation; `gh attestation verify <file> -R danielplohmann/apiscout` checks a downloaded one.
 
+### Removed
+
+- Python 3.10: ApiScout, the DB builder and the DllDownloader now need Python 3.11 or newer. On 3.10, pip keeps installing 3.0.x.
+
 ### Fixed
 
 - IDA plugin: the ApiScout view stays open when `ida_scout.py` is started with `-S`. It was opened while IDA was still loading, and IDA closed it again when it restored its window layout.

@@ -18,7 +18,7 @@ server. This script looks the DLLs of config.DLL_FILTER up in the index, downloa
 32bit ones for SysWOW64, verifies each against the hash of the index and writes them to <out>/System32 and
 <out>/SysWOW64, the folders `python -m apiscout.db_builder --paths` takes. Then it builds the API DB from them
 (--download-only stops before). Run it from a clone as `python -m apiscout.db_builder.DllDownloader`. Like the DB
-builder, it only needs the standard library (Python 3.10 or newer).
+builder, it only needs the standard library (Python 3.11 or newer).
 
 The DB has no ASLR offsets: `apiscout scan` places the DLLs where the dump has them (--modules, minidumps).
 """
@@ -686,9 +686,9 @@ def clean_partial_files(out_dir):
 
 
 def main(argv=None):
-    # the DB is built by DatabaseBuilder, which needs Python 3.10
-    if sys.version_info < (3, 10):  # noqa: UP036
-        sys.exit("The DllDownloader needs Python 3.10 or newer, this is Python {}.{}.".format(*sys.version_info[:2]))
+    # the DB is built by DatabaseBuilder, which needs Python 3.11
+    if sys.version_info < (3, 11):  # noqa: UP036
+        sys.exit("The DllDownloader needs Python 3.11 or newer, this is Python {}.{}.".format(*sys.version_info[:2]))
     parser = argparse.ArgumentParser(
         description="Build an API DB for a Windows build from DLLs of Microsoft's symbol server, found with Winbindex.",
         prog="python -m apiscout.db_builder.DllDownloader",

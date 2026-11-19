@@ -7,7 +7,7 @@ name = "apiscout"
 version = "3.0.0"
 description = "A library for Windows API usage recovery and similarity assessment with focus on memory dumps."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "BSD-2-Clause"
 license-files = ["LICENSE"]
 authors = [{ name = "Daniel Plohmann", email = "daniel.plohmann@mailbox.org" }]
@@ -73,8 +73,7 @@ pythonpath = ["."]
 strict = true
 
 [tool.ty.src]
-# .github: release_guard.py runs on the Python 3.11 of publish-release.yml and reads tomllib, which 3.10 lacks
-exclude = ["apiscout/db_builder", ".github"]
+exclude = ["apiscout/db_builder"]
 
 [tool.ty.analysis]
 allowed-unresolved-imports = ["idaapi", "idc", "idautils", "ida_*", "binaryninja", "binaryninja.*", "ghidra.**", "java.**", "jpype"]

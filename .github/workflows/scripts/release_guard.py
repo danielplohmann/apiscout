@@ -10,9 +10,8 @@ ecosystem. Keep the logic identical across them and vary only the table.
 import argparse
 import re
 import sys
-from pathlib import Path
-
 import tomllib
+from pathlib import Path
 
 #: Where this repository states its version. Every entry has to agree with the tag.
 #: ("label", "relative/path", regex-with-one-group) reads a literal from a text file;

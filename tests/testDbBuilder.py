@@ -398,7 +398,7 @@ class DatabaseBuilderTests(unittest.TestCase):
             self.assertEqual(json.dumps(document, indent=1, sort_keys=True), DatabaseBuilder.dumps_api_db(document))
 
     def testOldPythonStopsBeforeAnythingIsDone(self):
-        for old_version in ((3, 8, 20, "final", 0), (3, 9, 0, "final", 0)):
+        for old_version in ((3, 9, 0, "final", 0), (3, 10, 0, "final", 0)):
             with self.subTest(old_version):
                 crawl = unittest.mock.Mock(side_effect=AssertionError("crawled"))
                 with contextlib.ExitStack() as stack:
@@ -412,7 +412,7 @@ class DatabaseBuilderTests(unittest.TestCase):
                     with self.assertRaises(SystemExit) as stopped:
                         DatabaseBuilder.main()
                 self.assertIn(
-                    "needs Python 3.10 or newer, this is Python {}.{}".format(*old_version[:2]),
+                    "needs Python 3.11 or newer, this is Python {}.{}".format(*old_version[:2]),
                     str(stopped.exception.code),
                 )
                 self.assertIn("--load_addresses", str(stopped.exception.code))

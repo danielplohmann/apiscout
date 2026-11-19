@@ -959,11 +959,11 @@ class DatabaseBuilder:
 
 
 def check_python_version(script):
-    """Stops at once on a Python older than 3.10, instead of with a TypeError (zip(strict=)) after the crawl."""
+    """Stops at once on a Python older than 3.11, rather than partway through the crawl."""
     # ruff knows requires-python and takes this for dead code, but this runs with any interpreter that starts it
-    if sys.version_info < (3, 10):  # noqa: UP036
+    if sys.version_info < (3, 11):  # noqa: UP036
         sys.exit(
-            f"{script} needs Python 3.10 or newer, this is Python {sys.version_info[0]}.{sys.version_info[1]}. "
+            f"{script} needs Python 3.11 or newer, this is Python {sys.version_info[0]}.{sys.version_info[1]}. "
             "For a system that has none, build the DB from a copy of its DLLs on another system "
             "(--os_name, --os_version, --load_addresses)."
         )
