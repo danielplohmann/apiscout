@@ -43,3 +43,9 @@ python -m apiscout.db_builder.DllDownloader --windows 11-24H2 --update KB5046617
 ```
 
 Run the downloader with `--list` to see available versions, or with `--windows 11-24H2 --list` to list updates for a version. `--update` also accepts a build like `26100.2605`. These databases contain no captured ASLR offsets. Supply load addresses with a minidump or a module list.
+
+### Names for ordinal-only exports
+
+Some DLLs export most functions by ordinal only. MFC's `mfc42.dll` and `mfc42u.dll` export thousands this way, and a database lists them as `None<ordinal>`. Both the builder and the downloader accept the module-definition (`.def`) file the DLL was linked with, which supplies the names: `--def32 MFC42.DEF` for the 32-bit DLL and `--def64` for the 64-bit one, because their names and ordinals differ. Visual C++ ships these files with the MFC sources. Use the one from the same MFC version, since names are looked up by ordinal.
+
+The file applies to the DLL its `LIBRARY` line names, or else to the DLL named like the file. Exports that already have a name keep it. The builder refuses a DEF file whose C++ names are decorated for the other bitness, and ignores one that names an export differently than the DLL does.

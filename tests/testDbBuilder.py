@@ -479,6 +479,183 @@ class DatabaseBuilderTests(unittest.TestCase):
             sorted(os.path.basename(d["filepath"]).lower() for d in api_db["dlls"].values()),
         )
 
+    def writeDef(self, name, text):
+        path = os.path.join(self.directory.name, name)
+        with open(path, "w", encoding="utf-8") as f_def:
+            f_def.write(text)
+        return path
+
+    def testDefFile(self):
+        path = self.writeDef(
+            "MFC42.DEF",
+            "; a comment\n"
+            "LIBRARY MFC42 BASE=0x5f400000\n"
+            'DESCRIPTION "MFC"\n'
+            "EXPORTS ??0CObject@@QAE@XZ @ 256 NONAME\n"
+            "\t?AfxGetApp@@YGPAVCWinApp@@XZ\t@257 NONAME ; a comment\n"
+            "\tNamed=_Internal@4 @258\n"
+            "\tSpaced = _Internal@8 @ 259 PRIVATE\n"
+            "\tWithoutOrdinal\n"
+            '\t"Quoted" @260 DATA\n'
+            "\tSecond @256\n",
+        )
+        self.assertEqual(
+            (
+                "MFC42.dll",
+                {
+                    256: "??0CObject@@QAE@XZ",
+                    257: "?AfxGetApp@@YGPAVCWinApp@@XZ",
+                    258: "Named",
+                    259: "Spaced",
+                    260: "Quoted",
+                },
+            ),
+            DatabaseBuilder.read_def_file(path),
+        )
+        # without LIBRARY, the DLL is named like the file
+        path = self.writeDef("mfc42u.def", "EXPORTS\n  ?A@@YAXXZ @5 NONAME\n")
+        self.assertEqual(("mfc42u.dll", {5: "?A@@YAXXZ"}), DatabaseBuilder.read_def_file(path))
+        # exports called like statements, LIBRARY with BASE only, and UTF-16
+        path = self.writeDef(
+            "plain.def", "LIBRARY BASE=0x10000000\nEXPORTS\n Description @1\n Version @ 2\nEXPORTS Last @3\n"
+        )
+        self.assertEqual(
+            ("plain.dll", {1: "Description", 2: "Version", 3: "Last"}), DatabaseBuilder.read_def_file(path)
+        )
+        with open(path, "wb") as f_def:
+            f_def.write("LIBRARY wide\r\nEXPORTS\r\n\tWide @7 NONAME\r\n".encode("utf-16"))
+        self.assertEqual(("wide.dll", {7: "Wide"}), DatabaseBuilder.read_def_file(path))
+        for encoding in ("utf-16-le", "utf-16-be"):
+            with open(path, "wb") as f_def:
+                f_def.write("LIBRARY wide\r\nEXPORTS\r\n\tWide @7 NONAME\r\n".encode(encoding))
+            self.assertEqual(("wide.dll", {7: "Wide"}), DatabaseBuilder.read_def_file(path), encoding)
+        # a ; in quotes is not a comment, and of two ordinals the first counts
+        path = self.writeDef("odd.def", 'EXPORTS\n "semi;colon" @1 ; @9\n Twice @2 @3\n')
+        self.assertEqual(("odd.dll", {1: "semi;colon", 2: "Twice"}), DatabaseBuilder.read_def_file(path))
+        # exports by name only called like statements, a statement after them, LIBRARY BASE = with spaces
+        path = self.writeDef(
+            "named.def",
+            "LIBRARY BASE = 0x10000000\nEXPORTS\n  Version\nDescription\nStub DATA\n  After @4\n"
+            'DESCRIPTION "x"\n  Ignored @5\nEXPORTS\n  Again @6\n  Unicode @ \u0661\n',
+        )
+        self.assertEqual(("named.dll", {4: "After", 6: "Again"}), DatabaseBuilder.read_def_file(path))
+        path = self.writeDef("empty.def", "LIBRARY x.dll\nEXPORTS\n  ByName\n")
+        with self.assertRaisesRegex(ValueError, "no exports with an ordinal"):
+            DatabaseBuilder.read_def_file(path)
+
+    def testDefFilesNameTheExportsByOrdinalOnly(self):
+        dll_dir = os.path.join(self.directory.name, "dlls")
+        functions = [0x1000, 0x1010, 0x1020, 0x1030]
+        for folder, bits in (("SysWOW64", 32), ("System32", 64)):
+            os.makedirs(os.path.join(dll_dir, folder))
+            with open(os.path.join(dll_dir, folder, "Mfc42.dll"), "wb") as f_dll:
+                f_dll.write(build_dll(functions, [(b"DllMain", 0)], bits, base=256))
+        def_file = self.writeDef(
+            "mfc42.def", "LIBRARY mfc42\nEXPORTS\n DllMain @256\n Other @257 NONAME\n ?Two@@YGXXZ @258 NONAME\n"
+        )
+        outfile = os.path.join(self.directory.name, "db.json")
+        offline = ["--paths", dll_dir, "--os_name", "Test", "--os_version", "1.0", "--outfile", outfile]
+        self.assertEqual((0, ""), self.run_main(*offline, "--def32", def_file))
+        with open(outfile, encoding="utf-8") as f_db:
+            api_db = json.load(f_db)
+        names = {
+            dll["bitness"]: [(export["ordinal"], export["name"]) for export in dll["exports"]]
+            for dll in api_db["dlls"].values()
+        }
+        # only the 32bit DLL, and only its exports without a name
+        self.assertEqual([(256, "DllMain"), (257, "Other"), (258, "?Two@@YGXXZ"), (259, "None")], names[32])
+        self.assertEqual([(256, "DllMain"), (257, "None"), (258, "None"), (259, "None")], names[64])
+        self.assertEqual(4 + 4, api_db["num_apis"])
+        code, errors = self.run_main(*offline, "--def64", os.path.join(self.directory.name, "missing.def"))
+        self.assertEqual(2, code)
+        self.assertIn("--def64:", errors)
+        # only where a DB is built
+        for other in (["--aslr_check"], []):
+            code, errors = self.run_main(*other, "--def32", def_file)
+            self.assertEqual(2, code)
+            self.assertIn("--def32 and --def64 name exports in the DB", errors)
+
+    def testDefFileOfTheOtherBitness(self):
+        x86 = "EXPORTS\n ??0CObject@@QAE@XZ @1 NONAME\n ?Run@CWinApp@@UAEHXZ @2 NONAME\n ?Close@CWnd@@QAEXXZ @4 NONAME\n ?AfxGetApp@@YGPAVCWinApp@@XZ @3\n"
+        x64 = "EXPORTS\n ??0CObject@@QEAA@XZ @1 NONAME\n ?Run@CWinApp@@UEAAHXZ @2 NONAME\n ?Close@CWnd@@QEAAXXZ @4 NONAME\n"
+        path_32, path_64 = self.writeDef("x86.def", x86), self.writeDef("x64.def", x64)
+        self.assertEqual(32, DatabaseBuilder.def_bitness(DatabaseBuilder.read_def_file(path_32)[1]))
+        self.assertEqual(64, DatabaseBuilder.def_bitness(DatabaseBuilder.read_def_file(path_64)[1]))
+        self.assertIsNone(DatabaseBuilder.def_bitness({1: "Plain", 2: "?AfxGetApp@@YGPAVCWinApp@@XZ"}))
+        # x64 names that look like 32bit ones further on, or are too few to tell
+        x64_lookalikes = {1: "?f@C@@SAEXZ", 2: "?f@@YAXVFoo@@UAEvent@@@Z", 3: "?g@C@@SAEXZ", 4: "?h@C@@SAEXZ"}
+        self.assertIsNone(DatabaseBuilder.def_bitness(x64_lookalikes))
+        self.assertIsNone(DatabaseBuilder.def_bitness({1: "??0A@@QAE@XZ", 2: "??0B@@QAE@XZ"}))
+        self.assertEqual(2, len(DatabaseBuilder.read_def_files([path_32], [path_64])))
+        with self.assertRaisesRegex(ValueError, "--def32: .* has the names of a 64bit DLL, give it with --def64"):
+            DatabaseBuilder.read_def_files([path_64], [])
+        with self.assertRaisesRegex(ValueError, "--def64: .* has the names of a 32bit DLL, give it with --def32"):
+            DatabaseBuilder.read_def_files([], [path_32])
+
+    def testDefFilesForADbBuiltOnWindows(self):
+        api_db = {
+            "dlls": {
+                "32_1.0_mfc42.dll_0x10000000": {
+                    "bitness": 32,
+                    "filepath": "C:\\Windows\\SysWOW64\\MFC42.DLL",
+                    "exports": [{"address": 0x1000, "name": "None", "ordinal": 5}],
+                }
+            }
+        }
+        DatabaseBuilder.DatabaseBuilder().applyDefFiles(api_db, [(32, "mfc42.dll", {5: "Five"})])
+        self.assertEqual("Five", api_db["dlls"]["32_1.0_mfc42.dll_0x10000000"]["exports"][0]["name"])
+
+    def testDownloaderBuildsTheDbWithDefFiles(self):
+        from apiscout.db_builder import DllDownloader
+
+        out = os.path.join(self.directory.name, "out")
+        os.makedirs(os.path.join(out, "SysWOW64"))
+        dll = os.path.join(out, "SysWOW64", "mfc42.dll")
+        with open(dll, "wb") as f_dll:
+            f_dll.write(build_dll([0x1000, 0x1010], [(b"DllMain", 0)], 32, base=256))
+        outfile = os.path.join(self.directory.name, "db.json")
+        with unittest.mock.patch.object(DllDownloader, "os_names", return_value=("W", "1.0")):
+            DllDownloader.build_db(out, None, None, outfile, files=[dll], def_files=[(32, "mfc42.dll", {257: "Other"})])
+        with open(outfile, encoding="utf-8") as f_db:
+            (entry,) = json.load(f_db)["dlls"].values()
+        self.assertEqual(["DllMain", "Other"], [export["name"] for export in entry["exports"]])
+
+    def testDefFilesOfSeveralDllsAndOfOtherBuilds(self):
+        dll_dir = os.path.join(self.directory.name, "dlls")
+        os.makedirs(dll_dir)
+        for name in ("mfc42.dll", "mfc42u.dll"):
+            with open(os.path.join(dll_dir, name), "wb") as f_dll:
+                f_dll.write(build_dll([0x1000, 0x1010], [(b"DllMain", 0)], 32, base=256))
+        fitting = self.writeDef("mfc42.def", "EXPORTS\n DllMain @256\n Other @257 NONAME\n")
+        # the DEF file of another build: its export at 256 is called otherwise
+        other_build = self.writeDef("mfc42u.def", "EXPORTS\n Renamed @256\n Other @257 NONAME\n")
+        missing_dll = self.writeDef("mfc71.def", "EXPORTS\n Other @257 NONAME\n")
+        outfile = os.path.join(self.directory.name, "db.json")
+        offline = ["--paths", dll_dir, "--os_name", "Test", "--os_version", "1.0", "--outfile", outfile]
+        arguments = (*offline, "--def32", fitting, "--def32", other_build, "--def32", missing_dll)
+        logging.disable(logging.NOTSET)
+        with self.assertLogs(DatabaseBuilder.LOG, logging.INFO) as logs:
+            self.assertEqual((0, ""), self.run_main(*arguments))
+        logging.disable(logging.CRITICAL)
+        with open(outfile, encoding="utf-8") as f_db:
+            api_db = json.load(f_db)
+        names = {
+            os.path.basename(dll["filepath"]): [export["name"] for export in dll["exports"]]
+            for dll in api_db["dlls"].values()
+        }
+        self.assertEqual({"mfc42.dll": ["DllMain", "Other"], "mfc42u.dll": ["DllMain", "None"]}, names)
+        output = "\n".join(logs.output)
+        self.assertIn("which has the names of 1 of its named exports.", output)
+        self.assertIn("1 of 1 exports with a name there are called otherwise (ordinal 256 is DllMain, the DEF", output)
+        self.assertIn("No 32bit mfc71.dll in the DB, its DEF file is not used.", output)
+        # a second DEF file is checked against the names of the DLL, not against those of the first one
+        api_db = {"dlls": {"a": {"bitness": 32, "filepath": "a.dll", "exports": []}}}
+        api_db["dlls"]["a"]["exports"] = [{"address": n, "name": "None", "ordinal": n} for n in (1, 2, 5)]
+        DatabaseBuilder.DatabaseBuilder().applyDefFiles(
+            api_db, [(32, "a.dll", {1: "A", 2: "B"}), (32, "a.dll", {1: "Z", 5: "Q"})]
+        )
+        self.assertEqual(["A", "B", "Q"], [export["name"] for export in api_db["dlls"]["a"]["exports"]])
+
 
 def reference_summary_or_failure(path):
     """the summary by pefile, None if it can not read the file (the builder skips it with a warning)"""
