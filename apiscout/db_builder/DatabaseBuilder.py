@@ -59,7 +59,7 @@ INVALID_FILE_NAME_CHARACTERS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
 def default_file_stem(os_version):
-    """the start of the name of the DB file that is written without --outfile: the first two numbers of the version"""
+    """The start of the name of the DB file that is written without --outfile: the first two numbers of the version."""
     return ".".join(os_version.split(".")[:2])
 
 
@@ -73,13 +73,13 @@ def get_system_info():
 
 
 def normalize_dll_path(path):
-    """DLL file name with its folder in lower case (system32/kernel32.dll), which identifies a DLL regardless of where a copy of the system is mounted"""
+    """DLL file name with its folder in lower case (system32/kernel32.dll), which identifies a DLL regardless of where a copy of the system is mounted."""
     parts = [part for part in path.strip().strip('"').lower().replace("\\", "/").split("/") if part]
     return "/".join(parts[-2:])
 
 
 def read_load_addresses(filepath):
-    """read lines of "<load address> <path of DLL>", as taken from the module list of a process on the target system"""
+    """Read lines of "<load address> <path of DLL>", as taken from the module list of a process on the target system."""
     load_addresses = []
     with open(filepath, "rb") as f_in:
         content = f_in.read()
@@ -145,7 +145,7 @@ def check_aslr():
 
 
 class NotPlainPe(Exception):
-    """the file is not laid out like the PE images of Windows, pefile reads it"""
+    """The file is not laid out like the PE images of Windows, pefile reads it."""
 
 
 # a section: the RVAs it holds, its file offset minus its RVA, the end of its raw data in the file, and the address and
@@ -161,8 +161,7 @@ LOW_64BIT_DLLS = ("ntdll.dll", "kernel32.dll", "user32.dll")
 
 
 class PlainPe:
-    """
-    The exports and the product version of a PE image, read from its bytes.
+    """The exports and the product version of a PE image, read from its bytes.
 
     pefile needs 150 ms or more for a DLL: it decodes every directory (imports, relocations, resources) into objects,
     while the DB takes the export table and one number out of the resources. This reads these two like pefile does,
@@ -247,7 +246,7 @@ class PlainPe:
         raise NotPlainPe("RVA outside of the sections")
 
     def read(self, rva, length):
-        """the bytes of pefile's get_data: up to the end of the raw data of the section"""
+        """The bytes of pefile's get_data: up to the end of the raw data of the section."""
         section = self.section(rva)
         offset = rva + section.delta
         return self.data[offset : min(offset + length, section.limit)]
@@ -259,7 +258,7 @@ class PlainPe:
         return data
 
     def exports(self):
-        """(ordinal, address, name) of the exports in the order of pefile, None without an export table"""
+        """(ordinal, address, name) of the exports in the order of pefile, None without an export table."""
         rva, size = self.directories[0:2]
         if not rva:
             return None
@@ -299,7 +298,7 @@ class PlainPe:
         return exports
 
     def names(self, name_rvas):
-        """the names that the RVAs point to, if they have the characters pefile accepts"""
+        """The names that the RVAs point to, if they have the characters pefile accepts."""
         first, last = min(name_rvas), max(name_rvas)
         section = self.section(first)
         if last >= section.end:
@@ -322,7 +321,7 @@ class PlainPe:
         return names
 
     def table(self, rva, kind, count, read_length=None, counted=True):
-        """the entries of an array in the export table, which pefile reads as far as the file goes and its section"""
+        """The entries of an array in the export table, which pefile reads as far as the file goes and its section."""
         width = struct.calcsize(kind)
         if not count:
             if rva >= len(self.data):
@@ -338,14 +337,14 @@ class PlainPe:
         return struct.unpack(f"<{count}{kind}", data)
 
     def directory_entries(self, rva):
-        """the number of entries of a resource directory, which pefile reads only if it is readable and not too large"""
+        """The number of entries of a resource directory, which pefile reads only if it is readable and not too large."""
         (named, by_id) = struct.unpack_from("<HH", self.read_exactly(rva, 16), 12)
         if named + by_id > MAX_DIRECTORY_ENTRIES:
             raise NotPlainPe("many resources")
         return named + by_id
 
     def product_version(self):
-        """the product version of the first version resource, as get_product_version reads it"""
+        """The product version of the first version resource, as get_product_version reads it."""
         root = self.directories[4]
         if not root:
             return "0.0.0.0"
@@ -373,7 +372,7 @@ class PlainPe:
         return "0.0.0.0"
 
     def version_in_directory(self, root, type_directory):
-        """the product version of the first language of the first version resource"""
+        """The product version of the first language of the first version resource."""
         if not self.directory_entries(type_directory):
             raise NotPlainPe("no version")
         _, offset = struct.unpack("<II", self.read_exactly(type_directory + 16, 8))
@@ -407,7 +406,7 @@ EXPORT_KEYS = {"address", "name", "ordinal"}
 
 
 def dump_exports(exports, indent):
-    """the list of exports as json.dumps(indent=1, sort_keys=True) writes it, None for anything else than ints and a str"""
+    """The list of exports as json.dumps(indent=1, sort_keys=True) writes it, None for anything else than ints and a str."""
     if not (
         all(type(export) is dict and export.keys() == EXPORT_KEYS for export in exports)
         and {type(export["address"]) for export in exports} == {int}
@@ -424,7 +423,7 @@ def dump_exports(exports, indent):
 
 
 def dump_json(obj, level=0):
-    """json.dumps(obj, indent=1, sort_keys=True), but the lists of exports (100000 and more) are written faster"""
+    """json.dumps(obj, indent=1, sort_keys=True), but the lists of exports (100000 and more) are written faster."""
     kind = type(obj)
     if kind is str:
         return encode_basestring_ascii(obj)
@@ -449,7 +448,7 @@ def dump_json(obj, level=0):
 
 
 def dumps_api_db(api_db):
-    """the text of the DB file: json.dumps(api_db, indent=1, sort_keys=True)"""
+    """The text of the DB file: json.dumps(api_db, indent=1, sort_keys=True)."""
     try:
         return dump_json(api_db)
     except TypeError:
@@ -484,7 +483,7 @@ DEF_EXPORT_OPTIONS = {"NONAME", "PRIVATE", "DATA", "CONSTANT"}
 
 
 def def_ordinal(tokens):
-    """the ordinal of the entry of an EXPORTS statement, as @ordinal or @ ordinal after its name, None without one"""
+    """The ordinal of the entry of an EXPORTS statement, as @ordinal or @ ordinal after its name, None without one."""
     for previous, token in itertools.pairwise(["", *tokens[1:]]):
         if DEF_ORDINAL.fullmatch(token):
             return int(token[1:])
@@ -494,8 +493,11 @@ def def_ordinal(tokens):
 
 
 def read_def_file(path):
-    """(DLL file name, {ordinal: name}) of a module-definition (.def) file. The DLL is the one LIBRARY names, or the
-    one named like the file. Exports without an ordinal are left out: they are exported by name anyway."""
+    """(DLL file name, {ordinal: name}) of a module-definition (.def) file.
+
+    The DLL is the one LIBRARY names, or the one named like the file. Exports without an ordinal are left out: they are
+    exported by name anyway.
+    """
     with open(path, "rb") as f_in:
         data = f_in.read()
     if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
@@ -551,7 +553,7 @@ def read_def_file(path):
 
 
 def def_bitness(names):
-    """32 or 64 if the C++ names of a DEF file are decorated for that bitness, None if they do not tell"""
+    """32 or 64 if the C++ names of a DEF file are decorated for that bitness, None if they do not tell."""
     # the decoration of the type of a member function follows the first @@, which ends its name
     types = [name.partition("@@")[2] for name in names.values() if name.startswith("?") and "@@" in name]
     member_32 = sum(1 for decoration in types if DEF_MEMBER_32.match(decoration))
@@ -565,8 +567,10 @@ def def_bitness(names):
 
 
 def read_def_files(def32=(), def64=()):
-    """(bitness, DLL file name, {ordinal: name}) of the DEF files given for 32bit and 64bit DLLs, a ValueError (or
-    OSError) for one that can not be used, such as the one of a 64bit DLL given for a 32bit one"""
+    """(bitness, DLL file name, {ordinal: name}) of the DEF files given for 32bit and 64bit DLLs.
+
+    A ValueError (or OSError) for one that can not be used, such as the one of a 64bit DLL given for a 32bit one.
+    """
     def_files = []
     for bitness, paths in ((32, def32), (64, def64)):
         for path in paths or ():
@@ -590,7 +594,7 @@ class DatabaseBuilder:
         self._machines = {}
 
     def _extractPlainPe(self, filepath):
-        """the summary of a DLL by PlainPe, None if it has no exports, an exception if pefile has to read it"""
+        """The summary of a DLL by PlainPe, None if it has no exports, an exception if pefile has to read it."""
         with open(filepath, "rb") as f_in:
             data = mmap.mmap(f_in.fileno(), 0, access=mmap.ACCESS_READ)
         try:
@@ -662,8 +666,11 @@ class DatabaseBuilder:
         return "{}_{}_{}_0x{:x}".format(dll_info["bitness"], dll_info["version"], filename, dll_info["base_address"])
 
     def extractRecursively(self, paths, filter_dlls=False, os_name=None, os_version=None, only_files=None):
-        """the API DB of the DLLs in paths; with only_files, a collection of paths, only those files are used (the paths are compared
-        as absolute paths in the normal case of the platform: Windows file names are not case sensitive)"""
+        """The API DB of the DLLs in paths.
+
+        With only_files, a collection of paths, only those files are used (the paths are compared as absolute paths in
+        the normal case of the platform: Windows file names are not case sensitive).
+        """
         api_count = 0
         pe_count = 0
         duplicate_count = 0
@@ -726,9 +733,11 @@ class DatabaseBuilder:
         return api_db
 
     def applyDefFiles(self, api_db, def_files):
-        """names the exports by ordinal only (MFC DLLs have thousands) after a DEF file of their DLL, given as
-        (bitness, DLL file name, {ordinal: name}). Exports that have a name keep it, and a DEF file that names one of
-        them otherwise belongs to another build or bitness and is not used for that DLL."""
+        """Names the exports by ordinal only (MFC DLLs have thousands) after a DEF file of their DLL.
+
+        def_files are (bitness, DLL file name, {ordinal: name}). Exports that have a name keep it, and a DEF file that
+        names one of them otherwise belongs to another build or bitness and is not used for that DLL.
+        """
         # the names the DLLs have themselves, which DEF files are checked against (not those of an earlier DEF file)
         own_names = {
             id(dll): {export["ordinal"] for export in dll["exports"] if export["name"] != "None"}
@@ -804,7 +813,7 @@ class DatabaseBuilder:
         return api_db
 
     def applyLoadAddresses(self, api_db, load_addresses):
-        """derive ASLR offsets from known load addresses of the DLLs, given as (normalized path, address)"""
+        """Derive ASLR offsets from known load addresses of the DLLs, given as (normalized path, address)."""
 
         def all_paths(dll_key, dll):
             return [normalize_dll_path(path) for path in [dll["filepath"]] + self._duplicate_paths.get(dll_key, [])]
@@ -893,10 +902,12 @@ class DatabaseBuilder:
 
     @staticmethod
     def _warnAboutLow64bitDlls(applied):
-        """The module list of a 32bit process names the 32bit copies in SysWOW64 by their System32 path. Without a
-        SysWOW64 folder in the DB, such a list fits the 64bit DLLs of System32 by name, and every offset of them is
-        wrong. An address below 4 GB is no proof, as Windows 7 loads 64bit ntdll, kernel32 and user32 there, so this
-        only warns. The same as in apiscout/LoadAddresses.py."""
+        """The module list of a 32bit process names the 32bit copies in SysWOW64 by their System32 path.
+
+        Without a SysWOW64 folder in the DB, such a list fits the 64bit DLLs of System32 by name, and every offset of
+        them is wrong. An address below 4 GB is no proof, as Windows 7 loads 64bit ntdll, kernel32 and user32 there, so
+        this only warns. The same as in apiscout/LoadAddresses.py.
+        """
         low = sorted(
             (normalize_dll_path(dll["filepath"]).rsplit("/", 1)[-1], load_address)
             for dll, load_address in applied
@@ -948,7 +959,7 @@ class DatabaseBuilder:
 
 
 def check_python_version(script):
-    """stops at once on a Python older than 3.10, instead of with a TypeError (zip(strict=)) after the crawl"""
+    """Stops at once on a Python older than 3.10, instead of with a TypeError (zip(strict=)) after the crawl."""
     # ruff knows requires-python and takes this for dead code, but this runs with any interpreter that starts it
     if sys.version_info < (3, 10):  # noqa: UP036
         sys.exit(

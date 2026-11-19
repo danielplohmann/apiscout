@@ -35,7 +35,7 @@ class IdaProxy:
         return ida_segment.getseg(ea) is not None
 
     def getLoadedRanges(self, ea, size):
-        """the parts of a range that have a value in the database as list of (address, bytes)"""
+        """The parts of a range that have a value in the database as list of (address, bytes)."""
         ranges = []
         for chunk_start in range(ea, ea + size, self.CHUNK_SIZE):
             chunk_size = min(self.CHUNK_SIZE, ea + size - chunk_start)
@@ -78,10 +78,10 @@ class IdaProxy:
         return ida_segment.getseg(ea).end_ea
 
     def getBlockingItem(self, ea, size, in_table):
-        """
-        describes the item that must not be replaced by a pointer at this location, None if there is no such item.
-        Code of a function is always kept. Other code is only given up for a location that is referenced as data
-        or lies in a table of API addresses, which IDA may have disassembled. Structures are kept as a whole.
+        """Describes the item that must not be replaced by a pointer at this location, None if there is no such item.
+
+        Code of a function is always kept. Other code is only given up for a location that is referenced as data or lies
+        in a table of API addresses, which IDA may have disassembled. Structures are kept as a whole.
         """
         is_pointer_location = in_table or any(True for _ in idautils.DataRefsTo(ea))
         for address in range(ea, ea + size):
@@ -94,10 +94,12 @@ class IdaProxy:
         return None
 
     def makeSegmentWritable(self, ea):
-        """
-        The decompiler treats the content of a segment that is not writable as constant and shows calls through
-        API pointers as calls to numbers. Segments of a dump loaded as binary file carry no permissions at all
-        and get all of them, other segments (e.g. .rdata) become writable in addition.
+        """Make the segment at ea writable, so the decompiler shows calls through its API pointers as API calls.
+
+        The decompiler treats the content of a segment that is not writable as constant and shows calls through API
+        pointers as calls to numbers. Segments of a dump loaded as binary file carry no permissions at all and get all
+        of them, other segments (e.g. .rdata) become writable in addition. False if there is no segment or it is
+        writable already.
         """
         segment = ida_segment.getseg(ea)
         if segment is None or segment.perm & ida_segment.SEGPERM_WRITE:
@@ -112,10 +114,11 @@ class IdaProxy:
         return [start for start in idautils.Segments() if ida_segment.get_segm_base(ida_segment.getseg(start)) != 0]
 
     def useFlatAddresses(self):
-        """
-        A binary file loaded with a segment base (-b on the command line) has code whose operands are taken
-        relative to that base, so its calls do not reference the API pointers. The base is set to 0 as for
-        a flat image, returns the affected segments. What an analysis under the base left behind is repaired.
+        """Set the segment base of a binary file loaded with one to 0, returns the affected segments.
+
+        A binary file loaded with a segment base (-b on the command line) has code whose operands are taken relative to
+        that base, so its calls do not reference the API pointers. The base is set to 0 as for a flat image. What an
+        analysis under the base left behind is repaired.
         """
         changed = []
         old_bases = set()
@@ -170,7 +173,7 @@ class IdaProxy:
         return ida_nalt.get_tinfo(tinfo, ea) and tinfo.get_func_details(details) and details.is_noret()
 
     def _rebaseOffsets(self, head, bases):
-        """offset operands that were created relative to a segment base would point behind their target"""
+        """Offset operands that were created relative to a segment base would point behind their target."""
         flags = ida_bytes.get_full_flags(head)
         refinfo = ida_nalt.refinfo_t()
         for operand in range(ida_ida.UA_MAXOP):
@@ -181,7 +184,7 @@ class IdaProxy:
                 ida_offset.op_offset_ex(head, operand, refinfo)
 
     def undefine(self, ea, size):
-        """releases the items in the range, arrays reaching into it keep their elements outside of it"""
+        """Releases the items in the range, arrays reaching into it keep their elements outside of it."""
         arrays = []
         for address in (ea, ea + size - 1):
             head = ida_bytes.get_item_head(address)
@@ -211,7 +214,7 @@ class IdaProxy:
         return ida_bytes.is_head(flags) and ida_bytes.is_data(flags) and ida_bytes.get_item_size(ea) == size
 
     def hasIndexRegister(self, instruction, operand):
-        """x86: a memory operand with SIB byte whose index field (extended by REX.X) names a register"""
+        """x86: a memory operand with SIB byte whose index field (extended by REX.X) names a register."""
         index = (operand.specflag2 >> 3) & 7
         if (instruction.insnpref & 0x42) == 0x42:
             index |= 8

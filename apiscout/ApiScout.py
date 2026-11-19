@@ -87,9 +87,12 @@ class ApiScout:
         self.loadWinApi1024()
 
     def loadDbFile(self, db_filepath, place=None, api_db=None):
-        """load an API DB. place(api_db) can return {DLL key: load address} to put DLLs at the addresses they are really
-        loaded at (see LoadAddresses.DllPlacer), the other DLLs keep the addresses of the DB. A caller that has parsed
-        the file already (FingerprintCrawler.readApiDb) passes its content as api_db, which is not read again."""
+        """Load an API DB.
+
+        place(api_db) can return {DLL key: load address} to put DLLs at the addresses they are really loaded at (see
+        LoadAddresses.DllPlacer), the other DLLs keep the addresses of the DB. A caller that has parsed the file already
+        (FingerprintCrawler.readApiDb) passes its content as api_db, which is not read again.
+        """
         with paused_garbage_collection():
             self._loadDbFile(db_filepath, place, api_db)
 
@@ -183,7 +186,7 @@ class ApiScout:
 
     @staticmethod
     def _getApiNames(exports):
-        """the names of exports, one that has none is called None<ordinal>"""
+        """The names of exports, one that has none is called None<ordinal>."""
         names = list(map(str, map(itemgetter("name"), exports)))
         if "None" in names:
             names = [
@@ -218,7 +221,7 @@ class ApiScout:
         return api_entry
 
     def _isLoadedMap(self, name):
-        """whether the map under the name is the one that loadDbFile() built, with its other_bitness_map and entries"""
+        """Whether the map under the name is the one that loadDbFile() built, with its other_bitness_map and entries."""
         return self.api_maps.get(name) is self._loaded_maps.get(name)
 
     def _getOtherBitnessMaps(self):
@@ -231,18 +234,18 @@ class ApiScout:
         self.ignore_aslr_offsets = value
 
     def setBitness(self, bitness):
-        """32 searches 32bit pointers only, which is all there is in the memory of a 32bit system, None both sizes"""
+        """32 searches 32bit pointers only, which is all there is in the memory of a 32bit system, None both sizes."""
         self.bitness = bitness
 
     def hasDll(self, file_name):
-        """whether a DLL of this file name is in one of the loaded API DBs"""
+        """Whether a DLL of this file name is in one of the loaded API DBs."""
         return file_name.lower() in self._dll_file_names
 
     def setBaseAddress(self, address):
         self.base_address = address
 
     def setBinaryLength(self, length):
-        """size of the image starting at the base address, used by filter() to recognize references into the own image"""
+        """Size of the image starting at the base address, used by filter() to recognize references into the own image."""
         self._binary_length = length
 
     def setLoadOffset(self, offset):
@@ -259,8 +262,11 @@ class ApiScout:
             yield offset, unpack_from(binary, offset)[0]
 
     def _findCandidates(self, binary, widths):
-        """the DWORDs (width 4) and QWORDs (width 8) of the binary that are addresses of an API map, with their offsets
-        in ascending order, as {(API map name, width): [(offset, value)]}. Maps and widths without any hit may be missing."""
+        """The DWORDs and QWORDs of the binary that are addresses of an API map, with their offsets.
+
+        As {(API map name, width): [(offset, value)]}, width 4 for DWORDs and 8 for QWORDs, the offsets in ascending
+        order. Maps and widths without any hit may be missing.
+        """
         if numpy_search is None:
             return {
                 (name, width): [
@@ -314,7 +320,7 @@ class ApiScout:
             references[64].setdefault(function_addr, set()).add(offset)
 
     def _getCodeReferences(self, binary, targets):
-        """references by calls and jumps through pointers to the given offsets, as {bitness: {offset: {offsets of the instructions}}}"""
+        """References by calls and jumps through pointers to the given offsets, as {bitness: {offset: {offsets of the instructions}}}."""
         base_address = self._findBaseAddress(binary)
         if numpy_search is not None:
             return numpy_search.find_code_references(binary, targets, base_address)
@@ -394,9 +400,11 @@ class ApiScout:
         return results
 
     def crawlRegions(self, regions):
-        """crawl memory regions given as (start address, buffer), like ida_scout.py does with the segments of IDA.
+        """Crawl memory regions given as (start address, buffer), like ida_scout.py does with the segments of IDA.
+
         The offsets of the results are relative to the base address set before, so base address plus offset is the
-        address of the hit. References of code are resolved within each region."""
+        address of the hit. References of code are resolved within each region.
+        """
         base_address, load_offset, binary_length = self.base_address, self.load_offset, self._binary_length
         results = {}
         try:
@@ -442,7 +450,7 @@ class ApiScout:
         keyed=True,
         min_key_apis=None,
     ):
-        """APIs that the binary does not refer to by pointer but resolves at run time, per API map as {name: [DynamicApi]}, by offset
+        """APIs that the binary does not refer to by pointer but resolves at run time, per API map as {name: [DynamicApi]}, by offset.
 
         hashes: APIs of which the hash of the name (algorithms, by default all of DynamicApis.HASH_ALGORITHMS) is in the binary, in a
         region of several hashes (min_hits sets the number, see DynamicApis.getMinimumHits). keyed: also the hashes that the program
@@ -450,7 +458,8 @@ class ApiScout:
         min_key_apis of them, default: DynamicApis.getMinimumKeyApis) and is part of the algorithm of such a hit, e.g. sdbm^0x1e5c48de.
         strings: APIs of which the name, at least min_string_length characters long (default: DynamicApis.DEFAULT_MIN_STRING_LENGTH), is a whole ASCII or UTF-16LE string that is in a
         run of at least min_string_run different names (default: DynamicApis.MIN_STRING_RUN, see DynamicApis.getStringRuns).
-        The hashes of an API DB are computed at the first call after loading it."""
+        The hashes of an API DB are computed at the first call after loading it.
+        """
         finder = self._getDynamicFinder()
         results = {name: [] for name in self.api_maps}
         found = []
@@ -466,8 +475,11 @@ class ApiScout:
         return results
 
     def findDynamicApisInRegions(self, regions, exclude_ranges=()):
-        """findDynamicApis() over memory regions given as (start address, buffer), like crawlRegions(); APIs found in
-        exclude_ranges, (start, end) addresses such as the images of DLLs with their own export names, are dropped"""
+        """findDynamicApis() over memory regions given as (start address, buffer), like crawlRegions().
+
+        APIs found in exclude_ranges, (start, end) addresses such as the images of DLLs with their own export names, are
+        dropped.
+        """
         base_address, load_offset = self.base_address, self.load_offset
         results = {name: [] for name in self.api_maps}
         try:
@@ -489,10 +501,11 @@ class ApiScout:
         return results
 
     def addDynamicApisToResults(self, results, dynamic_results):
-        """a copy of the results of crawl() with the dynamic APIs added as references without address, for the ApiVector
+        """A copy of the results of crawl() with the dynamic APIs added as references without address, for the ApiVector.
 
         A hash of a name does not tell which DLL exports the API. The DLLs of the WinApi1024 vector are used where there are some, so
-        that the number of APIs does not grow with the number of DLLs that export the same name; otherwise the first DLL."""
+        that the number of APIs does not grow with the number of DLLs that export the same name; otherwise the first DLL.
+        """
         combined = {name: list(apis) for name, apis in results.items()}
         # the same API is found at many offsets
         chosen = {}
@@ -543,7 +556,7 @@ class ApiScout:
         return [item for item in list_to_filter if item[0] in keep]
 
     def filter(self, result, from_addr, to_addr, distance, own_image=True, exclude_ranges=()):
-        """exclude_ranges: (start, end) addresses of memory whose references are dropped, e.g. the images of DLLs"""
+        """exclude_ranges: (start, end) addresses of memory whose references are dropped, e.g. the images of DLLs."""
         filtered_result = {}
         ranges = sorted(exclude_ranges)
         range_starts = [start for start, _ in ranges]
@@ -575,9 +588,12 @@ class ApiScout:
         return filtered_result
 
     def _getNeighbourCounts(self, entries):
-        """for each (offset, bitness) of the hits of one API map: the number of other APIs in its cluster. Hits at least
-        one pointer and at most CONFIDENCE_NEIGHBOUR_DISTANCE bytes apart form a cluster, and the same address repeated
-        is one API, as in code that happens to repeat the bytes of an address (a table lists different APIs)."""
+        """For each (offset, bitness) of the hits of one API map: the number of other APIs in its cluster.
+
+        Hits at least one pointer and at most CONFIDENCE_NEIGHBOUR_DISTANCE bytes apart form a cluster, and the same
+        address repeated is one API, as in code that happens to repeat the bytes of an address (a table lists different
+        APIs).
+        """
         counts = {}
         for bitness in {entry[4] for entry in entries}:
             width = bitness // 8
@@ -594,9 +610,11 @@ class ApiScout:
         return counts
 
     def getConfidences(self, results):
-        """confidence from 0 to 100 of every hit of the results of crawl() or evaluateImportTable(), see CONFIDENCE_*.
+        """Confidence from 0 to 100 of every hit of the results of crawl() or evaluateImportTable(), see CONFIDENCE_*.
+
         Returns {api_map_name: {(offset, bitness): confidence}}. Neighbours and agreement are taken from the given
-        results, so score the complete results of a scan, before filtering them."""
+        results, so score the complete results of a scan, before filtering them.
+        """
         # the same API at the same offset in the results of another API DB is an agreement, which there can not be with one DB
         located_apis = {}
         if len(results) > 1:
@@ -629,8 +647,11 @@ class ApiScout:
         return confidences
 
     def filterByConfidence(self, results, min_confidence, confidences=None):
-        """the hits of the results with a confidence of at least min_confidence, in the shape of the results. Give the
-        confidences of getConfidences() for the complete results, otherwise they are computed from these results."""
+        """The hits of the results with a confidence of at least min_confidence, in the shape of the results.
+
+        Give the confidences of getConfidences() for the complete results, otherwise they are computed from these
+        results.
+        """
         if confidences is None:
             confidences = self.getConfidences(results)
         return {
@@ -753,7 +774,7 @@ class ApiScout:
         return output
 
     def renderBestMatchExplanation(self, best_match, top=5):
-        """best_match is the explanation of a match with a collection, as produced by cli"""
+        """best_match is the explanation of a match with a collection, as produced by cli."""
         output = "Best match: {} - {} - {:.3f}\n".format(
             best_match["family"], best_match["sample"], best_match["score"]
         )

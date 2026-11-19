@@ -15,8 +15,9 @@ from operator import itemgetter
 
 
 class ApiQRContext:
-    """
-    Class to store all context related data that is especially needed for:
+    """Class to store all context related data.
+
+    It is especially needed for:
     - Exports to HTML
     - Exports to PNG
     """

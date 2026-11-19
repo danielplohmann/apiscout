@@ -1,5 +1,4 @@
-"""
-ApiScout for Binary Ninja: scans the memory of a BinaryView for API addresses and annotates the references found.
+"""ApiScout for Binary Ninja: scans the memory of a BinaryView for API addresses and annotates the references found.
 
 Headless (Binary Ninja's Python API):
 
@@ -39,7 +38,7 @@ def _info(text):
 
 
 def get_memory(bv):
-    """the bytes of the view's segments, adjacent ones merged into one buffer: {start address: bytes}"""
+    """The bytes of the view's segments, adjacent ones merged into one buffer: {start address: bytes}."""
     result = {}
     block_start = None
     block_end = None
@@ -70,7 +69,7 @@ def get_dll_name(row):
 
 
 def get_api_name(row):
-    """the name given to the location, an API exported by ordinal only is named after its DLL and ordinal"""
+    """The name given to the location, an API exported by ordinal only is named after its DLL and ordinal."""
     match = ORDINAL_ONLY.match(str(row[3]))
     if match:
         return "{}_ordinal_{}".format(re.sub(r"\W", "_", get_dll_name(row)), match.group("ordinal"))
@@ -87,9 +86,9 @@ def _count_references(bv, address):
 
 
 def get_result_rows(bv, results):
-    """
-    unique API references over the results of all API DBs as rows [address, API address, DLL, API, references],
-    without pointers into the view's own memory
+    """Unique API references over the results of all API DBs, without pointers into the view's own memory.
+
+    Rows of [address, API address, DLL, API, references].
     """
     rows = {}
     for entries in results.values():
@@ -103,9 +102,11 @@ def get_result_rows(bv, results):
 
 
 def scan(bv, db_paths, ignore_aslr_offsets=False, task=None, modules=None):
-    """the API references found in the view's memory with the given API DBs as rows, see get_result_rows().
+    """The API references found in the view's memory with the given API DBs as rows, see get_result_rows().
+
     The DLLs of the API DBs are placed where the module list in the file `modules` has them, as `apiscout scan
-    --modules` does; raises ModuleListError if it can not be used."""
+    --modules` does; raises ModuleListError if it can not be used.
+    """
     placer = placer_for_modules(modules)
     scout = ApiScout()
     scout.ignoreAslrOffsets(ignore_aslr_offsets)
@@ -135,12 +136,12 @@ def scan(bv, db_paths, ignore_aslr_offsets=False, task=None, modules=None):
 
 
 def filter_by_distance(rows, distance):
-    """only the rows with another API reference within the given distance, 0 keeps all of them"""
+    """Only the rows with another API reference within the given distance, 0 keeps all of them."""
     return ApiScout._getFilteredList(distance, rows) if distance else list(rows)
 
 
 class PrototypeResolver:
-    """finds the prototype of an API in the type libraries of the view's platform"""
+    """Finds the prototype of an API in the type libraries of the view's platform."""
 
     def __init__(self, bv):
         self.bv = bv
@@ -160,7 +161,7 @@ class PrototypeResolver:
         return self._all_libraries
 
     def resolve(self, dll_name, api_name):
-        """(function type, type library, name of the object in the library) of the API or None"""
+        """(function type, type library, name of the object in the library) of the API or None."""
         key = (dll_name.lower(), api_name)
         if key not in self._cache:
             self._cache[key] = self._resolve(dll_name, api_name)
@@ -190,8 +191,8 @@ def _is_referenced(bv, function):
 
 
 def _check_location(bv, address, size):
-    """
-    (the reason why no pointer can be defined at the location or None, the functions in the way of the pointer).
+    """(the reason why no pointer can be defined at the location or None, the functions in the way of the pointer).
+
     Functions in the way are those that nothing refers to, e.g. found by the linear sweep in a table of pointers.
     """
     if size not in (4, 8):
@@ -213,7 +214,7 @@ def _check_location(bv, address, size):
 
 
 def _set_name(bv, address, name, symbol_type):
-    """a user symbol of an earlier annotation, e.g. with another API DB, gives way to the new one"""
+    """A user symbol of an earlier annotation, e.g. with another API DB, gives way to the new one."""
     symbol = bv.get_symbol_at(address)
     if (
         symbol is not None
@@ -227,7 +228,7 @@ def _set_name(bv, address, name, symbol_type):
 
 
 def _apply(bv, row, resolver):
-    """annotate one location, returns the outcome"""
+    """Annotate one location, returns the outcome."""
     address = row[0]
     size = get_bitness(row) // 8
     name = get_api_name(row)
@@ -250,8 +251,8 @@ def _apply(bv, row, resolver):
 
 
 def annotate(bv, rows, status=None, task=None):
-    """
-    annotate the given rows, a description of the outcome per row is stored in the optional dict status.
+    """Annotate the given rows, a description of the outcome per row is stored in the optional dict status.
+
     Returns (number annotated, number skipped).
     """
     if status is None:
@@ -330,10 +331,11 @@ def get_state(bv):
 
 
 def scan_and_annotate(bv, db_paths, ignore_aslr_offsets=False, distance=0, task=None, modules=None):
-    """
-    scan the view with the given API DBs and annotate all references found, with distance > 0 only those with
-    another reference within this many bytes. modules is the file with the module list that gives the load addresses
-    of the DLLs (lines of hex load address and DLL path, as `apiscout scan --modules`).
+    """Scan the view with the given API DBs and annotate all references found.
+
+    With distance > 0 only those with another reference within this many bytes. modules is the file with the module list
+    that gives the load addresses of the DLLs (lines of hex load address and DLL path, as `apiscout scan --modules`).
+
     Returns the state also kept in bv.session_data["apiscout"]:
     {"rows": rows found, "status": {row[:4]: outcome}, "annotated": number, "skipped": number}.
     A scan cancelled with the task annotates nothing and keeps the state of the last scan.
@@ -361,7 +363,7 @@ def _as_text(value):
 
 
 def get_db_folders():
-    """folders searched for API DBs: the default one of "apiscout dbs download" and the dbs folder of a checkout"""
+    """Folders searched for API DBs: the default one of "apiscout dbs download" and the dbs folder of a checkout."""
     from apiscout.cli import get_default_db_dir
 
     folders = [get_default_db_dir(), os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "dbs")]
@@ -373,7 +375,7 @@ def get_db_folders():
 
 
 def ask_parameters():
-    """the API DBs and options chosen in a form, None if cancelled or nothing chosen"""
+    """The API DBs and options chosen in a form, None if cancelled or nothing chosen."""
     db_files = []
     listed = set()
     for folder in get_db_folders():

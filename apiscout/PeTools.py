@@ -15,7 +15,7 @@ class PeTools:
 
     @staticmethod
     def mapBinary(binary):
-        """map a PE file as it would be laid out in memory (sections moved to their virtual offsets), returns empty bytes if this is not possible"""
+        """Map a PE file as it would be laid out in memory (sections moved to their virtual offsets), returns empty bytes if this is not possible."""
         mapped_binary = bytearray([])
         pe_offset = PeTools.getPeOffset(binary)
         num_sections = 0

@@ -96,7 +96,7 @@ class ApiVector:
         return self._winapi1024
 
     def isInWinApi1024(self, dll_name, api_name):
-        """whether an API of a DLL (file name, e.g. kernel32.dll) is matched to one of the APIs of the vector"""
+        """Whether an API of a DLL (file name, e.g. kernel32.dll) is matched to one of the APIs of the vector."""
         return self._uniquify_api_name(dll_name, api_name) in self._dllapi_set
 
     def getApiVectors(self, results):
@@ -205,7 +205,7 @@ class ApiVector:
         return np.frombuffer(bits.encode("ascii"), dtype=np.uint8).astype(int) - ord("0")
 
     def _getBitString(self, compressed_vector):
-        """decompressed vector as string of bits, raises ValueError if this is not a valid compressed vector"""
+        """Decompressed vector as string of bits, raises ValueError if this is not a valid compressed vector."""
         num_chars = -(-self._getVectorLength() // 6)
         if not isinstance(compressed_vector, str) or not re.fullmatch(r"(?:\D\d*)*", compressed_vector):
             raise ValueError(f"Not a valid ApiVector: {compressed_vector!r:.64}")
@@ -249,8 +249,11 @@ class ApiVector:
         return 0
 
     def explainMatch(self, vector_a, vector_b):
-        """why two vectors match: the score of matchVectors, and the APIs found in both vectors or in only one of them,
-        each with its weight as used by matchVectors, heaviest first"""
+        """Why two vectors match.
+
+        The score of matchVectors, and the APIs found in both vectors or in only one of them, each with its weight as
+        used by matchVectors, heaviest first.
+        """
         if not self._winapi1024:
             raise ValueError("The WinApi1024 definitions are needed to explain a match.")
         score = self.matchVectors(vector_a, vector_b)
@@ -285,7 +288,7 @@ class ApiVector:
         return bits
 
     def getCollectionVector(self, collection_filepath, family, sample):
-        """the compressed ApiVector of a sample in a collection"""
+        """The compressed ApiVector of a sample in a collection."""
         return self._loadCollectionData(collection_filepath)[family][sample]
 
     def matchVectorCollection(self, vector, collection_filepath):
@@ -316,8 +319,11 @@ class ApiVector:
         return results
 
     def _matchAll(self, vector, compressed_vectors):
-        """the scores of matchVectors() of a vector with each of the compressed vectors, None where they are not
-        computed here: the vectors that are not plain compressed vectors, or all of them for unusual weights or vectors"""
+        """The scores of matchVectors() of a vector with each of the compressed vectors.
+
+        None where they are not computed here: the vectors that are not plain compressed vectors, or all of them for
+        unusual weights or vectors.
+        """
         scores = [None] * len(compressed_vectors)
         if not NUMPY_AVAILABLE or not compressed_vectors:
             return scores
@@ -351,9 +357,11 @@ class ApiVector:
         return scores
 
     def _unpackVectors(self, compressed_vectors, num_chars):
-        """the characters of the compressed vectors as numbers from 0 to 63, a row for each vector that is a valid
-        compressed vector of ASCII characters, and a mask which of the vectors these are. Whether the others are
-        valid is for decompress() to decide."""
+        """The characters of the compressed vectors as numbers from 0 to 63.
+
+        A row for each vector that is a valid compressed vector of ASCII characters, and a mask which of the vectors
+        these are. Whether the others are valid is for decompress() to decide.
+        """
         # characters of the alphabet are translated to their value, digits to 64 + digit, line ends to 74
         alphabet = bytearray(b"\xff" * 256)
         for char, bits in self._base642bin.items():

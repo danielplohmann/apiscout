@@ -1,6 +1,6 @@
 class OrdinalHelper:
-    """
-    Names for APIs of DLLs which are frequently imported by ordinal only.
+    """Names for APIs of DLLs which are frequently imported by ordinal only.
+
     The tables hold the ordinals that carry the same name in all API DBs shipped in dbs/ and on Windows 11 24H2,
     ole32.dll and mfc42.dll are candidates for extension.
     """

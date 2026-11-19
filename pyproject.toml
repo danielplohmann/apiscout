@@ -46,8 +46,15 @@ line-length = 120
 extend-exclude = ["apiscout/db_builder/_vendor"]
 
 [tool.ruff.lint]
-select = ["E", "F", "UP", "B", "SIM", "I"]
-ignore = ["E501"]
+select = ["E", "F", "UP", "B", "SIM", "I", "D", "D404"]
+# D1: not everything needs a docstring, but the ones there are follow the convention
+ignore = ["E501", "D1"]
+
+[tool.ruff.lint.per-file-ignores]
+"{plugins,tests}/**" = ["D"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
 
 [tool.ruff.lint.isort]
 known-first-party = ["apiscout"]

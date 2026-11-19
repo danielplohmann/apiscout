@@ -16,7 +16,7 @@ ICONS = {}
 
 
 def loadIcon(name):
-    """id of an icon shipped in apiscout/data, loaded once per session"""
+    """Id of an icon shipped in apiscout/data, loaded once per session."""
     if name not in ICONS:
         icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", name + ".png")
         ICONS[name] = ida_kernwin.load_custom_icon(file_name=icon_path, format="png")
@@ -24,7 +24,7 @@ def loadIcon(name):
 
 
 class ApiDbChooser(Choose):
-    """the API DBs of a folder, embedded in the options dialog"""
+    """The API DBs of a folder, embedded in the options dialog."""
 
     def __init__(self, title, api_db_folder, flags=0):
         Choose.__init__(
@@ -118,9 +118,9 @@ Module list with the load addresses of the DLLs (optional, lines of hex address 
 
 
 class ApiResultsChooser(Choose):
-    """
-    Dockable list of the API references found. Enter or double click jumps to a reference,
-    annotation and filtering are offered in the context menu.
+    """Dockable list of the API references found.
+
+    Enter or double click jumps to a reference, annotation and filtering are offered in the context menu.
     """
 
     TITLE = "ApiScout"
@@ -168,7 +168,7 @@ class ApiResultsChooser(Choose):
         return self.icons.get(state, self.icons["reference"])
 
     def OnRefresh(self, selection):
-        """the native refresh of the view scans the database again"""
+        """The native refresh of the view scans the database again."""
         if self._keep_rows:
             self._keep_rows = False
         else:
@@ -207,7 +207,7 @@ class ApiResultsChooser(Choose):
         self._redraw()
 
     def filterByNeighbourhood(self, distance):
-        """only show API references with another reference within the given distance, 0 shows all of them"""
+        """Only show API references with another reference within the given distance, 0 shows all of them."""
         self.distance = distance
         self._applyFilter()
         self._redraw()
@@ -224,7 +224,7 @@ class ApiResultsChooser(Choose):
 
 
 class ApiResultsAction(ida_kernwin.action_handler_t):
-    """an action of the context menu of the results list"""
+    """An action of the context menu of the results list."""
 
     def __init__(self, chooser, callback):
         ida_kernwin.action_handler_t.__init__(self)

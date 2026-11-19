@@ -1,4 +1,4 @@
-"""the folder for downloaded API DBs, the index of the DBs in the repository and their download
+"""The folder for downloaded API DBs, the index of the DBs in the repository and their download.
 
 The repository's dbs folder holds SHA256SUMS, which lists every file of the folder with its SHA-256
 (check with `sha256sum -c SHA256SUMS`). Downloads are checked against it. After a change to the folder, rewrite it with:
@@ -20,7 +20,7 @@ CHUNK_SIZE = 1 << 20
 
 
 def get_data_dir():
-    """the folder downloaded API DBs are stored in, following the conventions of the OS"""
+    """The folder downloaded API DBs are stored in, following the conventions of the OS."""
     if sys.platform == "win32":
         base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
     elif sys.platform == "darwin":
@@ -39,7 +39,7 @@ def get_sha256(path):
 
 
 def build_index(folder):
-    """name and SHA-256 of every file of the folder, in the format of sha256sum"""
+    """Name and SHA-256 of every file of the folder, in the format of sha256sum."""
     names = sorted(name for name in os.listdir(folder) if name != INDEX_NAME and not name.startswith("."))
     return "".join(f"{get_sha256(os.path.join(folder, name))}  {name}\n" for name in names)
 
@@ -79,7 +79,7 @@ def _open(url, timeout):
 
 
 def fetch_index(ref, timeout=60):
-    """the files of the repository's dbs folder: name -> SHA-256"""
+    """The files of the repository's dbs folder: name -> SHA-256."""
     import http.client
 
     url = SOURCE_URL.format(ref=ref) + INDEX_NAME
@@ -101,7 +101,7 @@ def is_current(path, sha256):
 
 
 def download(ref, name, sha256, folder, timeout=60):
-    """download one file of the index into folder; it only replaces an existing file once the SHA-256 matches"""
+    """Download one file of the index into folder; it only replaces an existing file once the SHA-256 matches."""
     import http.client
     import tempfile
 
