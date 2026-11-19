@@ -116,12 +116,35 @@ Under R8, test misses 18,041 truth hits: 4,694 in DLLs with only 1-2 truth hits,
 A sample of the first row: about 60 % fail the ratio, about 40 % have fewer than 3 distinct aligned values
 (duplicate pointers or unaligned hits, which classic scanning finds at every byte offset).
 
+## Extending along the IAT run
+
+R8 needs every DLL to carry itself: support >= 3 and a significant binomial test. Once a dump has an
+anchored build, a neighbour in the same pointer table needs less. `ext_eval.py` adds pointers next to
+accepted hits that fit a DLL of the winning build at a 64 KB-aligned user-mode base that doesn't fall inside
+a DLL already placed. The variants are in its docstring. E4cr was chosen on dev (+4.1 points recall,
+-0.6 points precision), then run once on test:
+
+| Test, 1,565 dumps | Recall (DLL + name) | Precision | Extra hits | Dumps with extras |
+| --- | --- | --- | --- | --- |
+| R8 | 92.30 % | 99.59 % | 890 | 280 |
+| E2: new DLLs with >= 2 pointers | 95.62 % | 99.02 % | 2,220 | 436 |
+| E2r: E2, code reads one of them | 95.46 % | 99.46 % | 1,221 | 311 |
+| E4c: E2 plus single pointers that code reads | 96.12 % | 98.62 % | 3,161 | 552 |
+| **E4cr: E4c with E2r's check** | **95.96 %** | **99.06 %** | **2,144** | **436** |
+
+- Code reads 89 % of E4cr's new correct hits and 68 % of its 1,254 new extras, against 0.3 % of R8's
+  extras on test. So many of the new extras are probably real pointers the classic scan disagrees with,
+  and the precision cost is probably smaller than shown. They are not checked by hand.
+- The extension only grows existing answers. With the true build left out, the dumps that get an answer
+  stay at 2.2 %; their wrong hits grow by 1,296.
+- Without the read checks (E2, E4c) recall is about the same at up to twice the extras.
+
 ## Next
 
 1. **Ratio from tables, not from the export range.** Count the window over values in pointer runs only, so
    that stack and heap pointers into a DLL don't dilute it. This targets the largest miss class.
-2. **Code reads as a feature, not only a filter**, for example to accept a DLL with 2 pointers when code
-   reads both.
+2. **Move R8 + E4cr into the solver** if the scan option of the spike is built: the extension is cheap once
+   the build is anchored.
 3. The open items of the spike: adjacent Win10/11 builds, DLLs with 1-2 pointers, forwarders and API sets.
 
 ## Files
@@ -134,11 +157,14 @@ Run from the repository root with `PYTHONPATH=.` (needs `numpy`).
 | `corpus_eval.py` | classic scan, blind solve and leave-out per dump, as JSON lines |
 | `analyze.py` | rules R0-R8 and the tables above |
 | `verify.py` | code-read check per answer |
+| `ext_eval.py`, `ext_report.py` | IAT-run extension variants on top of R8 and their tables |
 
 ```
 python3 research/relative_iat/exp6_corpus/corpus_eval.py out.jsonl inventory.txt --workers 3
 python3 research/relative_iat/exp6_corpus/analyze.py test.jsonl
 python3 research/relative_iat/exp6_corpus/verify.py test.jsonl --out verify_test.jsonl
+python3 research/relative_iat/exp6_corpus/ext_eval.py test.jsonl ext_test.jsonl --workers 3
+python3 research/relative_iat/exp6_corpus/ext_report.py ext_test.jsonl
 ```
 
 An inventory is one dump path per line. A path containing `malpedia` counts as Malpedia. The per-dump
