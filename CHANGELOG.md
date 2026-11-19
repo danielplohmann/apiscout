@@ -22,6 +22,8 @@ hits that were reported before, which a release says here.
 - Handle early stdout pipe closure on Windows without an error or shutdown traceback.
 - `match` and `scan --collection` no longer fail with `-o FILE`, or on a terminal or pipe that is strict about its encoding, when a sample name of the collection is not valid UTF-8. A file and a UTF-8 terminal or pipe get the name as the bytes it has in the collection, another encoding gets them as backslash escapes.
 - `update` reports an answer of Malpedia that is not JSON as an answer it does not understand, not as a failed request.
+- Binary Ninja plugin: an import table that the linear sweep took for code is annotated. The calls through the first pointer under such a function counted as references to its code, so every pointer under it was skipped as part of an instruction, 53 of 71 imports in a PlugX dump. Only reads and writes of a pointer at the start of the function are no longer taken for references: code that is called, jumped to or has its address taken is left alone as before.
+- Binary Ninja plugin: a report lists at most 2,000 API references, those with the highest confidence, and the status bar shows the progress of an annotation of more than 500 references. A report of 24,000 chance hits froze Binary Ninja for about a minute.
 - `update` reads a token file that PowerShell or Notepad stored as UTF-16 or with a byte order mark, and refuses one that holds more than the token. Until now a second line in the file ended in an error message that showed the token.
 
 ### Changed

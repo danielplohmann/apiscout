@@ -18,7 +18,7 @@ import os
 import re
 
 from binaryninja import interaction
-from binaryninja.enums import SymbolType, TypeClass
+from binaryninja.enums import LowLevelILOperation, SymbolType, TypeClass
 from binaryninja.log import log_error, log_info, log_warn
 from binaryninja.plugin import BackgroundTaskThread, PluginCommand
 from binaryninja.types import Symbol, Type
@@ -34,6 +34,11 @@ ANNOTATIONS_KEY = "apiscout.annotations"
 # the default of the neighbourhood filter, as in the IDA plugin
 DEFAULT_DISTANCE = 0x800
 CONFIDENCE_PROMPT = "Minimum confidence (0 keeps all, maximum 100)"
+# Binary Ninja lays out the report in the thread of its user interface: a table of 24,000 rows blocked it for a
+# minute, one of 2,800 rows was up in under two seconds. A dump scanned with the API DB of its system stays far below.
+REPORT_MAX_ROWS = 2000
+# the rows annotated between two updates of the progress text of the task
+PROGRESS_INTERVAL = 500
 DLL_SUFFIX = re.compile(r"(_0x[0-9a-fA-F]+)? \(\d+bit\)$")
 ORDINAL_ONLY = re.compile(r"None<(?P<ordinal>\d+)>$")
 
@@ -219,10 +224,62 @@ class PrototypeResolver:
         return None
 
 
+def _uses_as_pointer(reference, address, size):
+    """
+    whether the instruction of a code reference only reads or writes a pointer of the given size at the address, as
+    `call [address]`, `mov edi, [address]` and `mov [address], eax` do. That is how code uses the slot of an import
+    and no sign of code at the address. False where the address is a value (`call address`, `push address`), where
+    the access is of another size (`cmp byte [address], 0xcc`) or where the address is not found in the IL of the
+    instruction.
+    """
+    if reference.function is None:
+        return False
+    constants = (LowLevelILOperation.LLIL_CONST, LowLevelILOperation.LLIL_CONST_PTR)
+    # Binary Ninja has the constants of the IL as signed numbers
+    mask = (1 << (8 * size)) - 1
+    found = False
+    pending = [(il, False) for il in reference.function.get_llils_at(reference.address, reference.arch)]
+    while pending:
+        expression, in_pointer = pending.pop()
+        if isinstance(expression, list):
+            pending.extend((operand, in_pointer) for operand in expression)
+            continue
+        operation = getattr(expression, "operation", None)
+        if operation is None:
+            # a register, a flag or a number, no expression
+            continue
+        if operation in constants:
+            if expression.constant & mask == address:
+                if not in_pointer:
+                    return False
+                found = True
+            continue
+        for index, operand in enumerate(expression.operands):
+            is_pointer = expression.size == size and (
+                operation == LowLevelILOperation.LLIL_LOAD
+                or (operation == LowLevelILOperation.LLIL_STORE and index == 0)
+            )
+            pending.append((operand, in_pointer or is_pointer))
+    return found
+
+
 def _is_referenced(bv, function):
+    """
+    whether the function is an entry of the view or something refers to it otherwise than code does to a pointer
+    in its place. The linear sweep also finds functions in a table of imports, and the calls through its first
+    pointer are then code references to its start.
+    """
     if function.start == bv.entry_point or any(entry.start == function.start for entry in bv.entry_functions):
         return True
-    return any(True for _ in bv.get_code_refs(function.start)) or any(True for _ in bv.get_data_refs(function.start))
+    if any(True for _ in bv.get_data_refs(function.start)):
+        return True
+    for reference in bv.get_code_refs(function.start):
+        if reference.function is not None and reference.function.start == function.start:
+            # a jump or call of the function to its own start is no reference from outside
+            continue
+        if not _uses_as_pointer(reference, function.start, bv.address_size):
+            return True
+    return False
 
 
 def _check_location(bv, address, size):
@@ -332,9 +389,12 @@ def annotate(bv, rows, status=None, task=None):
     undo_state = bv.begin_undo_actions()
     try:
         # of several rows for one location, the one of the view's pointer size is applied
-        for row in sorted(rows, key=lambda row: (row[0], get_bitness(row) != pointer_bits, row[1:4])):
+        ordered = sorted(rows, key=lambda row: (row[0], get_bitness(row) != pointer_bits, row[1:4]))
+        for index, row in enumerate(ordered):
             if task is not None and task.cancelled:
                 break
+            if task is not None and index % PROGRESS_INTERVAL == 0 and len(ordered) > PROGRESS_INTERVAL:
+                task.progress = f"ApiScout: annotating {index} of {len(ordered)}"
             key = tuple(row[:4])
             if row[0] in annotated_locations:
                 # several API DBs can resolve one location differently, the first one listed is applied
@@ -504,15 +564,33 @@ def ask_parameters(for_annotation=False):
     return parameters
 
 
+def get_report_rows(rows, confidence):
+    """(the rows a report lists, a note on those it leaves out): of more than REPORT_MAX_ROWS those with the highest
+    confidence, as the rows that are left out are mostly chance hits"""
+    if len(rows) <= REPORT_MAX_ROWS:
+        return rows, ""
+    ranked = sorted(range(len(rows)), key=lambda index: (-confidence.get(tuple(rows[index][:4]), 0), index))
+    listed = [rows[index] for index in sorted(ranked[:REPORT_MAX_ROWS])]
+    note = (
+        f"Listed are the {REPORT_MAX_ROWS} with the highest confidence. The ApiScout commands work on all "
+        f"{len(rows)}, which are the rows of the scan in the session data of the view."
+    )
+    return listed, note
+
+
 def render_markdown(rows, status, confidence=None):
     confidence = confidence or {}
-    lines = [
-        f"# ApiScout: {len(rows)} API references",
-        "",
-        "| Address | API | Library | API Address | References | Confidence | Status |",
-        "| :--- | :--- | :--- | :--- | ---: | ---: | :--- |",
-    ]
-    for row in rows:
+    listed, note = get_report_rows(rows, confidence)
+    lines = [f"# ApiScout: {len(rows)} API references", ""]
+    if note:
+        lines.extend([note, ""])
+    lines.extend(
+        [
+            "| Address | API | Library | API Address | References | Confidence | Status |",
+            "| :--- | :--- | :--- | :--- | ---: | ---: | :--- |",
+        ]
+    )
+    for row in listed:
         key = tuple(row[:4])
         lines.append(
             f"| [0x{row[0]:x}](binaryninja://?expr=0x{row[0]:x}) | {get_api_name(row)} | {get_dll_name(row)} "
@@ -523,8 +601,11 @@ def render_markdown(rows, status, confidence=None):
 
 def render_text(rows, status, confidence=None):
     confidence = confidence or {}
+    listed, note = get_report_rows(rows, confidence)
     lines = [f"ApiScout: {len(rows)} API references"]
-    for row in rows:
+    if note:
+        lines.append(note)
+    for row in listed:
         key = tuple(row[:4])
         library = f"{get_dll_name(row)} ({get_bitness(row)}bit)"
         outcome = status.get(key, "")

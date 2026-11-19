@@ -72,7 +72,7 @@ The plugin in `plugins/binja_scout` works with Binary Ninja 6 and was tested wit
 
 The extension manager installs the repository with NumPy in one step.
 
-Open the dump with Open with Options as `Mapped` view, with its address as image base and `windows-x86` or `windows-x86_64` as platform, then use Plugins > ApiScout to scan, show the results and annotate all or filtered references. Calls through annotated pointers read as API calls in HLIL.
+Open the dump with Open with Options as `Mapped` view, with its address as image base and `windows-x86` or `windows-x86_64` as platform, then use Plugins > ApiScout to scan, show the results and annotate all or filtered references. Calls through annotated pointers read as API calls in HLIL. A report lists at most 2,000 references, those with the highest confidence, while the commands work on all of them.
 
 Binary Ninja has no loader for Windows minidumps, so the plugin can't use their memory ranges or module list. Scan a minidump with `apiscout scan` instead.
 

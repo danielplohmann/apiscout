@@ -62,6 +62,116 @@ class TypeClass(enum.IntEnum):
     FunctionTypeClass = 8
 
 
+class LowLevelILOperation(enum.IntEnum):
+    # the names of the Binary Ninja API, the values are of no meaning here
+    LLIL_SET_REG = 1
+    LLIL_LOAD = 2
+    LLIL_STORE = 3
+    LLIL_PUSH = 4
+    LLIL_REG = 5
+    LLIL_CONST = 6
+    LLIL_CONST_PTR = 7
+    LLIL_ADD = 8
+    LLIL_JUMP = 9
+    LLIL_CALL = 10
+    LLIL_CALL_STACK_ADJUST = 11
+    LLIL_TAILCALL = 12
+    LLIL_IF = 13
+    LLIL_FLAG = 14
+
+
+class FakeIL:
+    """an expression of the low level IL: its operands are expressions, registers, numbers, lists and dicts"""
+
+    def __init__(self, operation, *operands, constant=None, size=4):
+        self.operation = operation
+        self.size = size
+        self.operands = [constant] if constant is not None else list(operands)
+        if constant is not None:
+            self.constant = constant
+
+
+class IL:
+    """the IL of the instructions the tests need, as Binary Ninja 6.0 lifts them for x86"""
+
+    @staticmethod
+    def pointer(address):
+        return FakeIL(LowLevelILOperation.LLIL_CONST_PTR, constant=address)
+
+    @staticmethod
+    def value(address):
+        return FakeIL(LowLevelILOperation.LLIL_CONST, constant=address)
+
+    @staticmethod
+    def load(expression, size=4):
+        return FakeIL(LowLevelILOperation.LLIL_LOAD, expression, size=size)
+
+    @staticmethod
+    def register(name="eax"):
+        return FakeIL(LowLevelILOperation.LLIL_REG, name)
+
+    @classmethod
+    def call_through(cls, address, size=4):
+        """call dword [address], here of a callee that cleans the stack, and call qword [address]"""
+        return [FakeIL(LowLevelILOperation.LLIL_CALL_STACK_ADJUST, cls.load(cls.pointer(address), size), 8, {})]
+
+    @classmethod
+    def jump_through(cls, address):
+        """jmp dword [address]"""
+        return [FakeIL(LowLevelILOperation.LLIL_JUMP, cls.load(cls.pointer(address)))]
+
+    @classmethod
+    def read(cls, address, size=4):
+        """mov edi, dword [address], with size 1 movzx edi, byte [address]"""
+        return [FakeIL(LowLevelILOperation.LLIL_SET_REG, "edi", cls.load(cls.pointer(address), size))]
+
+    @classmethod
+    def read_table(cls, address):
+        """mov eax, dword [address + ecx * 4], the scaled index left out"""
+        sum_ = FakeIL(LowLevelILOperation.LLIL_ADD, cls.register("ecx"), cls.pointer(address))
+        return [FakeIL(LowLevelILOperation.LLIL_SET_REG, "eax", cls.load(sum_))]
+
+    @classmethod
+    def write(cls, address, size=4):
+        """mov dword [address], eax, with size 1 mov byte [address], al"""
+        return [FakeIL(LowLevelILOperation.LLIL_STORE, cls.pointer(address), cls.register(), size=size)]
+
+    @classmethod
+    def write_value(cls, address):
+        """mov dword [0x2000], address"""
+        return [FakeIL(LowLevelILOperation.LLIL_STORE, cls.pointer(0x2000), cls.value(address))]
+
+    @classmethod
+    def call(cls, address):
+        """call address"""
+        return [FakeIL(LowLevelILOperation.LLIL_CALL, cls.pointer(address))]
+
+    @classmethod
+    def jump(cls, address):
+        """jmp address to another function"""
+        return [FakeIL(LowLevelILOperation.LLIL_TAILCALL, cls.pointer(address))]
+
+    @classmethod
+    def push(cls, address):
+        """push address"""
+        return [FakeIL(LowLevelILOperation.LLIL_PUSH, cls.value(address))]
+
+    @classmethod
+    def load_address(cls, address):
+        """mov eax, address and lea eax, [address]"""
+        return [FakeIL(LowLevelILOperation.LLIL_SET_REG, "eax", cls.pointer(address))]
+
+    @classmethod
+    def branch(cls):
+        """jge within a function: the IL has the indices of its instructions, not the address of the target"""
+        return [FakeIL(LowLevelILOperation.LLIL_IF, FakeIL(LowLevelILOperation.LLIL_FLAG, "s"), 1, 2)]
+
+    @classmethod
+    def write_own_address(cls, address):
+        """mov dword [address], address"""
+        return [FakeIL(LowLevelILOperation.LLIL_STORE, cls.pointer(address), cls.value(address))]
+
+
 class FakeType:
     def __init__(self, type_class, width=0, target=None, name=""):
         self.type_class = type_class
@@ -182,7 +292,9 @@ def fake_binaryninja_modules():
         get_form_input=FakeInteraction.get_form_input,
     )
     modules = {
-        "binaryninja.enums": make_module("binaryninja.enums", SymbolType=SymbolType, TypeClass=TypeClass),
+        "binaryninja.enums": make_module(
+            "binaryninja.enums", LowLevelILOperation=LowLevelILOperation, SymbolType=SymbolType, TypeClass=TypeClass
+        ),
         "binaryninja.types": make_module("binaryninja.types", Symbol=FakeSymbol, Type=FakeType),
         "binaryninja.plugin": make_module(
             "binaryninja.plugin", PluginCommand=FakePluginCommand, BackgroundTaskThread=FakeBackgroundTaskThread
@@ -261,18 +373,24 @@ class FakePlatform:
 
 
 class FakeRef:
-    def __init__(self, address):
+    def __init__(self, address, function=None):
         self.address = address
-        self.function = None
+        # None for a reference of code that is in no function
+        self.function = function
         self.arch = None
 
 
 class FakeFunction:
     def __init__(self, start):
         self.start = start
+        # the IL of its instructions: {address: [expression]}
+        self.llils = {}
 
     def __repr__(self):
         return f"<func 0x{self.start:x}>"
+
+    def get_llils_at(self, addr, arch=None):
+        return self.llils.get(addr, [])
 
 
 class FakeBasicBlock:
@@ -345,7 +463,14 @@ class FakeBinaryView:
         self.function_code = {addr: function for addr, function in self.function_code.items() if function is not func}
 
     def get_code_refs(self, addr, length=None, max_items=None):
-        yield from (FakeRef(address) for address in self.code_refs.get(addr, []))
+        yield from (
+            source if isinstance(source, FakeRef) else FakeRef(source) for source in self.code_refs.get(addr, [])
+        )
+
+    def add_reference(self, function, address, target, llils):
+        """the instruction at address in the function refers to target, llils is the IL of the instruction"""
+        function.llils[address] = llils
+        self.code_refs.setdefault(target, []).append(FakeRef(address, function))
 
     def get_data_refs(self, addr, length=None, max_items=None):
         yield from self.data_refs.get(addr, [])
@@ -802,6 +927,103 @@ class AnnotationTest(unittest.TestCase):
         self.assertNotIn(spurious, view.function_code.values())
         self.assertTrue(any("Removing the function at 0x100e" in text for _, text in LOG))
 
+    def testImportTableTakenForCode(self):
+        # the layout of a PlugX dump: the linear sweep takes the import table for code, and the calls through the
+        # first pointer of each of its functions are code references to it
+        view = self.makeView(4)
+        swept = view.add_function_code(0x1010, 0x101E)
+        swept_too = view.add_function_code(0x101E, 0x1028)
+        caller = view.add_function_code(0x1080, 0x10A0)
+        view.add_reference(caller, 0x1080, 0x1010, IL.call_through(0x1010))
+        view.add_reference(caller, 0x1086, 0x1010, IL.read(0x1010))
+        view.add_reference(caller, 0x108C, 0x101E, IL.jump_through(0x101E))
+        # a loop of the bytes taken for code
+        view.add_reference(swept_too, 0x1026, 0x101E, IL.branch())
+        rows = [[0x1010 + 4 * index, 0x7000 + index, "kernel32.dll (32bit)", f"Api{index}", 1] for index in range(6)]
+        status = {}
+        self.assertEqual((6, 0), tools.annotate(view, rows, status))
+        self.assertEqual([0x1010, 0x101E], view.removed_functions)
+        self.assertEqual({caller}, set(view.function_code.values()))
+        self.assertEqual({0x1010 + 4 * index: f"Api{index}" for index in range(6)}, view.symbol_names())
+        self.assertNotIn(swept, view.function_code.values())
+        self.assertFalse(any(level == "warn" for level, _ in LOG))
+
+    def testMemoryAccessIsNoReferenceToCode(self):
+        for name, llils in (
+            ("call through the pointer", IL.call_through(0x1010)),
+            ("jump through the pointer", IL.jump_through(0x1010)),
+            ("read", IL.read(0x1010)),
+            ("read of a table", IL.read_table(0x1010)),
+            ("write", IL.write(0x1010)),
+        ):
+            with self.subTest(name):
+                view = self.makeView(4)
+                view.add_function_code(0x1010, 0x1018)
+                view.add_reference(view.add_function_code(0x1080, 0x1090), 0x1080, 0x1010, llils)
+                status = {}
+                rows = [[0x1010, 0x7000, "a.dll (32bit)", "A", 1]]
+                self.assertEqual((1, 0), tools.annotate(view, rows, status))
+                self.assertEqual([0x1010], view.removed_functions)
+
+    def testCodeReferencedAsCodeIsKept(self):
+        for name, llils in (
+            ("call", IL.call(0x1010)),
+            ("jump", IL.jump(0x1010)),
+            ("address pushed", IL.push(0x1010)),
+            ("address loaded", IL.load_address(0x1010)),
+            ("address stored", IL.write_value(0x1010)),
+            ("address stored at the address", IL.write_own_address(0x1010)),
+            ("branch from another function", IL.branch()),
+            ("no IL", []),
+            # the IL of an instruction can be several expressions
+            ("address pushed and read", IL.read(0x1010) + IL.push(0x1010)),
+            # no pointer is read or written, e.g. where code checks itself for breakpoints or patches itself
+            ("read of a byte", IL.read(0x1010, 1)),
+            ("write of a byte", IL.write(0x1010, 1)),
+            ("read of a qword in a 32bit view", IL.read(0x1010, 8)),
+        ):
+            with self.subTest(name):
+                view = self.makeView(4)
+                kept = view.add_function_code(0x1010, 0x1018)
+                view.add_reference(view.add_function_code(0x1080, 0x1090), 0x1080, 0x1010, llils)
+                status = {}
+                rows = [[0x1010, 0x7000, "a.dll (32bit)", "A", 1]]
+                self.assertEqual((0, 1), tools.annotate(view, rows, status))
+                self.assertEqual("skipped: part of an instruction", status[tuple(rows[0][:4])])
+                self.assertEqual([], view.removed_functions)
+                self.assertIn(kept, view.function_code.values())
+
+    def testOneReferenceToCodeKeepsTheFunction(self):
+        view = self.makeView(4)
+        view.add_function_code(0x1010, 0x1018)
+        caller = view.add_function_code(0x1080, 0x1090)
+        view.add_reference(caller, 0x1080, 0x1010, IL.call_through(0x1010))
+        view.add_reference(caller, 0x1086, 0x1010, IL.call(0x1010))
+        self.assertEqual((0, 1), tools.annotate(view, [[0x1014, 0x7000, "a.dll (32bit)", "A", 1]]))
+        self.assertEqual([], view.removed_functions)
+
+    def testAddressInTheUpperHalfOfTheAddressSpace(self):
+        # Binary Ninja has the constants of the IL as signed numbers
+        for address_size, start in ((4, 0x80001000), (8, 0xFFFFF80000001000)):
+            with self.subTest(address_size):
+                view = FakeBinaryView([FakeSegment(start, 0x100, b"\0" * 0x100)], address_size, None)
+                view.add_function_code(start + 0x10, start + 0x18)
+                signed = start + 0x10 - (1 << (8 * address_size))
+                llils = IL.call_through(signed, address_size)
+                view.add_reference(
+                    view.add_function_code(start + 0x80, start + 0x90), start + 0x80, start + 0x10, llils
+                )
+                rows = [[start + 0x10, 0x7000, f"a.dll ({address_size * 8}bit)", "A", 1]]
+                self.assertEqual((1, 0), tools.annotate(view, rows))
+                self.assertEqual([start + 0x10], view.removed_functions)
+
+    def testCallOfItselfIsNoReference(self):
+        view = self.makeView(4)
+        recursive = view.add_function_code(0x1010, 0x1018)
+        view.add_reference(recursive, 0x1014, 0x1010, IL.call(0x1010))
+        self.assertEqual((1, 0), tools.annotate(view, [[0x1010, 0x7000, "a.dll (32bit)", "A", 1]]))
+        self.assertEqual([0x1010], view.removed_functions)
+
     def testEntryFunctionIsKept(self):
         view = self.makeView(4)
         view.entry_point = 0x1010
@@ -1080,6 +1302,72 @@ class CommandTest(unittest.TestCase):
         tools.command_annotate_filtered(view)
         self.runTasks()
         self.assertEqual({}, view.symbols)
+
+    def testReportOfManyRowsListsThoseOfHighestConfidence(self):
+        rows = [[0x1000 + 4 * index, 0x7000 + index, "a.dll (32bit)", f"Api{index}", 0] for index in range(6)]
+        scores = dict(zip((tuple(row[:4]) for row in rows), (10, 100, 40, 40, 100, 40), strict=True))
+        status = {tuple(rows[1][:4]): "annotated"}
+        everything = tools.render_markdown(rows, status, scores)
+        self.assertEqual(6, everything.count("binaryninja://"))
+        self.assertNotIn("Listed are", everything)
+        self.assertNotIn("Listed are", tools.render_text(rows, status, scores))
+        with mock.patch.object(tools, "REPORT_MAX_ROWS", 6):
+            self.assertEqual(everything, tools.render_markdown(rows, status, scores))
+        with mock.patch.object(tools, "REPORT_MAX_ROWS", 4):
+            markdown = tools.render_markdown(rows, status, scores)
+            text = tools.render_text(rows, status, scores)
+        # the rows of confidence 100 and the first two of confidence 40, in the order of their addresses
+        listed = ["Api1", "Api2", "Api3", "Api4"]
+        self.assertEqual(listed, [line.split(" | ")[1] for line in markdown.splitlines() if "binaryninja://" in line])
+        self.assertEqual(listed, [line.split()[1] for line in text.splitlines() if line.startswith("0x")])
+        note = (
+            "Listed are the 4 with the highest confidence. The ApiScout commands work on all 6, "
+            "which are the rows of the scan in the session data of the view."
+        )
+        self.assertEqual(["# ApiScout: 6 API references", "", note, ""], markdown.splitlines()[:4])
+        self.assertEqual(["ApiScout: 6 API references", note], text.splitlines()[:2])
+        self.assertIn("| 100 | annotated |", markdown)
+        # without scores the first rows are listed
+        with mock.patch.object(tools, "REPORT_MAX_ROWS", 2):
+            self.assertEqual(
+                ["Api0", "Api1"], [line.split()[1] for line in tools.render_text(rows, {}).splitlines()[2:]]
+            )
+
+    def testLongReportIsShownShortAndAllRowsAreAnnotated(self):
+        content = b"".join(address.to_bytes(4, "little") for address in (0x7C800010, 0x7C800020, 0x7C800030))
+        view = FakeBinaryView([FakeSegment(0x1000, len(content), content)], 4, FakePlatform("windows-x86", []))
+        with mock.patch.object(tools, "REPORT_MAX_ROWS", 2):
+            state = tools.scan_and_annotate(view, [self.db_path])
+            tools.show_results(view)
+        self.assertEqual(3, state["annotated"])
+        self.assertEqual(3, len(view.session_data["apiscout"]["rows"]))
+        self.assertEqual([0x1000, 0x1004, 0x1008], sorted(view.symbols))
+        _, markdown, text = view.reports[-1]
+        self.assertEqual(2, markdown.count("binaryninja://"))
+        self.assertIn("Listed are the 2 with the highest confidence.", markdown)
+        self.assertIn("work on all 3,", text)
+
+    def testAnnotationReportsItsProgress(self):
+        class Task:
+            cancelled = False
+
+            def __init__(self):
+                self.texts = []
+
+            progress = property(lambda self: self.texts[-1], lambda self, text: self.texts.append(text))
+
+        view = FakeBinaryView([FakeSegment(0x1000, 0x100, b"\0" * 0x100)], 4, FakePlatform("windows-x86", []))
+        rows = [[0x1000 + 4 * index, 0x7000 + index, "a.dll (32bit)", f"Api{index}", 0] for index in range(5)]
+        task = Task()
+        with mock.patch.object(tools, "PROGRESS_INTERVAL", 2):
+            self.assertEqual((5, 0), tools.annotate(view, rows, task=task))
+        self.assertEqual(
+            ["ApiScout: annotating 0 of 5", "ApiScout: annotating 2 of 5", "ApiScout: annotating 4 of 5"], task.texts
+        )
+        # few rows are annotated at once, the text of the task is left as it is
+        task = Task()
+        self.assertEqual((5, 0), tools.annotate(view, rows, task=task))
+        self.assertEqual([], task.texts)
 
     def testAnnotateBeforeScan(self):
         tools.command_annotate_all(self.makeView())
