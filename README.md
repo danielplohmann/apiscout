@@ -56,6 +56,7 @@ Run `apiscout dbs` to list local databases. See the [database guide](https://git
 - [ApiScout: Painless Windows API information recovery](http://byte-atlas.blogspot.com/2017/04/apiscout.html)
 - [ApiVectors](https://byte-atlas.blogspot.com/2018/04/apivectors.html)
 - [ApiScout: Robust Windows API Usage Recovery for Malware Characterization and Similarity Analysis](https://cyberjournal.cecyf.fr/index.php/cybin/en/article/download/20/15/50) (Botconf 2018)
+- [Code Cartographer's Diary](https://www.botconf.eu/botconf-presentation-or-article/code-cartographers-diary/) (Botconf 2018, [slides](https://www.botconf.eu/wp-content/uploads/formidable/2/2018-D-Plohmann-CodeCartographersDiary.pdf))
 
 ## Contributing
 
