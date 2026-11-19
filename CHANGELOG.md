@@ -15,6 +15,7 @@ hits that were reported before, which a release says here.
 ### Fixed
 
 - IDA plugin: the ApiScout view stays open when `ida_scout.py` is started with `-S`. It was opened while IDA was still loading, and IDA closed it again when it restored its window layout.
+- `ty check` passes on macOS and Windows as well: the thread count of `scan --dynamic` asks for `os.sched_getaffinity`, which only Linux has, in a way the type checker follows. Nothing changes at run time.
 
 ## [3.0.0] - 2026-11-18
 

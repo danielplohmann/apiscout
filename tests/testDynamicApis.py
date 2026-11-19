@@ -1049,6 +1049,25 @@ class KeyedHashesTestSuite(unittest.TestCase):
             self.find(dump),
         )
 
+    def testThreadsFollowTheCpusOfTheProcess(self):
+        """the CPUs the process may run on where the platform tells them, all CPUs where os has no sched_getaffinity()"""
+        import types
+
+        count = DynamicApis._getThreads.__wrapped__
+        for platform_os, expected in (
+            (types.SimpleNamespace(sched_getaffinity=lambda pid: {0, 2, 5}, cpu_count=lambda: 64), 3),
+            (
+                types.SimpleNamespace(sched_getaffinity=lambda pid: set(range(64)), cpu_count=lambda: 2),
+                DynamicApis.MAX_THREADS,
+            ),
+            # macOS and Windows
+            (types.SimpleNamespace(cpu_count=lambda: 2), 2),
+            (types.SimpleNamespace(cpu_count=lambda: 64), DynamicApis.MAX_THREADS),
+            (types.SimpleNamespace(cpu_count=lambda: None), 1),
+        ):
+            with mock.patch.object(DynamicApis, "os", platform_os):
+                self.assertEqual(expected, count())
+
     def testKeyGroupsStayWithinTheirLimits(self):
         """the windows are searched together in groups, and a group stays within the limits of different values and of values, however
         many windows are read at once (the search for keys takes memory for every different value); the keys do not depend on it"""
