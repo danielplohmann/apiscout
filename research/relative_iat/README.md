@@ -74,8 +74,8 @@ the same DLL, does a wrong build fit?
 
 - **1-2 pointers into a DLL**: about 5 candidate names. Needs ranking (corpus frequency of each API,
   argument count at the call site on x86, co-occurring APIs) and output as a ranked list.
-- **The DLL's build is not in the reference set**: the likely outcome is "no answer" rather than a wrong
-  one, but this is unmeasured.
+- **The DLL's build is not in the reference set**: on real dumps 2.2 % of dumps still get a (wrong) answer,
+  the rest none (`exp6_corpus/`).
 - **API sets and forwarders**: from Win8 on, `kernel32!Sleep` resolves into `kernelbase.dll`. Reference
   DBs must resolve forwarders and treat `kernel32!X` and `kernelbase!X` as one API.
 - **Hooks and shims** (EDR trampolines, apphelp): pointers into injected modules stay unexplained. Report
@@ -87,8 +87,9 @@ the same DLL, does a wrong build fit?
 1. **Adjacent-build test.** Collect `kernelbase`, `ntdll`, `kernel32`, `user32` and `advapi32` exports
    over many Win10/11 builds (Winbindex lists them with Microsoft symbol-server links) and rerun
    `e3_modern.py` on them. This decides whether one reference set can span many builds.
-2. **Real dumps.** Run the solver blind over Malpedia `_dump` samples and compare against `apiscout scan`
-   with the matching DB.
+2. **Real dumps.** Done in `exp6_corpus/`: 92.3 % recall at 99.6 % precision on 1,565 held-out Malpedia
+   dumps, and answers for dumps classic `apiscout` can't place. Raw support >= 3 is not enough there; see
+   its README for the filter rules.
 3. **Solver in the package.** A `scan` option that takes a set of API DBs of any builds and needs no
    module list. Output stays in today's format, plus a confidence per reference, the alternatives for
    ambiguous ones, and the DLL builds that fit.
@@ -107,6 +108,7 @@ Run from the repository root, stdlib Python 3 only:
 | `exp4_clustering.py` | address clustering vs. solving the raw pointer set |
 | `exp5_delta_and_builds.py` | delta index selectivity; real build pairs |
 | `e3_modern.py` | cross-build fits over all five shipped DBs |
+| `exp6_corpus/` | the solver on 3,932 real dumps, with its own README |
 | `capture_aslr_geometry.py` | Windows capture tool for ground-truth dumps; `selftest` runs on any OS |
 
 `capture_aslr_geometry.py` records per boot the OS build, the allocation granularity, every module's base,
