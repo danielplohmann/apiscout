@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import math
 import os
 import shutil
 import sys
@@ -212,6 +213,11 @@ class CliTestSuite(unittest.TestCase):
         for arguments in (
             ["scan", DUMP_PATH, "--db", DB_PATH, "--filter", "-1"],
             ["match", VECTOR, VECTOR, "--max-results", "0"],
+            ["match", VECTOR, "-c", "x.csv", "--min-score", "1.01"],
+            ["match", VECTOR, "-c", "x.csv", "--min-score", "-0.1"],
+            ["match", VECTOR, "-c", "x.csv", "--min-score", "nan"],
+            ["match", VECTOR, "-c", "x.csv", "--min-score", "half"],
+            ["scan", DUMP_PATH, "--db", DB_PATH, "-c", "x.csv", "--min-score", "2"],
             ["update", "--timeout", "0"],
             ["update", "--timeout", "nan"],
             ["scan", DUMP_PATH, "--base-addr", "-4"],
@@ -281,6 +287,115 @@ class CliTestSuite(unittest.TestCase):
         code, _, errors = run("match", "!!", VECTOR)
         self.assertEqual(1, code)
         self.assertIn("Not a valid ApiVector", errors)
+
+    def testMinScore(self):
+        with tempfile.TemporaryDirectory() as directory:
+            collection = os.path.join(directory, "collection.csv")
+            with open(collection, "w") as f_collection:
+                f_collection.write(f"family;sample;1;1;{OTHER_VECTOR}\nother;sample;1;1;{VECTOR}\n")
+            args = ["match", VECTOR, "--collection", collection]
+            scores = [score for _, _, score in json.loads(run(*args, "--json")[1])["match_results"]]
+            self.assertEqual(1.0, scores[0])
+            self.assertAlmostEqual(0.572, scores[1], places=3)
+            # the default and 0 keep all matches, and say nothing
+            for arguments in ([], ["--min-score", "0"], ["--min-score", "0.0"]):
+                code, output, errors = run(*args, "--json", *arguments)
+                self.assertEqual((0, ""), (code, errors))
+                self.assertEqual(2, len(json.loads(output)["match_results"]))
+            # a match with just that score stays, and it is the score of --json that counts, not the 0.572 of the list
+            above = str(math.nextafter(scores[1], 1))
+            self.assertEqual("0.572", f"{float(above):.3f}")
+            for min_score, kept in (("0.5", 2), (str(scores[1]), 2), (above, 1), ("0.6", 1), ("1", 1), ("1.0", 1)):
+                code, output, errors = run(*args, "--json", "--min-score", min_score)
+                self.assertEqual(0, code)
+                document = json.loads(output)
+                self.assertEqual(scores[:kept], [score for _, _, score in document["match_results"]], min_score)
+                # what the collection holds is not what is left of it
+                self.assertEqual((2, 2), (document["families_in_collection"], document["vectors_in_collection"]))
+                self.assertEqual(kept < 2, "Dropped 1 of 2 matches with a score below" in errors, min_score)
+            code, output, errors = run(*args, "--min-score", "0.6")
+            self.assertEqual(0, code)
+            self.assertIn("Top 5 individual matches\nother - sample - 1.000\n", output)
+            self.assertNotIn("family -", output)
+            self.assertIn("Dropped 1 of 2 matches with a score below 0.6 (--min-score 0 keeps all).", errors)
+            self.assertEqual("", run(*args, "--min-score", "0.6", "--quiet")[2])
+            path = os.path.join(directory, "matches.txt")
+            self.assertEqual((0, ""), run(*args, "--min-score", "0.6", "-o", path)[:2])
+            with open(path, encoding="utf-8") as f_matches:
+                self.assertEqual(output, f_matches.read())
+            # the matches are dropped before --max-results counts them
+            document = json.loads(run(*args, "--json", "--min-score", "0.5", "-n", "1")[1])
+            self.assertEqual([1.0], [score for _, _, score in document["match_results"]])
+            # no match is left: not an error, and no best match to explain
+            args = ["match", OTHER_VECTOR, "--collection", collection, "--min-score", "1", "--explain"]
+            with open(collection, "w") as f_collection:
+                f_collection.write(f"family;sample;1;1;{VECTOR}\n")
+            code, output, errors = run(*args)
+            self.assertEqual(0, code)
+            self.assertEqual(f"No match with a score of at least 1.0 in {collection} (1 vectors).\n\n", output)
+            self.assertIn("Dropped 1 of 1 matches", errors)
+            code, output, _ = run(*args, "--json")
+            self.assertEqual(0, code)
+            document = json.loads(output)
+            self.assertEqual([], document["match_results"])
+            self.assertEqual(1, document["vectors_in_collection"])
+            self.assertNotIn("best_match", document)
+            # with matches left, the best one is explained as before
+            code, output, _ = run(*args[:-3], "--min-score", "0.5", "--explain")
+            self.assertEqual(0, code)
+            self.assertIn("Best match: family - sample - 0.572", output)
+            # two vectors have one score, there is nothing to drop
+            code, _, errors = run("match", VECTOR, OTHER_VECTOR, "--min-score", "0.5")
+            self.assertEqual(1, code)
+            self.assertIn("--collection", errors)
+            self.assertEqual(0, run("match", VECTOR, OTHER_VECTOR, "--min-score", "0")[0])
+
+    def testScanMinScore(self):
+        from tests.testRobustness import build_pe32
+
+        with tempfile.TemporaryDirectory() as directory:
+            collection, pe_path = os.path.join(directory, "collection.csv"), os.path.join(directory, "sample.exe")
+            with open(pe_path, "wb") as f_pe:
+                f_pe.write(build_pe32())
+            args = ["scan", pe_path, "--import-table", "-c", collection]
+            with open(collection, "w") as f_collection:
+                f_collection.write(f"family;sample;1;1;{VECTOR}\n")
+            vector = json.loads(run(*args, "--json")[1])["apivector"]
+            with open(collection, "w") as f_collection:
+                f_collection.write(f"family;sample;1;1;{VECTOR}\nsame;sample;1;1;{vector}\n")
+            document = json.loads(run(*args, "--json")[1])
+            self.assertEqual(
+                ["same", "family"], [family for family, _, _ in document["collection_matches"]["match_results"]]
+            )
+            code, output, errors = run(*args, "--json", "--min-score", "0.9", "--explain")
+            self.assertEqual(0, code)
+            document = json.loads(output)
+            self.assertEqual([["same", "sample", 1.0]], document["collection_matches"]["match_results"])
+            self.assertEqual(2, document["collection_matches"]["vectors_in_collection"])
+            self.assertEqual("same", document["best_match"]["family"])
+            self.assertIn("Dropped 1 of 2 matches with a score below 0.9 (--min-score 0 keeps all).", errors)
+            code, output, _ = run(*args, "--min-score", "0.9")
+            self.assertEqual(0, code)
+            self.assertIn("same - sample - 1.000", output)
+            self.assertNotIn("family -", output)
+            # no match is left: the scan is still printed, and there is no best match to explain
+            with open(collection, "w") as f_collection:
+                f_collection.write(f"family;sample;1;1;{VECTOR}\n")
+            code, output, _ = run(*args, "--min-score", "0.9", "--explain")
+            self.assertEqual(0, code)
+            self.assertIn("CreateFileW", output)
+            self.assertIn(f"No match with a score of at least 0.9 in {collection} (1 vectors).\n", output)
+            self.assertNotIn("Best match", output)
+            code, output, _ = run(*args, "--min-score", "0.9", "--explain", "--json")
+            self.assertEqual(0, code)
+            document = json.loads(output)
+            self.assertEqual([], document["collection_matches"]["match_results"])
+            self.assertNotIn("best_match", document)
+            # without a collection there are no matches to drop
+            code, _, errors = run("scan", pe_path, "--import-table", "--min-score", "0.5")
+            self.assertEqual(1, code)
+            self.assertIn("--collection", errors)
+            self.assertEqual(0, run("scan", pe_path, "--import-table", "--min-score", "0")[0])
 
     def testExplain(self):
         # the default output does not change

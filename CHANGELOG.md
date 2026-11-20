@@ -14,11 +14,13 @@ hits that were reported before, which a release says here.
 
 ### Added
 
+- `--min-score S` for `match --collection` and `scan --collection` drops the matches with a score below S (0 to 1, the score as `--json` has it, the list rounds it), before `--max-results` counts them, also from `--json`. A collection always has a best match, however little it shares with the vector; when none is left, the list is empty and `--explain` has nothing to explain.
 - DB builder and DllDownloader: `--def32` and `--def64` take the module-definition (`.def`) file of a DLL and use it to name the exports it has by ordinal only. `mfc42.dll` has about 6,400 of them, which a DB listed as `None<ordinal>` until now. A DEF file of the other bitness, or one that names an export otherwise than the DLL, is not used (#7).
 
 ### Fixed
 
 - IDA plugin: the ApiScout view stays open when `ida_scout.py` is started with `-S`. It was opened while IDA was still loading, and IDA closed it again when it restored its window layout.
+- `ty check` passes on macOS and Windows as well: the thread count of `scan --dynamic` asks for `os.sched_getaffinity`, which only Linux has, in a way the type checker follows. Nothing changes at run time.
 
 ## [3.0.0] - 2026-11-18
 

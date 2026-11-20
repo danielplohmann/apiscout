@@ -155,10 +155,9 @@ _DLL_SUFFIX = re.compile(r"_0x[0-9a-fA-F]+$")
 
 @functools.cache
 def _getThreads():
-    try:
-        cpus = len(os.sched_getaffinity(0))
-    except AttributeError:  # pragma: no cover - not on every platform
-        cpus = os.cpu_count() or 1
+    # the CPUs this process may run on, where the platform tells them (Linux), all of them otherwise
+    getaffinity = getattr(os, "sched_getaffinity", None)
+    cpus = len(getaffinity(0)) if getaffinity else os.cpu_count() or 1
     return max(1, min(cpus, MAX_THREADS))
 
 
