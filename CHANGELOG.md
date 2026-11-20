@@ -15,6 +15,7 @@ hits that were reported before, which a release says here.
 ### Added
 
 - `--min-score S` for `match --collection` and `scan --collection` drops the matches with a score below S (0 to 1, the score as `--json` has it, the list rounds it), before `--max-results` counts them, also from `--json`. A collection always has a best match, however little it shares with the vector; when none is left, the list is empty and `--explain` has nothing to explain.
+- DB builder and DllDownloader: `--def32` and `--def64` take the module-definition (`.def`) file of a DLL and use it to name the exports it has by ordinal only. `mfc42.dll` has about 6,400 of them, which a DB listed as `None<ordinal>` until now. A DEF file of the other bitness, or one that names an export otherwise than the DLL, is not used (#7).
 
 ### Fixed
 
