@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+import warnings
 from unittest import mock
 
 import numpy as np
@@ -1300,6 +1301,50 @@ class DynamicCliTestSuite(unittest.TestCase):
             self.assertEqual(0, code, errors)
             found = [(api["offset"], api["type"], api["api"]) for api in json.loads(output)["dynamic_apis"]]
             self.assertEqual([(0x400100 + 4 * index, "hash", name) for index, name in enumerate(names)], found)
+
+
+def shutdown_pool():
+    """end the threads of the pool of DynamicApis, so that no test after this one forks while they run"""
+    DynamicApis._getPool().shutdown()
+    DynamicApis._getPool.cache_clear()
+
+
+def tearDownModule():
+    shutdown_pool()
+
+
+def map_in_child(results):
+    results.put(DynamicApis._map(lambda item: item + 1, range(4)))
+
+
+class ForkTestSuite(unittest.TestCase):
+    def testForkedChildStartsItsOwnPool(self):
+        import multiprocessing
+        import threading
+
+        if "fork" not in multiprocessing.get_all_start_methods() or sys.platform == "darwin":
+            self.skipTest("fork is not available, or not safe with threads on macOS")
+        threads = DynamicApis._getThreads()
+        if threads < 2:
+            self.skipTest("_map() only uses the pool with more than one thread")
+        shutdown_pool()
+        self.addCleanup(shutdown_pool)
+        # every thread of the pool is started: each item waits until all of them run one
+        barrier = threading.Barrier(threads, timeout=20)
+        DynamicApis._map(lambda item: barrier.wait(), range(threads))
+        context = multiprocessing.get_context("fork")
+        results = context.Queue()
+        child = context.Process(target=map_in_child, args=(results,))
+        with warnings.catch_warnings():
+            # the warning about forking a process with threads is what this test is about
+            warnings.simplefilter("ignore", DeprecationWarning)
+            child.start()
+        child.join(20)
+        if child.is_alive():
+            child.kill()
+            child.join()
+            self.fail("the forked child waits for the threads of the pool of its parent")
+        self.assertEqual([1, 2, 3, 4], results.get(timeout=5))
 
 
 if __name__ == "__main__":
