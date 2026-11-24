@@ -707,6 +707,10 @@ class ApiScout:
             output += "{}: {} / {} ({:5.2f}%) APIs covered in WinApi1024 vector.\n".format(
                 api_map_name, result["in_api_vector"], result["num_unique_apis"], result["percentage"]
             )
+            if result["num_unique_apis"] and not result["in_api_vector"]:
+                output += (
+                    "    None of the recovered APIs is in WinApi1024, so this vector cannot help identify a family.\n"
+                )
             output += "    Vector:     {}\n".format(result["vector"])
             output += "    Confidence: {}\n".format(self._apivector.getVectorConfidence(result["vector"]))
         return output

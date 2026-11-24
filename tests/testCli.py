@@ -92,6 +92,7 @@ class CliTestSuite(unittest.TestCase):
         code, output, errors = run("scan", DUMP_PATH, "--db", DB_PATH, "--base-addr", "0x1000", "--min-confidence", "0")
         self.assertEqual(0, code)
         self.assertIn("InterlockedIncrement", output)
+        self.assertIn("None of the recovered APIs is in WinApi1024", output)
         # what is not the result goes to standard error, and is left out on request
         self.assertNotIn("Scanned", output)
         self.assertIn("base address 0x1000", errors)
@@ -128,6 +129,7 @@ class CliTestSuite(unittest.TestCase):
             code, output, _ = run("scan", pe_path, "--import-table", "--json")
             self.assertEqual(0, code)
             self.assertEqual(["CreateFileW", "recv", "send"], [api["api"] for api in json.loads(output)["apis"]])
+            self.assertNotIn("None of the recovered APIs", run("scan", pe_path, "--import-table")[1])
         code, _, errors = run("scan", DUMP_PATH, "--import-table")
         self.assertEqual(1, code)
         self.assertIn("not a PE file", errors)
@@ -165,6 +167,9 @@ class CliTestSuite(unittest.TestCase):
         code, output, errors = run("scan", DUMP_PATH, "--db", DB_PATH, "--min-confidence", "51", "--json")
         self.assertEqual((0, []), (code, json.loads(output)["apis"]))
         self.assertIn("Dropped 2 of 2 hits with a confidence below 51", errors)
+        self.assertNotIn(
+            "None of the recovered APIs", run("scan", DUMP_PATH, "--db", DB_PATH, "--min-confidence", "51")[1]
+        )
         code, output, errors = run("scan", DUMP_PATH, "--db", DB_PATH, "--min-confidence", "26", "--json")
         self.assertEqual(["InterlockedIncrement"], [api["api"] for api in json.loads(output)["apis"]])
         self.assertIn("Dropped 1 of 2", errors)

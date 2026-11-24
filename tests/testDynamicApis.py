@@ -1111,12 +1111,11 @@ class KeyedHashesTestSuite(unittest.TestCase):
 
 
 class DynamicCliTestSuite(unittest.TestCase):
-    def testDefaultOutputIsUnchanged(self):
+    def testDefaultScanOutput(self):
         from tests.testCli import DB_PATH, DUMP_PATH, run
 
         code, output, _ = run("scan", "--min-confidence", "0", DUMP_PATH, "--db", DB_PATH, "--base-addr", "0x1000")
         self.assertEqual(0, code)
-        # the output of the commit before --dynamic
         self.assertEqual(
             "Results for API DB: Windows 7\n"
             "idx: offset    ; VA                ; IT?; #ref;DLL                                     ; API                                                         \n"
@@ -1126,6 +1125,7 @@ class DynamicCliTestSuite(unittest.TestCase):
             "\n"
             "WinApi1024 Vector Results:\n"
             "Windows 7: 0 / 2 ( 0.00%) APIs covered in WinApi1024 vector.\n"
+            "    None of the recovered APIs is in WinApi1024, so this vector cannot help identify a family.\n"
             "    Vector:     A171\n"
             "    Confidence: 0.0\n"
             "\n",
