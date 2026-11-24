@@ -139,7 +139,7 @@ class ApiVectorTestSuite(unittest.TestCase):
         # forward to, as a dump of these systems refers to them
         forwarded = {
             "db": [
-                (0, 0, "combase.dll_0x180000000", "CoCreateInstance", 64),
+                (0, 0, "combase.dll", "CoCreateInstance", 64),
                 (8, 0, "COMBASE.DLL_0x180000000", "CoInitializeEx", 64),
                 (16, 0, "samcli.dll_0x180000000", "NetUserAdd", 64),
                 (24, 0, "srvcli.dll_0x180000000", "NetShareEnum", 64),

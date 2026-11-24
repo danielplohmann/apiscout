@@ -12,6 +12,10 @@ hits that were reported before, which a release says here.
 
 ## [Unreleased]
 
+### Added
+
+- DB builder and DllDownloader: `--def32` and `--def64` take the module-definition (`.def`) file of a DLL and use it to name the exports it has by ordinal only. `mfc42.dll` has about 6,400 of them, which a DB listed as `None<ordinal>` until now. A DEF file of the other bitness, or one that names an export otherwise than the DLL, is not used (#7).
+
 ### Changed
 
 - ApiVector: an API that `ole32.dll`, `netapi32.dll` or `secur32.dll` forwards to another DLL sets its bit. The WinApi1024 definition lists an API under the DLL that programs import it from, a dump holds the pointer into the DLL with the code, so these bits were never set for dumps of the Windows versions that forward, and the vector of a sample depended on where it was dumped. The exports of the DLLs with the code now count as the API of the same name that the definition lists for the forwarding DLL (`FORWARDED_DLLS` in `ApiVector.py`):
@@ -22,6 +26,7 @@ hits that were reported before, which a release says here.
 
 ### Fixed
 
+- ApiVector also recognizes plain DLL names in API databases whose entries omit the load-address suffix.
 - IDA plugin: the ApiScout view stays open when `ida_scout.py` is started with `-S`. It was opened while IDA was still loading, and IDA closed it again when it restored its window layout.
 
 ## [3.0.0] - 2026-11-18

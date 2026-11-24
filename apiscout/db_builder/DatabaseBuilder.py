@@ -457,6 +457,132 @@ def dumps_api_db(api_db):
         return json.dumps(api_db, indent=1, sort_keys=True)
 
 
+# the statements of a module-definition (.def) file, see "Module-definition (.def) files" in the documentation of MSVC
+DEF_STATEMENTS = {
+    "NAME",
+    "LIBRARY",
+    "DESCRIPTION",
+    "STACKSIZE",
+    "SECTIONS",
+    "SEGMENTS",
+    "EXPORTS",
+    "HEAPSIZE",
+    "VERSION",
+    "STUB",
+    "IMPORTS",
+}
+# statements that are written without arguments, any other one has some: an export by name only can be called like it
+DEF_BARE_STATEMENTS = {"NAME", "LIBRARY", "SECTIONS", "SEGMENTS", "EXPORTS", "IMPORTS"}
+DEF_TOKEN = re.compile(r'"[^"]*"|;.*|[^\s;]+')
+DEF_ORDINAL = re.compile(r"@[0-9]+")
+# the this pointer of member functions in names decorated by MSVC, right after the name: QAE (public, 32bit, thiscall)
+# and QEAA (public, 64bit, the E is __ptr64), also for private (A), protected (I) and virtual (U, M) ones
+DEF_MEMBER_32 = re.compile(r"[AIMQU][AB]E")
+DEF_MEMBER_64 = re.compile(r"[AIMQU]E[AB]A")
+# options of an export that is exported by name only
+DEF_EXPORT_OPTIONS = {"NONAME", "PRIVATE", "DATA", "CONSTANT"}
+
+
+def def_ordinal(tokens):
+    """the ordinal of the entry of an EXPORTS statement, as @ordinal or @ ordinal after its name, None without one"""
+    for previous, token in itertools.pairwise(["", *tokens[1:]]):
+        if DEF_ORDINAL.fullmatch(token):
+            return int(token[1:])
+        if previous == "@" and token.isascii() and token.isdigit():
+            return int(token)
+    return None
+
+
+def read_def_file(path):
+    """(DLL file name, {ordinal: name}) of a module-definition (.def) file. The DLL is the one LIBRARY names, or the
+    one named like the file. Exports without an ordinal are left out: they are exported by name anyway."""
+    with open(path, "rb") as f_in:
+        data = f_in.read()
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        encoding = "utf-16"
+    elif len(data) > 1 and data[1::2].count(0) > len(data) // 4:
+        # UTF-16 without a BOM: ASCII text has a zero in every second byte
+        encoding = "utf-16-le"
+    elif len(data) > 1 and data[0::2].count(0) > len(data) // 4:
+        encoding = "utf-16-be"
+    else:
+        encoding = "utf-8-sig"
+    library = None
+    names = {}
+    statement = None
+    for line in data.decode(encoding, errors="replace").splitlines():
+        tokens = list(itertools.takewhile(lambda token: not token.startswith(";"), DEF_TOKEN.findall(line)))
+        tokens = [token.strip('"') for token in tokens]
+        ordinal = def_ordinal(tokens)
+        keyword = tokens[0].upper() if tokens else None
+        # an export can be called like a statement: Description @2, or an indented Version, which is exported by name
+        is_statement = keyword in DEF_STATEMENTS and (
+            statement != "EXPORTS"
+            or keyword == "EXPORTS"
+            or (
+                ordinal is None
+                and not line[:1].isspace()
+                and (keyword in DEF_BARE_STATEMENTS or len(tokens) > 1)
+                and not (len(tokens) > 1 and {token.upper() for token in tokens[1:]} <= DEF_EXPORT_OPTIONS)
+            )
+        )
+        if is_statement:
+            statement = keyword
+            tokens = tokens[1:]
+            # LIBRARY [library] [BASE=address], also with spaces around =
+            if statement == "LIBRARY" and tokens and tokens[0].upper().partition("=")[0] != "BASE":
+                library = tokens[0]
+                if "." not in library:
+                    library += ".dll"
+            ordinal = def_ordinal(tokens)
+        if statement != "EXPORTS" or not tokens:
+            continue
+        # entryname[=internal_name] [@ordinal [NONAME]] [PRIVATE] [DATA], also with spaces around = and after @
+        name = tokens[0].split("=", 1)[0]
+        if name and ordinal is not None:
+            names.setdefault(ordinal, name)
+    if library is None:
+        library = os.path.splitext(os.path.basename(path))[0]
+        if not library.lower().endswith(".dll"):
+            library += ".dll"
+    if not names:
+        raise ValueError(f"{path} has no exports with an ordinal.")
+    return library, names
+
+
+def def_bitness(names):
+    """32 or 64 if the C++ names of a DEF file are decorated for that bitness, None if they do not tell"""
+    # the decoration of the type of a member function follows the first @@, which ends its name
+    types = [name.partition("@@")[2] for name in names.values() if name.startswith("?") and "@@" in name]
+    member_32 = sum(1 for decoration in types if DEF_MEMBER_32.match(decoration))
+    member_64 = sum(1 for decoration in types if DEF_MEMBER_64.match(decoration))
+    # a few names prove nothing, a name of either kind can happen to look like one of the other
+    if member_32 >= 3 and member_32 > 2 * member_64:
+        return 32
+    if member_64 >= 3 and member_64 > 2 * member_32:
+        return 64
+    return None
+
+
+def read_def_files(def32=(), def64=()):
+    """(bitness, DLL file name, {ordinal: name}) of the DEF files given for 32bit and 64bit DLLs, a ValueError (or
+    OSError) for one that can not be used, such as the one of a 64bit DLL given for a 32bit one"""
+    def_files = []
+    for bitness, paths in ((32, def32), (64, def64)):
+        for path in paths or ():
+            try:
+                library, names = read_def_file(path)
+            except (OSError, ValueError) as exc:
+                raise ValueError(f"--def{bitness}: {exc}") from None
+            decorated_for = def_bitness(names)
+            if decorated_for not in (None, bitness):
+                raise ValueError(
+                    f"--def{bitness}: {path} has the names of a {decorated_for}bit DLL, give it with --def{decorated_for}."
+                )
+            def_files.append((bitness, library, names))
+    return def_files
+
+
 class DatabaseBuilder:
     def __init__(self):
         self._duplicate_paths = {}
@@ -597,6 +723,59 @@ class DatabaseBuilder:
         api_db["num_apis"] = api_count
         api_db["crawled_paths"] = paths
         api_db["filtered"] = filter_dlls
+        return api_db
+
+    def applyDefFiles(self, api_db, def_files):
+        """names the exports by ordinal only (MFC DLLs have thousands) after a DEF file of their DLL, given as
+        (bitness, DLL file name, {ordinal: name}). Exports that have a name keep it, and a DEF file that names one of
+        them otherwise belongs to another build or bitness and is not used for that DLL."""
+        # the names the DLLs have themselves, which DEF files are checked against (not those of an earlier DEF file)
+        own_names = {
+            id(dll): {export["ordinal"] for export in dll["exports"] if export["name"] != "None"}
+            for dll in api_db["dlls"].values()
+        }
+        for bitness, library, names in def_files:
+            dlls = [
+                dll
+                for dll in api_db["dlls"].values()
+                # (a DB built on Windows has Windows paths)
+                if dll["bitness"] == bitness
+                and re.split(r"[\\/]", dll["filepath"])[-1].casefold() == library.casefold()
+            ]
+            if not dlls:
+                LOG.warning("No %dbit %s in the DB, its DEF file is not used.", bitness, library)
+            for dll in dlls:
+                # the exports the DLL has a name for tell whether the DEF file is the one of this build and bitness
+                checked = [
+                    export
+                    for export in dll["exports"]
+                    if export["ordinal"] in names and export["ordinal"] in own_names[id(dll)]
+                ]
+                wrong = [export for export in checked if export["name"] != names[export["ordinal"]]]
+                if wrong:
+                    LOG.warning(
+                        "The DEF file does not fit %s: %d of %d exports with a name there are called otherwise "
+                        "(ordinal %d is %s, the DEF file has %s), it is not used for it.",
+                        dll["filepath"],
+                        len(wrong),
+                        len(checked),
+                        wrong[0]["ordinal"],
+                        wrong[0]["name"],
+                        names[wrong[0]["ordinal"]],
+                    )
+                    continue
+                num_named = 0
+                for export in dll["exports"]:
+                    if export["name"] == "None" and export["ordinal"] in names:
+                        export["name"] = names[export["ordinal"]]
+                        num_named += 1
+                LOG.info(
+                    "Named %d exports of %s from its DEF file, which has the names of %d of its named exports%s.",
+                    num_named,
+                    dll["filepath"],
+                    len(checked),
+                    "" if checked else " (nothing to check that the DEF file belongs to it)",
+                )
         return api_db
 
     def extractAslrOffsets(self, api_db):
@@ -829,10 +1008,24 @@ def main():
         help='File with lines of "<hex load address> <DLL path>" (e.g. the module list of a process), used to derive the ASLR offsets instead of loading the DLLs. DLLs are matched by folder and file name (System32\\kernel32.dll), or by file name alone where it is unique.',
     )
 
+    parser.add_argument(
+        "--def32",
+        metavar="FILE",
+        action="append",
+        default=[],
+        help="Module-definition (.def) file of a 32bit DLL that exports by ordinal only (e.g. MFC42.DEF of Visual C++), "
+        "used to name those exports. Can be given several times.",
+    )
+    parser.add_argument(
+        "--def64", metavar="FILE", action="append", default=[], help="The same as --def32, for a 64bit DLL."
+    )
+
     args = parser.parse_args()
     builder = DatabaseBuilder()
     if bool(args.os_name) != bool(args.os_version):
         parser.error("--os_name and --os_version have to be given together.")
+    if (args.def32 or args.def64) and (args.aslr_check or not (args.auto or args.paths)):
+        parser.error("--def32 and --def64 name exports in the DB that --auto or --paths build.")
     offline = bool(args.os_name and args.os_version)
     if (
         offline
@@ -850,6 +1043,10 @@ def main():
             "on systems other than Windows, --os_name and --os_version of the system the DLLs were taken from are required, and --aslr_check is not available."
         )
     load_addresses = read_load_addresses(args.load_addresses) if args.load_addresses else None
+    try:
+        def_files = read_def_files(args.def32, args.def64)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.auto or args.paths:
         output_folder = os.path.dirname(os.path.abspath(args.output_file)) if args.output_file else os.getcwd()
         if not os.access(output_folder, os.W_OK):
@@ -862,6 +1059,8 @@ def main():
         api_db = builder.extractRecursively(paths, filter_dlls, args.os_name, args.os_version)
         if not api_db["dlls"]:
             parser.error("no DLLs found in {}.".format(", ".join(api_db["crawled_paths"])))
+        if def_files:
+            api_db = builder.applyDefFiles(api_db, def_files)
         if load_addresses is not None:
             api_db = builder.applyLoadAddresses(api_db, load_addresses)
         elif not args.ignore_aslr and not offline:

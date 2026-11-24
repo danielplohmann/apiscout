@@ -45,6 +45,7 @@ FORWARDED_DLLS = {
     "sspicli.dll": "secur32.dll",
     "wkscli.dll": "netapi32.dll",
 }
+DLL_MAP_SUFFIX = re.compile(r"_(?:0x[0-9a-f]+|stubbedBitness)$", re.IGNORECASE)
 
 
 class ApiVector:
@@ -421,7 +422,7 @@ class ApiVector:
         for api_map_name, map_results in results.items():
             # imports by ordinal that could not be resolved to a name carry no information about the API
             uniquified[api_map_name] = set(
-                self._uniquify_api_name(t[2].rpartition("_")[0], t[3]) for t in map_results if t[3]
+                self._uniquify_api_name(DLL_MAP_SUFFIX.sub("", t[2]), t[3]) for t in map_results if t[3]
             )
         return uniquified
 
