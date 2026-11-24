@@ -56,6 +56,7 @@ class ApiVectorTestSuite(unittest.TestCase):
             ("advapi32.dll", "CreateService"),
             ("advapi32.dll", "DeleteService"),
         ]
+        cls.vector._dllapi_set = set(cls.vector._dllapi_only)
         cls.vector._vector_ranks_only = [928, 927, 922, 105, 547, 644, 445, 560, 360, 299]
 
     def testListConversions(self):
@@ -130,6 +131,146 @@ class ApiVectorTestSuite(unittest.TestCase):
         # the same API found via differently cased DLL names is counted once
         both = {"db": lower_case["db"] + mixed_case["db"]}
         self.assertEqual(2, apivector.getApiVectors(both)["db"]["num_unique_apis"])
+
+    def testDllNamesWithoutLoadAddress(self):
+        this_dir = os.path.abspath(os.path.join(os.path.dirname(__file__)))
+        apivector = ApiVector(os.sep.join([this_dir, "..", "apiscout", "data", "winapi1024v1.txt"]))
+        # DBs of older versions and hand-made ones name a DLL without the _0x<address> that the DB builder adds
+        plain = {
+            "db": [
+                (0, 0, "kernel32.dll", "CreateFileW", 32),
+                (4, 0, "msvcp_win.dll", "_Query_perf_counter", 32),
+            ]
+        }
+        with_address = {
+            "db": [
+                (0, 0, "kernel32.dll_0x7d850000", "CreateFileW", 32),
+                (4, 0, "msvcp_win.dll_0x6f000000", "_Query_perf_counter", 32),
+            ]
+        }
+        result = apivector.getApiVectors(plain)["db"]
+        self.assertEqual((1, 2), (result["in_api_vector"], result["num_unique_apis"]))
+        self.assertEqual(apivector.getApiVectors(with_address)["db"], result)
+        # the same API with and without the address, and with an underscore in the DLL name, is one API
+        both = apivector.getApiVectors({"db": plain["db"] + with_address["db"]})["db"]
+        self.assertEqual(result, both)
+
+    def testForwardedExportsCountAsTheApiOfTheDefinition(self):
+        this_dir = os.path.abspath(os.path.join(os.path.dirname(__file__)))
+        apivector = ApiVector(os.sep.join([this_dir, "..", "apiscout", "data", "winapi1024v1.txt"]))
+        # exports of the DLLs that netapi32.dll and secur32.dll (since Windows 7) and ole32.dll (since Windows 8)
+        # forward to, as a dump of these systems refers to them
+        forwarded = {
+            "db": [
+                (0, 0, "combase.dll", "CoCreateInstance", 64),
+                (8, 0, "COMBASE.DLL_0x180000000", "CoInitializeEx", 64),
+                (16, 0, "samcli.dll_0x180000000", "NetUserAdd", 64),
+                (24, 0, "srvcli.dll_0x180000000", "NetShareEnum", 64),
+                (32, 0, "netutils.dll_0x180000000", "NetApiBufferFree", 64),
+                (40, 0, "wkscli.dll_0x180000000", "NetGetJoinInformation", 64),
+                (48, 0, "sspicli.dll_0x180000000", "GetUserNameExW", 64),
+                # not in the DLL filter of the DB builder, a DB of a whole System32 has them
+                (56, 0, "schedcli.dll_0x180000000", "NetScheduleJobAdd", 64),
+                (64, 0, "browcli.dll_0x180000000", "NetServerEnum", 64),
+                # netapi32.dll does not forward this one but calls it, it is the same API
+                (72, 0, "wkscli.dll_0x180000000", "NetWkstaGetInfo", 64),
+                # decorated the way some DBs name exports
+                (80, 0, "sspicli.dll_0x180000000", "DeleteSecurityContext@4", 64),
+            ]
+        }
+        # the same APIs in the DLLs that programs import them from, as a dump of Windows XP refers to them
+        imported = {
+            "db": [
+                (0, 0, "ole32.dll_0x774e0000", "CoCreateInstance", 32),
+                (4, 0, "ole32.dll_0x774e0000", "CoInitializeEx", 32),
+                (8, 0, "netapi32.dll_0x5b860000", "NetUserAdd", 32),
+                (12, 0, "netapi32.dll_0x5b860000", "NetShareEnum", 32),
+                (16, 0, "netapi32.dll_0x5b860000", "NetApiBufferFree", 32),
+                (20, 0, "netapi32.dll_0x5b860000", "NetGetJoinInformation", 32),
+                (24, 0, "secur32.dll_0x77fe0000", "GetUserNameExA", 32),
+                (28, 0, "netapi32.dll_0x5b860000", "NetScheduleJobAdd", 32),
+                (32, 0, "netapi32.dll_0x5b860000", "NetServerEnum", 32),
+                (36, 0, "netapi32.dll_0x5b860000", "NetWkstaGetInfo", 32),
+                (40, 0, "secur32.dll_0x77fe0000", "DeleteSecurityContext", 32),
+            ]
+        }
+        result = apivector.getApiVectors(forwarded)["db"]
+        self.assertEqual(11, result["in_api_vector"])
+        self.assertEqual(11, result["num_unique_apis"])
+        self.assertEqual(apivector.getApiVectors(imported)["db"], result)
+        self.assertEqual(
+            [
+                "netapi32.dll!NetApiBufferFree",
+                "netapi32.dll!NetGetJoinInformation",
+                "netapi32.dll!NetScheduleJobAdd",
+                "netapi32.dll!NetServerEnum",
+                "netapi32.dll!NetShareEnum",
+                "netapi32.dll!NetUserAdd",
+                "netapi32.dll!NetWkstaGetInfo",
+                "ole32.dll!CoCreateInstance",
+                "ole32.dll!CoInitializeEx",
+                "secur32.dll!DeleteSecurityContext",
+                "secur32.dll!GetUserNameEx",
+            ],
+            apivector.getListFromApiVector(result["vector"]),
+        )
+        self.assertTrue(apivector.isInWinApi1024("combase.dll", "CoCreateInstance"))
+        self.assertTrue(apivector.isInWinApi1024("SspiCli.dll", "GetUserNameExA"))
+        # the API found in the forwarding DLL and in the one it forwards to is one API, not two as it was counted before
+        both = apivector.getApiVectors({"db": forwarded["db"] + imported["db"]})["db"]
+        self.assertEqual(result, both)
+        # exports of these DLLs that the definition does not list for the forwarding DLL stay what they are
+        others = {
+            "db": [
+                (0, 0, "combase.dll_0x180000000", "RoInitialize", 64),
+                (8, 0, "ole32.dll_0x180000000", "RoInitialize", 64),
+                (16, 0, "samcli.dll_0x180000000", "NetUserChangePassword", 64),
+                # of another DLL of the table than the one that forwards it
+                (24, 0, "sspicli.dll_0x180000000", "CoCreateInstance", 64),
+                # of a DLL that is not in the table
+                (32, 0, "kernelbase.dll_0x180000000", "CoCreateInstance", 64),
+                (40, 0, "kernelbase.dll_0x180000000", "CreateFileW", 64),
+            ]
+        }
+        result = apivector.getApiVectors(others)["db"]
+        self.assertEqual(0, result["in_api_vector"])
+        self.assertEqual(6, result["num_unique_apis"])
+        self.assertFalse(apivector.isInWinApi1024("combase.dll", "RoInitialize"))
+        self.assertFalse(apivector.isInWinApi1024("kernelbase.dll", "CreateFileW"))
+
+    def testForwardedDllsAreNotInTheDefinition(self):
+        from apiscout.ApiVector import FORWARDED_DLLS
+
+        this_dir = os.path.abspath(os.path.join(os.path.dirname(__file__)))
+        apivector = ApiVector(os.sep.join([this_dir, "..", "apiscout", "data", "winapi1024v1.txt"]))
+        listed_dlls = {dll.lower() for dll, _, _, _ in apivector.getWinApi1024()}
+        for dll, forwarding_dll in FORWARDED_DLLS.items():
+            self.assertEqual(dll, dll.lower())
+            self.assertNotIn(dll, listed_dlls)
+            self.assertIn(forwarding_dll, listed_dlls)
+
+    def testDefinitionWithTheForwardedDllKeepsItsApis(self):
+        # a definition of one's own can list the DLL with the code, its bit is not given to the forwarding DLL
+        with tempfile.TemporaryDirectory() as folder:
+            definition = os.path.join(folder, "definition.txt")
+            with open(definition, "w", encoding="utf-8") as f_out:
+                f_out.write("com;com;ole32.dll!CoCreateInstance;2\n")
+                f_out.write("com;com;combase.dll!CoCreateInstance;1\n")
+                f_out.write("com;com;ole32.dll!CoInitializeEx;3\n")
+            # the warning is the one about a definition that does not have 1024 APIs
+            with self.assertLogs("apiscout.ApiVector", level="WARNING"):
+                apivector = ApiVector(definition)
+        results = {
+            "db": [
+                (0, 0, "combase.dll_0x180000000", "CoCreateInstance", 64),
+                (8, 0, "combase.dll_0x180000000", "CoInitializeEx", 64),
+            ]
+        }
+        result = apivector.getApiVectors(results)["db"]
+        self.assertEqual(
+            ["combase.dll!CoCreateInstance", "ole32.dll!CoInitializeEx"],
+            apivector.getListFromApiVector(result["vector"]),
+        )
 
     def testLoadWinApi1024Definition(self):
         module_path = os.path.dirname(os.path.realpath(apiscout.__file__))
