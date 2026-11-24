@@ -1158,6 +1158,7 @@ class DynamicCliTestSuite(unittest.TestCase):
                     },
                 ],
                 "apivector": "A171",
+                "apivector_db": "Windows 7",
                 "apis_in_vector": 0,
             },
             json.loads(output),

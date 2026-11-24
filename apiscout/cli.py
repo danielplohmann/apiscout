@@ -494,7 +494,7 @@ def cmd_scan(args):
         else:
             dynamic = scout.findDynamicApis(binary)
         vector_results = scout.addDynamicApisToResults(results, dynamic)
-    vector = scout.getPrimaryVector(scout.getWinApi1024Vectors(vector_results))[1]
+    vector_db, vector = scout.getPrimaryVector(scout.getWinApi1024Vectors(vector_results))
     matches = match_collection(scout, vector["vector"], args.collection) if args.collection else None
     best_match = explain_best_match(scout, vector["vector"], args.collection, matches) if args.explain else None
     if args.json:
@@ -504,6 +504,7 @@ def cmd_scan(args):
             "placed_dlls": placer.placed,
             "apis": results_to_records(results, confidences),
             "apivector": vector["vector"],
+            "apivector_db": vector_db,
             "apis_in_vector": vector["in_api_vector"],
         }
         if dynamic is not None:
