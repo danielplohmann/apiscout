@@ -100,6 +100,7 @@ class CliTestSuite(unittest.TestCase):
         document = json.loads(output)
         self.assertEqual(["InterlockedIncrement", "WaitForSingleObjectEx"], [api["api"] for api in document["apis"]])
         self.assertEqual([DB_PATH], document["api_dbs"])
+        self.assertEqual("Windows 7", document["apivector_db"])
         self.assertTrue(document["apivector"])
         with tempfile.TemporaryDirectory() as directory:
             target = os.path.join(directory, "result.json")
@@ -107,6 +108,28 @@ class CliTestSuite(unittest.TestCase):
             self.assertEqual((0, ""), (code, output))
             with open(target) as f_result:
                 self.assertEqual(document, json.load(f_result))
+
+    def testPrimaryVectorSourceAcrossDatabases(self):
+        with open(DB_PATH) as f_db:
+            db = json.load(f_db)
+        dll = db["dlls"].pop("32_6.1.7601.17514_KernelBase.dll")
+        dll["exports"][0]["name"] = "CreateFileW"
+        db["dlls"]["32_6.1.7601.17514_kernel32.dll_0x7d850000"] = dll
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "alternative.json")
+            with open(path, "w") as f_db:
+                json.dump(db, f_db)
+            # Both DBs have the same OS name. Only the alternative contributes a bit.
+            for first, second, label in (
+                (DB_PATH, path, "Windows 7 (alternative.json)"),
+                (path, DB_PATH, "Windows 7"),
+            ):
+                with self.subTest(first=first):
+                    code, output, _ = run("scan", DUMP_PATH, "--db", first, "--db", second, "--json")
+                    self.assertEqual(0, code)
+                    document = json.loads(output)
+                    self.assertEqual(1, document["apis_in_vector"])
+                    self.assertEqual(label, document["apivector_db"])
 
     def testScanErrors(self):
         code, output, errors = run("scan", "no_such_file", "--db", DB_PATH)
@@ -128,6 +151,7 @@ class CliTestSuite(unittest.TestCase):
             code, output, _ = run("scan", pe_path, "--import-table", "--json")
             self.assertEqual(0, code)
             self.assertEqual(["CreateFileW", "recv", "send"], [api["api"] for api in json.loads(output)["apis"]])
+            self.assertEqual("import_table", json.loads(output)["apivector_db"])
         code, _, errors = run("scan", DUMP_PATH, "--import-table")
         self.assertEqual(1, code)
         self.assertIn("not a PE file", errors)

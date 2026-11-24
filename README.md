@@ -95,6 +95,8 @@ apiscout scan dump_0x00400000 --json | jq -r '.apis[].api' | sort -u
 apiscout scan dump_0x00400000 --json | apiscout match - --collection apivectors.csv
 ```
 
+In scan JSON, `apivector_db` names the API map that produced `apivector`. With `--import-table`, the label is `import_table`.
+
 <details>
 <summary>From Python</summary>
 
