@@ -132,6 +132,29 @@ class ApiVectorTestSuite(unittest.TestCase):
         both = {"db": lower_case["db"] + mixed_case["db"]}
         self.assertEqual(2, apivector.getApiVectors(both)["db"]["num_unique_apis"])
 
+    def testDllNamesWithoutLoadAddress(self):
+        this_dir = os.path.abspath(os.path.join(os.path.dirname(__file__)))
+        apivector = ApiVector(os.sep.join([this_dir, "..", "apiscout", "data", "winapi1024v1.txt"]))
+        # DBs of older versions and hand-made ones name a DLL without the _0x<address> that the DB builder adds
+        plain = {
+            "db": [
+                (0, 0, "kernel32.dll", "CreateFileW", 32),
+                (4, 0, "msvcp_win.dll", "_Query_perf_counter", 32),
+            ]
+        }
+        with_address = {
+            "db": [
+                (0, 0, "kernel32.dll_0x7d850000", "CreateFileW", 32),
+                (4, 0, "msvcp_win.dll_0x6f000000", "_Query_perf_counter", 32),
+            ]
+        }
+        result = apivector.getApiVectors(plain)["db"]
+        self.assertEqual((1, 2), (result["in_api_vector"], result["num_unique_apis"]))
+        self.assertEqual(apivector.getApiVectors(with_address)["db"], result)
+        # the same API with and without the address, and with an underscore in the DLL name, is one API
+        both = apivector.getApiVectors({"db": plain["db"] + with_address["db"]})["db"]
+        self.assertEqual(result, both)
+
     def testForwardedExportsCountAsTheApiOfTheDefinition(self):
         this_dir = os.path.abspath(os.path.join(os.path.dirname(__file__)))
         apivector = ApiVector(os.sep.join([this_dir, "..", "apiscout", "data", "winapi1024v1.txt"]))

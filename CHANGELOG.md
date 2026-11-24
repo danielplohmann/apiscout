@@ -22,11 +22,11 @@ hits that were reported before, which a release says here.
    * `netapi32.dll`, since Windows 7: most of its 21 APIs of the definition (`NetUserAdd`, `NetShareEnum`, `NetApiBufferFree`...) are in `samcli.dll`, `srvcli.dll`, `netutils.dll` and `wkscli.dll`. Two more are in `schedcli.dll` and `browcli.dll`, which only a DB built without `--filter` has.
    * `secur32.dll`, since Windows 7: all of its 5 are in `sspicli.dll`.
    * `ole32.dll`, since Windows 8: `CoCreateInstance`, `CoInitializeEx`, `CoUninitialize` and 7 more are in `combase.dll`, which the example DBs of Windows Server 2022 and Windows 11 have.
-   * The APIs a scan lists do not change, no vector loses a bit, and an API found in both DLLs is counted once (it was two of the unique APIs before). Of 380 Malpedia dumps, 21 gain 1 to 6 bits, all of them Windows 7 dumps, for `netapi32.dll` and `secur32.dll`. Of 404 import tables resolved the way Windows 11 forwards them, 135 gain 1 to 11, mostly for COM. A collection built by an older version has these vectors without the bits, `apiscout collect` builds it again.
+   * The APIs a scan lists do not change, no vector loses a bit, and an API found in both DLLs is counted once (it was two of the unique APIs before). Of 380 Malpedia dumps, 21 gain 1 to 6 bits, all of them Windows 7 dumps, for `netapi32.dll` and `secur32.dll`. Of 404 import tables resolved the way Windows 11 forwards them, 135 gain 1 to 11, mostly for COM. A collection built by an older version has these vectors without the bits, `apiscout collect` builds it again. The Malpedia collection that `apiscout update` downloads gets the bits once Malpedia builds it with this version, until then a dump that gains bits scores slightly lower against it.
 
 ### Fixed
 
-- ApiVector also recognizes plain DLL names in API databases whose entries omit the load-address suffix.
+- ApiVector: an API of a DLL whose name in the API DB has no `_0x<load address>` at the end sets its bit. The DLL name was cut at its last `_`, so `kernel32.dll` was not recognized and `msvcp_win.dll` was taken for `msvcp`.
 - IDA plugin: the ApiScout view stays open when `ida_scout.py` is started with `-S`. It was opened while IDA was still loading, and IDA closed it again when it restored its window layout.
 
 ## [3.0.0] - 2026-11-18
