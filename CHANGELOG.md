@@ -19,6 +19,7 @@ hits that were reported before, which a release says here.
 ### Fixed
 
 - IDA plugin: the ApiScout view stays open when `ida_scout.py` is started with `-S`. It was opened while IDA was still loading, and IDA closed it again when it restored its window layout.
+- `ApiScout.findDynamicApis()` and `findDynamicApisInRegions()` no longer hang in a forked child process. A child of a process that had already used every thread of the search pool waited forever for threads it doesn't have, so a fork-based `multiprocessing` pool that runs dynamic searches got stuck. A child now starts a pool of its own.
 
 ## [3.0.0] - 2026-11-18
 

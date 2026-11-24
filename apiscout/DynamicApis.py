@@ -167,6 +167,16 @@ def _getPool():
     return concurrent.futures.ThreadPoolExecutor(_getThreads(), thread_name_prefix="apiscout")
 
 
+if hasattr(os, "register_at_fork"):
+    # a forked child has none of the threads of the pool it inherits, a full pool would never start new ones and every
+    # _map() of the child would wait for them forever: the child starts a pool of its own, for the CPUs it may use
+    def _resetPoolInChild():
+        _getThreads.cache_clear()
+        _getPool.cache_clear()
+
+    os.register_at_fork(after_in_child=_resetPoolInChild)
+
+
 def _map(function, items, parallel=True):
     """the results of the function for the items in order, computed by the threads of a pool if parallel; the function must not call
     _map() itself, its threads would wait for each other"""
