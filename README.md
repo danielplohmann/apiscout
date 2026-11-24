@@ -95,7 +95,7 @@ apiscout scan dump_0x00400000 --json | jq -r '.apis[].api' | sort -u
 apiscout scan dump_0x00400000 --json | apiscout match - --collection apivectors.csv
 ```
 
-In scan JSON, `apivector_db` names the API map that produced `apivector`. With `--import-table`, the label is `import_table`.
+With more than one API DB (several `--db`, or a DB folder holding several), `apivector` is the vector of the DB that covers the most WinApi1024 APIs (then the highest share of its APIs, and on a full tie the one loaded last), and `apivector_db` says which one that was. It is the label the text report and the `api_db` of `--dynamic` hits use: the OS name of the DB, with the file name added when two DBs share one. With `--import-table` it is `import_table`.
 
 <details>
 <summary>From Python</summary>
